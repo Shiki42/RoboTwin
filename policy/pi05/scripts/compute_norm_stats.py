@@ -5,6 +5,8 @@ will compute the mean and standard deviation of the data in the dataset and save
 to the config assets directory.
 """
 
+import dataclasses
+
 import numpy as np
 import tqdm
 import tyro
@@ -16,9 +18,15 @@ import openpi.training.data_loader as _data_loader
 import openpi.transforms as transforms
 
 
+def keep_norm_field(key: str, value) -> bool:
+    if key == "images" or key.startswith("observation.images"):
+        return False
+    return not np.issubdtype(np.asarray(value).dtype, np.str_)
+
+
 class RemoveStrings(transforms.DataTransformFn):
     def __call__(self, x: dict) -> dict:
-        return {k: v for k, v in x.items() if not np.issubdtype(np.asarray(v).dtype, np.str_)}
+        return {key: value for key, value in x.items() if keep_norm_field(key, value)}
 
 
 def create_torch_dataloader(
@@ -86,8 +94,10 @@ def create_rlds_dataloader(
     return data_loader, num_batches
 
 
-def main(config_name: str, max_frames: int | None = None):
+def main(config_name: str, max_frames: int | None = None, repo_id: str | None = None):
     config = _config.get_config(config_name)
+    if repo_id is not None:
+        config = dataclasses.replace(config, data=dataclasses.replace(config.data, repo_id=repo_id))
     data_config = config.data.create(config.assets_dirs, config.model)
 
     if data_config.rlds_data_dir is not None:

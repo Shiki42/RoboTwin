@@ -94,6 +94,13 @@ def _load_weights_and_validate(loader: _weight_loaders.WeightLoader, params_shap
     })
 
 
+def _cast_floating_param_to_float32(param):
+    value = getattr(param, "value", None)
+    if value is not None and hasattr(value, "dtype") and jnp.issubdtype(value.dtype, jnp.floating):
+        return param.replace(value.astype(jnp.float32))
+    return param
+
+
 @at.typecheck
 def init_train_state(
     config: _config.TrainConfig,
@@ -117,12 +124,15 @@ def init_train_state(
             model = nnx.merge(graphdef, state)
 
         params = nnx.state(model)
-        # Convert frozen params to bfloat16.
-        params = nnx_utils.state_map(
-            params,
-            config.freeze_filter,
-            lambda p: p.replace(p.value.astype(jnp.bfloat16)),
-        )
+        # Convert frozen params to bfloat16 unless float32 is requested for newer GPU compiler compatibility.
+        if config.pytorch_training_precision == "bfloat16":
+            params = nnx_utils.state_map(
+                params,
+                config.freeze_filter,
+                lambda p: p.replace(p.value.astype(jnp.bfloat16)),
+            )
+        elif config.pytorch_training_precision == "float32":
+            params = params.map(lambda _, p: _cast_floating_param_to_float32(p))
 
         return training_utils.TrainState(
             step=0,
@@ -245,7 +255,6 @@ def main(config: _config.TrainConfig):
     data_loader = _data_loader.create_data_loader(
         config,
         sharding=data_sharding,
-        num_workers=config.num_workers,
         shuffle=True,
     )
     data_iter = iter(data_loader)
