@@ -4,9 +4,9 @@ import pytest
 
 from openpi import transforms
 from openpi.models import model
-from openpi.models.pi0 import casm_stream_action_inputs
-from openpi.models.pi0 import gate_arm_observation
-from openpi.models.pi0 import merge_casm_stream_vector_fields
+from openpi.models.casm import hard_mask_arm_observation
+from openpi.models.casm import hard_mask_stream_action_inputs
+from openpi.models.casm import merge_stream_vector_fields
 from openpi.models.pi0 import reduce_action_loss
 from openpi.policies.aloha_policy import AlohaInputs
 
@@ -154,8 +154,8 @@ def test_isolate_arm_observation_masks_only_opposite_wrist():
         phase_id=np.array([1], dtype=np.int32),
     )
 
-    left = gate_arm_observation(observation, "left")
-    right = gate_arm_observation(observation, "right")
+    left = hard_mask_arm_observation(observation, "left")
+    right = hard_mask_arm_observation(observation, "right")
 
     assert bool(left.image_masks["left_wrist_0_rgb"])
     assert not bool(left.image_masks["right_wrist_0_rgb"])
@@ -169,7 +169,7 @@ def test_casm_stream_inputs_gate_cross_arm_actions_by_phase():
     actions = jnp.arange(2 * 1 * 32, dtype=jnp.float32).reshape(2, 1, 32)
     phase_id = jnp.array([[1], [0]], dtype=jnp.int32)
 
-    streams = np.asarray(casm_stream_action_inputs(actions, phase_id))
+    streams = np.asarray(hard_mask_stream_action_inputs(actions, phase_id))
     left, right = streams[:2], streams[2:]
 
     assert np.all(left[0, 0, 7:] == 0)
@@ -188,7 +188,7 @@ def test_merge_casm_stream_vector_fields_selects_arm_outputs():
         axis=0,
     )
 
-    output = np.asarray(merge_casm_stream_vector_fields(streams, batch_size=2))
+    output = np.asarray(merge_stream_vector_fields(streams, batch_size=2))
 
     assert output[:, 0, :7].tolist() == [[1.0] * 7, [1.0] * 7]
     assert output[:, 0, 7:14].tolist() == [[2.0] * 7, [2.0] * 7]

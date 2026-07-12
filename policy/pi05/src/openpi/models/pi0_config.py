@@ -6,6 +6,7 @@ import jax
 import jax.numpy as jnp
 from typing_extensions import override
 
+from openpi.models import casm
 from openpi.models import model as _model
 import openpi.models.gemma as _gemma
 from openpi.shared import array_typing as at
@@ -29,12 +30,25 @@ class Pi0Config(_model.BaseModelConfig):
     # - the state input is part of the discrete language tokens rather than a continuous input that is part of the suffix
     # - the action expert uses adaRMSNorm to inject the flow matching timestep
     pi05: bool = False
-    # Run independent phases as two observation/action-isolated streams and sync phases jointly.
-    casm_lite: bool = False
+    casm_mode: casm.CasmMode = "none"
+    coordination_gate_hidden_dim: int = 64
+    cross_attention_dim: int = 128
+    gate_loss_weight: float = 0.2
+    usefulness_loss_weight: float = 0.2
+    phase_prior_loss_weight: float = 0.1
+    usefulness_temperature: float = 0.1
     # This config option is not used directly by the model, but it is read by the ModelTransformFactory.
     discrete_state_input: bool = None  # type: ignore
 
     def __post_init__(self):
+        if self.casm_mode not in casm.VALID_CASM_MODES:
+            raise ValueError(f"unknown CASM mode: {self.casm_mode}")
+        if self.coordination_gate_hidden_dim < 1 or self.cross_attention_dim < 1:
+            raise ValueError("CASM hidden dimensions must be positive")
+        if min(self.gate_loss_weight, self.usefulness_loss_weight, self.phase_prior_loss_weight) < 0:
+            raise ValueError("CASM loss weights must be non-negative")
+        if self.usefulness_temperature <= 0:
+            raise ValueError("usefulness temperature must be positive")
         if self.max_token_len is None:
             object.__setattr__(self, "max_token_len", 200 if self.pi05 else 48)
         if self.discrete_state_input is None:

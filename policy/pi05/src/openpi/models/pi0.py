@@ -7,6 +7,7 @@ import jax
 import jax.numpy as jnp
 from typing_extensions import override
 
+from openpi.models import casm
 from openpi.models import model as _model
 from openpi.models import pi0_config
 import openpi.models.gemma as _gemma
@@ -27,76 +28,6 @@ def reduce_action_loss(
         raise ValueError(f"action mask shape mismatch: {mask.shape} != {squared_error.shape}")
     denominator = jnp.maximum(jnp.sum(mask, axis=-1), 1.0)
     return jnp.sum(squared_error * mask, axis=-1) / denominator
-
-
-def gate_arm_observation(
-    observation: _model.Observation,
-    arm: str,
-) -> _model.Observation:
-    if arm not in ("left", "right"):
-        raise ValueError(f"unknown arm: {arm}")
-    if observation.phase_id is None:
-        raise ValueError("CASM-lite requires phase_id")
-    masked_wrist = "right_wrist_0_rgb" if arm == "left" else "left_wrist_0_rgb"
-    image_masks = dict(observation.image_masks)
-    sync_phase = observation.phase_id[..., 0] == 0
-    image_masks[masked_wrist] = jnp.logical_and(
-        image_masks[masked_wrist],
-        sync_phase,
-    )
-    return _model.Observation(
-        images=observation.images,
-        image_masks=image_masks,
-        state=observation.state,
-        action_mask=observation.action_mask,
-        phase_id=observation.phase_id,
-        tokenized_prompt=observation.tokenized_prompt,
-        tokenized_prompt_mask=observation.tokenized_prompt_mask,
-        token_ar_mask=observation.token_ar_mask,
-        token_loss_mask=observation.token_loss_mask,
-    )
-
-
-def concatenate_stream_observations(
-    left: _model.Observation,
-    right: _model.Observation,
-) -> _model.Observation:
-    return jax.tree.map(
-        lambda left_value, right_value: jnp.concatenate(
-            [left_value, right_value],
-            axis=0,
-        ),
-        left,
-        right,
-    )
-
-
-def casm_stream_action_inputs(
-    noisy_actions: _model.Actions,
-    phase_id: at.Int[at.Array, "*b p"],
-) -> _model.Actions:
-    indices = jnp.arange(noisy_actions.shape[-1])
-    sync_phase = (phase_id[..., :1] == 0)[..., None]
-    left = jnp.where(sync_phase, noisy_actions, noisy_actions * (indices < 7))
-    right = jnp.where(
-        sync_phase,
-        noisy_actions,
-        noisy_actions * ((indices >= 7) & (indices < 14)),
-    )
-    return jnp.concatenate([left, right], axis=0)
-
-
-def merge_casm_stream_vector_fields(
-    streams: _model.Actions,
-    batch_size: int,
-) -> _model.Actions:
-    left = streams[:batch_size]
-    right = streams[batch_size:]
-    indices = jnp.arange(streams.shape[-1])
-    return (
-        jnp.where(indices < 7, left, 0.0)
-        + jnp.where((indices >= 7) & (indices < 14), right, 0.0)
-    )
 
 
 def make_attn_mask(input_mask, mask_ar):
@@ -150,7 +81,11 @@ class Pi0(_model.BaseModel):
     def __init__(self, config: pi0_config.Pi0Config, rngs: nnx.Rngs):
         super().__init__(config.action_dim, config.action_horizon, config.max_token_len)
         self.pi05 = config.pi05
-        self.casm_lite = config.casm_lite
+        self.casm_mode = config.casm_mode
+        self.gate_loss_weight = config.gate_loss_weight
+        self.usefulness_loss_weight = config.usefulness_loss_weight
+        self.phase_prior_loss_weight = config.phase_prior_loss_weight
+        self.usefulness_temperature = config.usefulness_temperature
         paligemma_config = _gemma.get_config(config.paligemma_variant)
         action_expert_config = _gemma.get_config(config.action_expert_variant)
         # TODO: rewrite gemma in NNX. For now, use bridge.
@@ -182,6 +117,18 @@ class Pi0(_model.BaseModel):
             self.action_time_mlp_in = nnx.Linear(2 * action_expert_config.width, action_expert_config.width, rngs=rngs)
             self.action_time_mlp_out = nnx.Linear(action_expert_config.width, action_expert_config.width, rngs=rngs)
         self.action_out_proj = nnx.Linear(action_expert_config.width, config.action_dim, rngs=rngs)
+        if self.casm_mode in casm.LEARNED_GATE_MODES:
+            self.cooperation_gate = casm.CooperationGate(
+                config.action_dim,
+                config.coordination_gate_hidden_dim,
+                rngs=rngs,
+            )
+        if self.casm_mode in casm.CROSS_ATTENTION_MODES:
+            self.cross_attention = casm.GatedBidirectionalCrossAttention(
+                action_expert_config.width,
+                config.cross_attention_dim,
+                rngs=rngs,
+            )
 
         # This attribute gets automatically set by model.train() and model.eval().
         self.deterministic = True
@@ -269,12 +216,12 @@ class Pi0(_model.BaseModel):
         ar_mask = jnp.array(ar_mask)
         return tokens, input_mask, ar_mask, adarms_cond
 
-    def _vector_field(
+    def _hidden_field(
         self,
         observation: _model.Observation,
         noisy_actions: _model.Actions,
         time: at.Float[at.Array, " b"],
-    ) -> _model.Actions:
+    ):
         prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
         suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(
             observation,
@@ -291,34 +238,125 @@ class Pi0(_model.BaseModel):
             positions=positions,
             adarms_cond=[None, adarms_cond],
         )
-        return self.action_out_proj(suffix_out[:, -self.action_horizon :])
+        return suffix_out[:, -self.action_horizon :]
 
-    def _phase_gated_vector_field(
+    def _vector_field(
         self,
         observation: _model.Observation,
         noisy_actions: _model.Actions,
         time: at.Float[at.Array, " b"],
     ) -> _model.Actions:
-        if not self.casm_lite:
-            return self._vector_field(observation, noisy_actions, time)
-        if observation.phase_id is None:
-            raise ValueError("CASM-lite requires phase_id")
-        batch_size = noisy_actions.shape[0]
-        stream_observation = concatenate_stream_observations(
-            gate_arm_observation(observation, "left"),
-            gate_arm_observation(observation, "right"),
-        )
-        stream_actions = casm_stream_action_inputs(
-            noisy_actions,
-            observation.phase_id,
-        )
+        return self.action_out_proj(self._hidden_field(observation, noisy_actions, time))
+
+    def _cooperation_probability(self, observation: _model.Observation):
+        return self.cooperation_gate(observation.state)
+
+    def _stream_hidden_fields(
+        self,
+        observation: _model.Observation,
+        noisy_actions: _model.Actions,
+        time: at.Float[at.Array, " b"],
+        *,
+        hard_mask: bool,
+    ):
+        if hard_mask:
+            if observation.phase_id is None:
+                raise ValueError("hard-mask CASM requires phase_id")
+            left_observation = casm.hard_mask_arm_observation(observation, "left")
+            right_observation = casm.hard_mask_arm_observation(observation, "right")
+            stream_actions = casm.hard_mask_stream_action_inputs(noisy_actions, observation.phase_id)
+        else:
+            left_observation = casm.isolate_arm_observation(observation, "left")
+            right_observation = casm.isolate_arm_observation(observation, "right")
+            stream_actions = casm.isolated_stream_action_inputs(noisy_actions)
+        stream_observation = casm.concatenate_observations(left_observation, right_observation)
         stream_time = jnp.concatenate([time, time], axis=0)
-        streams = self._vector_field(
-            stream_observation,
-            stream_actions,
-            stream_time,
+        stream_hidden = self._hidden_field(stream_observation, stream_actions, stream_time)
+        batch_size = noisy_actions.shape[0]
+        return stream_hidden[:batch_size], stream_hidden[batch_size:]
+
+    def _project_stream_hidden(self, left_hidden, right_hidden, batch_size: int):
+        streams = self.action_out_proj(jnp.concatenate([left_hidden, right_hidden], axis=0))
+        return casm.merge_stream_vector_fields(streams, batch_size)
+
+    def _factorized_vector_field(
+        self,
+        observation: _model.Observation,
+        noisy_actions: _model.Actions,
+        time: at.Float[at.Array, " b"],
+        *,
+        hard_mask: bool,
+    ) -> _model.Actions:
+        left_hidden, right_hidden = self._stream_hidden_fields(
+            observation,
+            noisy_actions,
+            time,
+            hard_mask=hard_mask,
         )
-        return merge_casm_stream_vector_fields(streams, batch_size)
+        return self._project_stream_hidden(left_hidden, right_hidden, noisy_actions.shape[0])
+
+    def _cross_attention_fields(self, left_hidden, right_hidden, gate, batch_size: int):
+        left_fused, right_fused = self.cross_attention(left_hidden, right_hidden, gate)
+        return self._project_stream_hidden(left_fused, right_fused, batch_size)
+
+    def _routed_vector_fields(
+        self,
+        observation: _model.Observation,
+        noisy_actions: _model.Actions,
+        time: at.Float[at.Array, " b"],
+    ):
+        if self.casm_mode == "none":
+            return self._vector_field(observation, noisy_actions, time), None, None
+        if self.casm_mode == "hard_mask":
+            factorized = self._factorized_vector_field(
+                observation,
+                noisy_actions,
+                time,
+                hard_mask=True,
+            )
+            return factorized, None, None
+
+        gate = self._cooperation_probability(observation)
+        left_hidden, right_hidden = self._stream_hidden_fields(
+            observation,
+            noisy_actions,
+            time,
+            hard_mask=False,
+        )
+        factorized = self._project_stream_hidden(
+            left_hidden,
+            right_hidden,
+            noisy_actions.shape[0],
+        )
+        if self.casm_mode == "soft_mixture":
+            joint = self._vector_field(observation, noisy_actions, time)
+            return casm.mix_vector_fields(factorized, joint, gate), gate, None
+
+        predicted = self._cross_attention_fields(
+            left_hidden,
+            right_hidden,
+            gate,
+            noisy_actions.shape[0],
+        )
+        if self.casm_mode == "gated_cross_attention":
+            return predicted, gate, None
+        if self.casm_mode == "usefulness_gate":
+            zeros = jnp.zeros_like(gate)
+            ones = jnp.ones_like(gate)
+            communication_off = self._cross_attention_fields(
+                left_hidden,
+                right_hidden,
+                zeros,
+                noisy_actions.shape[0],
+            )
+            communication_on = self._cross_attention_fields(
+                left_hidden,
+                right_hidden,
+                ones,
+                noisy_actions.shape[0],
+            )
+            return predicted, gate, (communication_off, communication_on)
+        raise ValueError(f"unknown CASM mode: {self.casm_mode}")
 
     @override
     def compute_loss(
@@ -333,9 +371,31 @@ class Pi0(_model.BaseModel):
         time_expanded = time[..., None, None]
         x_t = time_expanded * noise + (1 - time_expanded) * actions
         u_t = noise - actions
-        v_t = self._phase_gated_vector_field(observation, x_t, time)
+        v_t, gate, alternatives = self._routed_vector_fields(observation, x_t, time)
+        action_loss = reduce_action_loss(jnp.square(v_t - u_t), observation.action_mask)
+        if gate is None:
+            return action_loss
+        if observation.phase_id is None:
+            raise ValueError("learned CASM gates require phase_id during training")
 
-        return reduce_action_loss(jnp.square(v_t - u_t), observation.action_mask)
+        phase_target = casm.coordination_target(observation.phase_id)
+        phase_loss = casm.binary_cross_entropy(gate, phase_target)[..., None]
+        if self.casm_mode != "usefulness_gate":
+            return action_loss + self.gate_loss_weight * phase_loss
+        if alternatives is None:
+            raise ValueError("usefulness gate requires communication on/off predictions")
+        communication_off, communication_on = alternatives
+        off_error = jnp.mean(
+            reduce_action_loss(jnp.square(communication_off - u_t), observation.action_mask),
+            axis=-1,
+        )
+        on_error = jnp.mean(
+            reduce_action_loss(jnp.square(communication_on - u_t), observation.action_mask),
+            axis=-1,
+        )
+        target = casm.usefulness_target(off_error, on_error, self.usefulness_temperature)
+        usefulness_loss = casm.binary_cross_entropy(gate, target)[..., None]
+        return action_loss + self.usefulness_loss_weight * usefulness_loss + self.phase_prior_loss_weight * phase_loss
 
     def _prepare_prefix(self, observation: _model.Observation):
         prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
@@ -348,7 +408,7 @@ class Pi0(_model.BaseModel):
         )
         return prefix_tokens, prefix_mask, kv_cache
 
-    def _cached_vector_field(
+    def _cached_hidden_field(
         self,
         observation: _model.Observation,
         noisy_actions: _model.Actions,
@@ -356,7 +416,7 @@ class Pi0(_model.BaseModel):
         prefix_tokens,
         prefix_mask,
         kv_cache,
-    ) -> _model.Actions:
+    ):
         suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(
             observation,
             noisy_actions,
@@ -373,7 +433,17 @@ class Pi0(_model.BaseModel):
             kv_cache=kv_cache,
             adarms_cond=[None, adarms_cond],
         )
-        return self.action_out_proj(suffix_out[:, -self.action_horizon :])
+        return suffix_out[:, -self.action_horizon :]
+
+    def _cached_vector_field(
+        self,
+        observation: _model.Observation,
+        noisy_actions: _model.Actions,
+        time: at.Float[at.Array, " b"],
+        *prefix,
+    ) -> _model.Actions:
+        hidden = self._cached_hidden_field(observation, noisy_actions, time, *prefix)
+        return self.action_out_proj(hidden)
 
     @override
     def sample_actions(
@@ -385,45 +455,73 @@ class Pi0(_model.BaseModel):
         noise: at.Float[at.Array, "b ah ad"] | None = None,
     ) -> _model.Actions:
         observation = _model.preprocess_observation(None, observation, train=False)
-        if self.casm_lite and observation.phase_id is None:
-            raise ValueError("CASM-lite requires phase_id")
+        if self.casm_mode == "hard_mask" and observation.phase_id is None:
+            raise ValueError("hard-mask CASM requires phase_id")
         dt = -1.0 / num_steps
         batch_size = observation.state.shape[0]
         if noise is None:
             noise = jax.random.normal(rng, (batch_size, self.action_horizon, self.action_dim))
 
-        if self.casm_lite:
-            stream_observation = concatenate_stream_observations(
-                gate_arm_observation(observation, "left"),
-                gate_arm_observation(observation, "right"),
+        joint_prefix = None
+        stream_prefix = None
+        stream_observation = None
+        gate = None
+        if self.casm_mode in casm.LEARNED_GATE_MODES:
+            gate = self._cooperation_probability(observation)
+        if self.casm_mode in {"hard_mask", *casm.LEARNED_GATE_MODES}:
+            observation_fn = (
+                casm.hard_mask_arm_observation if self.casm_mode == "hard_mask" else casm.isolate_arm_observation
             )
-            prefix = self._prepare_prefix(stream_observation)
-        else:
-            stream_observation = observation
-            prefix = self._prepare_prefix(observation)
+            stream_observation = casm.concatenate_observations(
+                observation_fn(observation, "left"),
+                observation_fn(observation, "right"),
+            )
+            stream_prefix = self._prepare_prefix(stream_observation)
+        if self.casm_mode in {"none", "soft_mixture"}:
+            joint_prefix = self._prepare_prefix(observation)
 
         def step(carry):
             x_t, time = carry
             batch_time = jnp.broadcast_to(time, batch_size)
-            if self.casm_lite:
-                stream_actions = casm_stream_action_inputs(
-                    x_t,
-                    observation.phase_id,
-                )
-                stream_time = jnp.concatenate([batch_time, batch_time], axis=0)
-                streams = self._cached_vector_field(
-                    stream_observation,
-                    stream_actions,
-                    stream_time,
-                    *prefix,
-                )
-                v_t = merge_casm_stream_vector_fields(streams, batch_size)
-            else:
+            if self.casm_mode == "none":
                 v_t = self._cached_vector_field(
                     observation,
                     x_t,
                     batch_time,
-                    *prefix,
+                    *joint_prefix,
+                )
+                return x_t + dt * v_t, time + dt
+
+            if self.casm_mode == "hard_mask":
+                stream_actions = casm.hard_mask_stream_action_inputs(x_t, observation.phase_id)
+            else:
+                stream_actions = casm.isolated_stream_action_inputs(x_t)
+            stream_time = jnp.concatenate([batch_time, batch_time], axis=0)
+            stream_hidden = self._cached_hidden_field(
+                stream_observation,
+                stream_actions,
+                stream_time,
+                *stream_prefix,
+            )
+            left_hidden = stream_hidden[:batch_size]
+            right_hidden = stream_hidden[batch_size:]
+            factorized = self._project_stream_hidden(left_hidden, right_hidden, batch_size)
+            if self.casm_mode == "hard_mask":
+                v_t = factorized
+            elif self.casm_mode == "soft_mixture":
+                joint = self._cached_vector_field(
+                    observation,
+                    x_t,
+                    batch_time,
+                    *joint_prefix,
+                )
+                v_t = casm.mix_vector_fields(factorized, joint, gate)
+            else:
+                v_t = self._cross_attention_fields(
+                    left_hidden,
+                    right_hidden,
+                    gate,
+                    batch_size,
                 )
             return x_t + dt * v_t, time + dt
 

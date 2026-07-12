@@ -13,6 +13,7 @@ import flax.nnx as nnx
 from typing_extensions import override
 import tyro
 
+import openpi.models.casm as casm
 import openpi.models.model as _model
 import openpi.models.pi0_config as pi0_config
 import openpi.models.pi0_fast as pi0_fast
@@ -556,6 +557,67 @@ class TrainConfig:
             raise ValueError("Cannot resume and overwrite at the same time.")
 
 
+def _putcab_casm_data(repo_id: str) -> LeRobotAlohaDataConfig:
+    return LeRobotAlohaDataConfig(
+        repo_id=repo_id,
+        adapt_to_pi=False,
+        repack_transforms=_transforms.Group(inputs=[
+            _transforms.RepackTransform({
+                "images": {
+                    "cam_high": "observation.images.cam_high",
+                    "cam_left_wrist": "observation.images.cam_left_wrist",
+                    "cam_right_wrist": "observation.images.cam_right_wrist",
+                },
+                "state": "observation.state",
+                "actions": "action",
+                "action_mask": "observation.arm_active_mask",
+                "action_phase": "observation.phase_one_hot",
+                "prompt": "prompt",
+            })
+        ]),
+        base_config=DataConfig(prompt_from_task=True),
+        action_sequence_keys=(
+            "action",
+            "observation.arm_active_mask",
+            "observation.phase_one_hot",
+        ),
+    )
+
+
+def _putcab_casm_config(
+    name: str,
+    mode: casm.CasmMode,
+    *,
+    repo_id: str = "Shiki42/parallelvla_putcab_official_clean50_retimed_paired_v1",
+    train_steps: int = 20_000,
+    save_interval: int = 5_000,
+) -> TrainConfig:
+    model = pi0_config.Pi0Config(
+        pi05=True,
+        casm_mode=mode,
+        paligemma_variant="gemma_2b_lora",
+        action_expert_variant="gemma_300m_lora",
+    )
+    return TrainConfig(
+        name=name,
+        model=model,
+        data=_putcab_casm_data(repo_id),
+        freeze_filter=model.get_freeze_filter(),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "s3://openpi-assets/checkpoints/pi05_base/params",
+            missing_regex=".*(lora|cooperation_gate|cross_attention).*",
+        ),
+        batch_size=4,
+        num_workers=0,
+        num_train_steps=train_steps,
+        save_interval=save_interval,
+        keep_period=train_steps,
+        params_only_checkpoint=True,
+        wandb_enabled=False,
+        fsdp_devices=1,
+    )
+
+
 # Use `get_config` if you need to get a config by name in your code.
 _CONFIGS = [
     ###
@@ -667,54 +729,24 @@ _CONFIGS = [
         wandb_enabled=False,
         fsdp_devices=1,
     ),
-    # CASM-lite uses the same phase-aware data but isolates wrist/action streams during async phases.
-    TrainConfig(
-        name="pi05_putcab_casm_lite_lora",
-        model=pi0_config.Pi0Config(
-            pi05=True,
-            casm_lite=True,
-            paligemma_variant="gemma_2b_lora",
-            action_expert_variant="gemma_300m_lora",
-        ),
-        data=LeRobotAlohaDataConfig(
-            repo_id="Shiki42/parallelvla_putcab_temporal_debias_full_v1",
-            adapt_to_pi=False,
-            repack_transforms=_transforms.Group(inputs=[
-                _transforms.RepackTransform({
-                    "images": {
-                        "cam_high": "observation.images.cam_high",
-                        "cam_left_wrist": "observation.images.cam_left_wrist",
-                        "cam_right_wrist": "observation.images.cam_right_wrist",
-                    },
-                    "state": "observation.state",
-                    "actions": "action",
-                    "action_mask": "observation.arm_active_mask",
-                    "action_phase": "observation.phase_one_hot",
-                    "prompt": "prompt",
-                })
-            ]),
-            base_config=DataConfig(prompt_from_task=True),
-            action_sequence_keys=(
-                "action",
-                "observation.arm_active_mask",
-                "observation.phase_one_hot",
-            ),
-        ),
-        freeze_filter=pi0_config.Pi0Config(
-            paligemma_variant="gemma_2b_lora",
-            action_expert_variant="gemma_300m_lora",
-        ).get_freeze_filter(),
-        weight_loader=weight_loaders.CheckpointWeightLoader(
-            "s3://openpi-assets/checkpoints/pi05_base/params"
-        ),
-        batch_size=4,
-        num_workers=0,
-        num_train_steps=5_000,
+    _putcab_casm_config(
+        "pi05_putcab_casm_lite_lora",
+        "hard_mask",
+        repo_id="Shiki42/parallelvla_putcab_temporal_debias_full_v1",
+        train_steps=5_000,
         save_interval=1_000,
-        keep_period=5_000,
-        params_only_checkpoint=True,
-        wandb_enabled=False,
-        fsdp_devices=1,
+    ),
+    _putcab_casm_config(
+        "pi05_putcab_casm_soft_mixture_lora",
+        "soft_mixture",
+    ),
+    _putcab_casm_config(
+        "pi05_putcab_casm_gated_cross_attention_lora",
+        "gated_cross_attention",
+    ),
+    _putcab_casm_config(
+        "pi05_putcab_casm_usefulness_gate_lora",
+        "usefulness_gate",
     ),
     # pi0_base by lora
     TrainConfig(
