@@ -604,7 +604,7 @@ def _putcab_casm_config(
         data=_putcab_casm_data(repo_id),
         freeze_filter=model.get_freeze_filter(),
         weight_loader=weight_loaders.CheckpointWeightLoader(
-            "s3://openpi-assets/checkpoints/pi05_base/params",
+            "gs://openpi-assets/checkpoints/pi05_base/params",
             missing_regex=".*(lora|cooperation_gate|cross_attention).*",
         ),
         batch_size=4,

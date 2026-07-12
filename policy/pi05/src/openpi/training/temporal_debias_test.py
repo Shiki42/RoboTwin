@@ -9,6 +9,7 @@ from openpi.models.casm import hard_mask_stream_action_inputs
 from openpi.models.casm import merge_stream_vector_fields
 from openpi.models.pi0 import reduce_action_loss
 from openpi.policies.aloha_policy import AlohaInputs
+from openpi.training import config as _config
 
 
 def test_aloha_inputs_expands_arm_mask_to_action_dimensions():
@@ -193,3 +194,17 @@ def test_merge_casm_stream_vector_fields_selects_arm_outputs():
     assert output[:, 0, :7].tolist() == [[1.0] * 7, [1.0] * 7]
     assert output[:, 0, 7:14].tolist() == [[2.0] * 7, [2.0] * 7]
     assert output[:, 0, 14:].tolist() == [[0.0] * 18, [0.0] * 18]
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "pi05_putcab_casm_soft_mixture_lora",
+        "pi05_putcab_casm_gated_cross_attention_lora",
+        "pi05_putcab_casm_usefulness_gate_lora",
+    ],
+)
+def test_casm_configs_use_public_pi05_base_weights(name):
+    config = _config.get_config(name)
+
+    assert config.weight_loader.params_path == "gs://openpi-assets/checkpoints/pi05_base/params"
