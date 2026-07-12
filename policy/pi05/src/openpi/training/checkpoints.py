@@ -9,7 +9,6 @@ from typing import Protocol
 from etils import epath
 import jax
 import orbax.checkpoint as ocp
-import orbax.checkpoint.future as future
 
 from openpi.shared import array_typing as at
 import openpi.shared.normalize as _normalize
@@ -17,9 +16,26 @@ import openpi.training.data_loader as _data_loader
 import openpi.training.utils as training_utils
 
 
+def _checkpoint_item_handlers(*, params_only: bool) -> dict:
+    handlers = {
+        "assets": CallbackHandler(),
+        "params": ocp.PyTreeCheckpointHandler(),
+    }
+    if not params_only:
+        handlers["train_state"] = ocp.PyTreeCheckpointHandler()
+    return handlers
+
+
 def initialize_checkpoint_dir(
-    checkpoint_dir: epath.Path | str, *, keep_period: int | None, overwrite: bool, resume: bool
+    checkpoint_dir: epath.Path | str,
+    *,
+    keep_period: int | None,
+    overwrite: bool,
+    resume: bool,
+    params_only: bool,
 ) -> tuple[ocp.CheckpointManager, bool]:
+    if params_only and resume:
+        raise ValueError("params-only checkpoints cannot resume training")
     checkpoint_dir = epath.Path(checkpoint_dir).resolve()
     resuming = False
     if checkpoint_dir.exists():
@@ -39,11 +55,7 @@ def initialize_checkpoint_dir(
 
     mngr = ocp.CheckpointManager(
         checkpoint_dir,
-        item_handlers={
-            "assets": CallbackHandler(),
-            "train_state": ocp.PyTreeCheckpointHandler(),
-            "params": ocp.PyTreeCheckpointHandler(),
-        },
+        item_handlers=_checkpoint_item_handlers(params_only=params_only),
         options=ocp.CheckpointManagerOptions(
             max_to_keep=1,
             keep_period=keep_period,
@@ -67,6 +79,8 @@ def save_state(
     state: training_utils.TrainState,
     data_loader: _data_loader.DataLoader,
     step: int,
+    *,
+    params_only: bool,
 ):
     def save_assets(directory: epath.Path):
         # Save the normalization stats.
@@ -78,11 +92,17 @@ def save_state(
     # Split params that can be used for inference into a separate item.
     with at.disable_typechecking():
         train_state, params = _split_params(state)
-    items = {
-        "assets": save_assets,
-        "train_state": train_state,
-        "params": {"params": params},
-    }
+    if params_only:
+        items = {
+            "assets": save_assets,
+            "params": {"params": params},
+        }
+    else:
+        items = {
+            "assets": save_assets,
+            "train_state": train_state,
+            "params": {"params": params},
+        }
     checkpoint_manager.save(step, items)
 
 
@@ -126,7 +146,8 @@ class CallbackHandler(ocp.AsyncCheckpointHandler):
             args.callback(directory)
 
     async def async_save(self, directory: epath.Path, args: CallbackSave) -> list[futures.Future]:
-        return [future.CommitFutureAwaitingContractedSignals(asyncio.to_thread(self.save, directory, args))]
+        await asyncio.to_thread(self.save, directory, args)
+        return []
 
     def restore(self, *args, **kwargs):
         raise NotImplementedError("CallbackHandler does not support restore")

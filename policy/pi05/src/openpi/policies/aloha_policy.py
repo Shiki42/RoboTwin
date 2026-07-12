@@ -34,10 +34,16 @@ class AlohaInputs(transforms.DataTransformFn):
     # If true, this will convert the joint and gripper values from the standard Aloha space to
     # the space used by the pi internal runtime which was used to train the base model.
     adapt_to_pi: bool = True
+    # Weight assigned to inactive-arm targets; phase-boundary labels remain masked.
+    inactive_action_weight: float = 0.0
 
     # The expected cameras names. All input cameras must be in this set. Missing cameras will be
     # replaced with black images and the corresponding `image_mask` will be set to False.
     EXPECTED_CAMERAS: ClassVar[tuple[str, ...]] = ("cam_high", "cam_low", "cam_left_wrist", "cam_right_wrist")
+
+    def __post_init__(self) -> None:
+        if not 0.0 <= self.inactive_action_weight <= 1.0:
+            raise ValueError("inactive action weight must be in [0, 1]")
 
     def __call__(self, data: dict) -> dict:
         data = _decode_aloha(data, adapt_to_pi=self.adapt_to_pi)
@@ -80,6 +86,33 @@ class AlohaInputs(transforms.DataTransformFn):
             actions = np.asarray(data["actions"])
             actions = _encode_actions_inv(actions, adapt_to_pi=self.adapt_to_pi)
             inputs["actions"] = actions
+
+        if "action_mask" in data:
+            arm_mask = np.asarray(data["action_mask"], dtype=np.float32)
+            if arm_mask.shape[-1] != 2:
+                raise ValueError(f"expected left/right arm mask, got {arm_mask.shape}")
+            arm_mask = self.inactive_action_weight + (1.0 - self.inactive_action_weight) * arm_mask
+            if "action_phase" in data:
+                phase_sequence = np.asarray(data["action_phase"])
+                if phase_sequence.shape != (*arm_mask.shape[:-1], 2):
+                    raise ValueError(
+                        f"action phase/mask shape mismatch: {phase_sequence.shape} and {arm_mask.shape}"
+                    )
+                canonical_phase = phase_sequence[..., 1:2] > 0.5
+                phase_consistent = canonical_phase == canonical_phase[:1]
+                arm_mask = arm_mask * phase_consistent.astype(np.float32)
+                inputs["phase_id"] = canonical_phase[:1].astype(np.int32).reshape(1)
+            inputs["action_mask"] = np.concatenate(
+                [
+                    np.repeat(arm_mask[..., :1], 7, axis=-1),
+                    np.repeat(arm_mask[..., 1:], 7, axis=-1),
+                ],
+                axis=-1,
+            )
+
+        if "phase_id" in data and "phase_id" not in inputs:
+            phase_id = np.asarray(data["phase_id"], dtype=np.int32).reshape(1)
+            inputs["phase_id"] = phase_id
 
         if "prompt" in data:
             inputs["prompt"] = data["prompt"]

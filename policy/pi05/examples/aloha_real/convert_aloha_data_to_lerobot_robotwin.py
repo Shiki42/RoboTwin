@@ -5,6 +5,9 @@ Example usage: uv run examples/aloha_real/convert_aloha_data_to_lerobot.py --raw
 """
 
 import dataclasses
+import fnmatch
+import json
+import os
 from pathlib import Path
 import shutil
 from typing import Literal
@@ -12,14 +15,14 @@ from typing import Literal
 import h5py
 from lerobot.common.datasets.lerobot_dataset import HF_LEROBOT_HOME
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
+
 # from lerobot.common.datasets.push_dataset_to_hub._download_raw import download_raw
 import numpy as np
 import torch
 import tqdm
 import tyro
-import json
-import os
-import fnmatch
+
+from openpi.training.robotwin_routing import phase_conditioned_prompt
 
 
 @dataclasses.dataclass(frozen=True)
@@ -41,6 +44,7 @@ def create_empty_dataset(
     *,
     has_velocity: bool = False,
     has_effort: bool = False,
+    has_phase_metadata: bool = False,
     dataset_config: DatasetConfig = DEFAULT_DATASET_CONFIG,
 ) -> LeRobotDataset:
     motors = [
@@ -101,6 +105,18 @@ def create_empty_dataset(
             ],
         }
 
+    if has_phase_metadata:
+        features["observation.phase_one_hot"] = {
+            "dtype": "float32",
+            "shape": (2,),
+            "names": ["sync", "async"],
+        }
+        features["observation.arm_active_mask"] = {
+            "dtype": "float32",
+            "shape": (2,),
+            "names": ["left", "right"],
+        }
+
     for cam in cameras:
         features[f"observation.images.{cam}"] = {
             "dtype": mode,
@@ -144,6 +160,20 @@ def has_effort(hdf5_files: list[Path]) -> bool:
         return "/observations/effort" in ep
 
 
+def has_phase_metadata(hdf5_files: list[Path]) -> bool:
+    presence = []
+    for path in hdf5_files:
+        with h5py.File(path, "r") as ep:
+            has_phase = "/observations/phase_type_id" in ep
+            has_mask = "/observations/arm_active_mask" in ep
+            if has_phase != has_mask:
+                raise ValueError(f"incomplete phase metadata in {path}")
+            presence.append(has_phase)
+    if any(presence) and not all(presence):
+        raise ValueError("phase metadata must be present in every episode or none")
+    return all(presence)
+
+
 def load_raw_images_per_camera(ep: h5py.File, cameras: list[str]) -> dict[str, np.ndarray]:
     imgs_per_cam = {}
     for camera in cameras:
@@ -157,10 +187,9 @@ def load_raw_images_per_camera(ep: h5py.File, cameras: list[str]) -> dict[str, n
 
             # load one compressed image after the other in RAM and uncompress
             imgs_array = []
-            for data in ep[f"/observations/images/{camera}"]:
-                data = np.frombuffer(data, np.uint8)
-                # img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)  # 解码为彩色图像
-                imgs_array.append(cv2.imdecode(data, cv2.IMREAD_COLOR))
+            for encoded_image in ep[f"/observations/images/{camera}"]:
+                image_bytes = np.frombuffer(encoded_image, np.uint8)
+                imgs_array.append(cv2.imdecode(image_bytes, cv2.IMREAD_COLOR))
             imgs_array = np.array(imgs_array)
 
         imgs_per_cam[camera] = imgs_array
@@ -173,6 +202,8 @@ def load_raw_episode_data(
         dict[str, np.ndarray],
         torch.Tensor,
         torch.Tensor,
+        torch.Tensor | None,
+        torch.Tensor | None,
         torch.Tensor | None,
         torch.Tensor | None,
 ]:
@@ -188,6 +219,12 @@ def load_raw_episode_data(
         if "/observations/effort" in ep:
             effort = torch.from_numpy(ep["/observations/effort"][:])
 
+        phase_type_id = None
+        arm_active_mask = None
+        if "/observations/phase_type_id" in ep:
+            phase_type_id = torch.from_numpy(ep["/observations/phase_type_id"][:]).to(torch.int64)
+            arm_active_mask = torch.from_numpy(ep["/observations/arm_active_mask"][:]).to(torch.float32)
+
         imgs_per_cam = load_raw_images_per_camera(
             ep,
             [
@@ -197,7 +234,7 @@ def load_raw_episode_data(
             ],
         )
 
-    return imgs_per_cam, state, action, velocity, effort
+    return imgs_per_cam, state, action, velocity, effort, phase_type_id, arm_active_mask
 
 
 def populate_dataset(
@@ -212,22 +249,44 @@ def populate_dataset(
     for ep_idx in tqdm.tqdm(episodes):
         ep_path = hdf5_files[ep_idx]
 
-        imgs_per_cam, state, action, velocity, effort = load_raw_episode_data(ep_path)
+        (
+            imgs_per_cam,
+            state,
+            action,
+            velocity,
+            effort,
+            phase_type_id,
+            arm_active_mask,
+        ) = load_raw_episode_data(ep_path)
         num_frames = state.shape[0]
         # add prompt
-        dir_path = os.path.dirname(ep_path)
-        json_Path = f"{dir_path}/instructions.json"
+        instructions_path = Path(ep_path).parent / "instructions.json"
 
-        with open(json_Path, 'r') as f_instr:
+        with instructions_path.open() as f_instr:
             instruction_dict = json.load(f_instr)
-            instructions = instruction_dict['instructions']
-            instruction = np.random.choice(instructions)
+            instructions = instruction_dict["instructions"]
+            if not instructions:
+                raise ValueError(f"episode has no instructions: {instructions_path}")
+            instruction = instructions[0]
         for i in range(num_frames):
+            task_prompt = instruction
+            if phase_type_id is not None:
+                task_prompt = phase_conditioned_prompt(
+                    instruction,
+                    async_phase=int(phase_type_id[i].item()) != 0,
+                )
             frame = {
                 "observation.state": state[i],
                 "action": action[i],
-                "task": instruction,
+                "task": task_prompt,
             }
+            if phase_type_id is not None:
+                phase_is_async = int(phase_type_id[i].item()) != 0
+                frame["observation.phase_one_hot"] = np.asarray(
+                    [not phase_is_async, phase_is_async],
+                    dtype=np.float32,
+                )
+                frame["observation.arm_active_mask"] = arm_active_mask[i]
 
             for camera, img_array in imgs_per_cam.items():
                 frame[f"observation.images.{camera}"] = img_array[i]
@@ -257,15 +316,16 @@ def port_aloha(
     if (HF_LEROBOT_HOME / repo_id).exists():
         shutil.rmtree(HF_LEROBOT_HOME / repo_id)
 
-    if not raw_dir.exists():
-        if raw_repo_id is None:
-            raise ValueError("raw_repo_id must be provided if raw_dir does not exist")
-        # download_raw(raw_dir, repo_id=raw_repo_id)
+    if not raw_dir.exists() and raw_repo_id is None:
+        raise ValueError("raw_repo_id must be provided if raw_dir does not exist")
     hdf5_files = []
     for root, _, files in os.walk(raw_dir):
-        for filename in fnmatch.filter(files, '*.hdf5'):
-            file_path = os.path.join(root, filename)
+        for filename in fnmatch.filter(files, "*.hdf5"):
+            file_path = Path(root) / filename
             hdf5_files.append(file_path)
+    hdf5_files.sort(key=lambda path: int(path.parent.name.rsplit("_", 1)[1]))
+    if not hdf5_files:
+        raise FileNotFoundError(f"no HDF5 episodes found under {raw_dir}")
 
     dataset = create_empty_dataset(
         repo_id,
@@ -273,6 +333,7 @@ def port_aloha(
         mode=mode,
         has_effort=has_effort(hdf5_files),
         has_velocity=has_velocity(hdf5_files),
+        has_phase_metadata=has_phase_metadata(hdf5_files),
         dataset_config=dataset_config,
     )
     dataset = populate_dataset(

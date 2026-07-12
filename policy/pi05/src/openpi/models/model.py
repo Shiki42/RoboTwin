@@ -93,6 +93,10 @@ class Observation(Generic[ArrayT]):
     image_masks: dict[str, at.Bool[ArrayT, "*b"]]
     # Low-dimensional robot state.
     state: at.Float[ArrayT, "*b s"]
+    # Optional per-action-dimension supervision mask used only during training.
+    action_mask: at.Float[ArrayT, "*b ah ad"] | None = None
+    # Canonical phase id: 0 for sync and 1 for async/wait.
+    phase_id: at.Int[ArrayT, "*b p"] | None = None
 
     # Tokenized prompt.
     tokenized_prompt: at.Int[ArrayT, "*b l"] | None = None
@@ -122,6 +126,8 @@ class Observation(Generic[ArrayT]):
             images=data["image"],
             image_masks=data["image_mask"],
             state=data["state"],
+            action_mask=data.get("action_mask"),
+            phase_id=data.get("phase_id"),
             tokenized_prompt=data.get("tokenized_prompt"),
             tokenized_prompt_mask=data.get("tokenized_prompt_mask"),
             token_ar_mask=data.get("token_ar_mask"),
@@ -201,6 +207,8 @@ def preprocess_observation(
         images=out_images,
         image_masks=out_masks,
         state=observation.state,
+        action_mask=observation.action_mask,
+        phase_id=observation.phase_id,
         tokenized_prompt=observation.tokenized_prompt,
         tokenized_prompt_mask=observation.tokenized_prompt_mask,
         token_ar_mask=observation.token_ar_mask,

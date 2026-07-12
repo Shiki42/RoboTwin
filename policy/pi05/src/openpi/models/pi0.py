@@ -16,6 +16,89 @@ from openpi.shared import array_typing as at
 logger = logging.getLogger("openpi")
 
 
+def reduce_action_loss(
+    squared_error: at.Float[at.Array, "*b ah ad"],
+    action_mask: at.Float[at.Array, "*b ah ad"] | None,
+) -> at.Float[at.Array, "*b ah"]:
+    if action_mask is None:
+        return jnp.mean(squared_error, axis=-1)
+    mask = jnp.asarray(action_mask, dtype=squared_error.dtype)
+    if mask.shape != squared_error.shape:
+        raise ValueError(f"action mask shape mismatch: {mask.shape} != {squared_error.shape}")
+    denominator = jnp.maximum(jnp.sum(mask, axis=-1), 1.0)
+    return jnp.sum(squared_error * mask, axis=-1) / denominator
+
+
+def gate_arm_observation(
+    observation: _model.Observation,
+    arm: str,
+) -> _model.Observation:
+    if arm not in ("left", "right"):
+        raise ValueError(f"unknown arm: {arm}")
+    if observation.phase_id is None:
+        raise ValueError("CASM-lite requires phase_id")
+    masked_wrist = "right_wrist_0_rgb" if arm == "left" else "left_wrist_0_rgb"
+    image_masks = dict(observation.image_masks)
+    sync_phase = observation.phase_id[..., 0] == 0
+    image_masks[masked_wrist] = jnp.logical_and(
+        image_masks[masked_wrist],
+        sync_phase,
+    )
+    return _model.Observation(
+        images=observation.images,
+        image_masks=image_masks,
+        state=observation.state,
+        action_mask=observation.action_mask,
+        phase_id=observation.phase_id,
+        tokenized_prompt=observation.tokenized_prompt,
+        tokenized_prompt_mask=observation.tokenized_prompt_mask,
+        token_ar_mask=observation.token_ar_mask,
+        token_loss_mask=observation.token_loss_mask,
+    )
+
+
+def concatenate_stream_observations(
+    left: _model.Observation,
+    right: _model.Observation,
+) -> _model.Observation:
+    return jax.tree.map(
+        lambda left_value, right_value: jnp.concatenate(
+            [left_value, right_value],
+            axis=0,
+        ),
+        left,
+        right,
+    )
+
+
+def casm_stream_action_inputs(
+    noisy_actions: _model.Actions,
+    phase_id: at.Int[at.Array, "*b p"],
+) -> _model.Actions:
+    indices = jnp.arange(noisy_actions.shape[-1])
+    sync_phase = (phase_id[..., :1] == 0)[..., None]
+    left = jnp.where(sync_phase, noisy_actions, noisy_actions * (indices < 7))
+    right = jnp.where(
+        sync_phase,
+        noisy_actions,
+        noisy_actions * ((indices >= 7) & (indices < 14)),
+    )
+    return jnp.concatenate([left, right], axis=0)
+
+
+def merge_casm_stream_vector_fields(
+    streams: _model.Actions,
+    batch_size: int,
+) -> _model.Actions:
+    left = streams[:batch_size]
+    right = streams[batch_size:]
+    indices = jnp.arange(streams.shape[-1])
+    return (
+        jnp.where(indices < 7, left, 0.0)
+        + jnp.where((indices >= 7) & (indices < 14), right, 0.0)
+    )
+
+
 def make_attn_mask(input_mask, mask_ar):
     """Adapted from big_vision.
 
@@ -67,6 +150,7 @@ class Pi0(_model.BaseModel):
     def __init__(self, config: pi0_config.Pi0Config, rngs: nnx.Rngs):
         super().__init__(config.action_dim, config.action_horizon, config.max_token_len)
         self.pi05 = config.pi05
+        self.casm_lite = config.casm_lite
         paligemma_config = _gemma.get_config(config.paligemma_variant)
         action_expert_config = _gemma.get_config(config.action_expert_variant)
         # TODO: rewrite gemma in NNX. For now, use bridge.
@@ -185,6 +269,57 @@ class Pi0(_model.BaseModel):
         ar_mask = jnp.array(ar_mask)
         return tokens, input_mask, ar_mask, adarms_cond
 
+    def _vector_field(
+        self,
+        observation: _model.Observation,
+        noisy_actions: _model.Actions,
+        time: at.Float[at.Array, " b"],
+    ) -> _model.Actions:
+        prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
+        suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(
+            observation,
+            noisy_actions,
+            time,
+        )
+        input_mask = jnp.concatenate([prefix_mask, suffix_mask], axis=1)
+        ar_mask = jnp.concatenate([prefix_ar_mask, suffix_ar_mask], axis=0)
+        attn_mask = make_attn_mask(input_mask, ar_mask)
+        positions = jnp.cumsum(input_mask, axis=1) - 1
+        (_, suffix_out), _ = self.PaliGemma.llm(
+            [prefix_tokens, suffix_tokens],
+            mask=attn_mask,
+            positions=positions,
+            adarms_cond=[None, adarms_cond],
+        )
+        return self.action_out_proj(suffix_out[:, -self.action_horizon :])
+
+    def _phase_gated_vector_field(
+        self,
+        observation: _model.Observation,
+        noisy_actions: _model.Actions,
+        time: at.Float[at.Array, " b"],
+    ) -> _model.Actions:
+        if not self.casm_lite:
+            return self._vector_field(observation, noisy_actions, time)
+        if observation.phase_id is None:
+            raise ValueError("CASM-lite requires phase_id")
+        batch_size = noisy_actions.shape[0]
+        stream_observation = concatenate_stream_observations(
+            gate_arm_observation(observation, "left"),
+            gate_arm_observation(observation, "right"),
+        )
+        stream_actions = casm_stream_action_inputs(
+            noisy_actions,
+            observation.phase_id,
+        )
+        stream_time = jnp.concatenate([time, time], axis=0)
+        streams = self._vector_field(
+            stream_observation,
+            stream_actions,
+            stream_time,
+        )
+        return merge_casm_stream_vector_fields(streams, batch_size)
+
     @override
     def compute_loss(
         self, rng: at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions, *, train: bool = False
@@ -198,20 +333,47 @@ class Pi0(_model.BaseModel):
         time_expanded = time[..., None, None]
         x_t = time_expanded * noise + (1 - time_expanded) * actions
         u_t = noise - actions
+        v_t = self._phase_gated_vector_field(observation, x_t, time)
 
-        # one big forward pass of prefix + suffix at once
+        return reduce_action_loss(jnp.square(v_t - u_t), observation.action_mask)
+
+    def _prepare_prefix(self, observation: _model.Observation):
         prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
-        suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(observation, x_t, time)
-        input_mask = jnp.concatenate([prefix_mask, suffix_mask], axis=1)
-        ar_mask = jnp.concatenate([prefix_ar_mask, suffix_ar_mask], axis=0)
-        attn_mask = make_attn_mask(input_mask, ar_mask)
-        positions = jnp.cumsum(input_mask, axis=1) - 1
-        (prefix_out, suffix_out), _ = self.PaliGemma.llm(
-            [prefix_tokens, suffix_tokens], mask=attn_mask, positions=positions, adarms_cond=[None, adarms_cond]
+        prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
+        positions = jnp.cumsum(prefix_mask, axis=1) - 1
+        _, kv_cache = self.PaliGemma.llm(
+            [prefix_tokens, None],
+            mask=prefix_attn_mask,
+            positions=positions,
         )
-        v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
+        return prefix_tokens, prefix_mask, kv_cache
 
-        return jnp.mean(jnp.square(v_t - u_t), axis=-1)
+    def _cached_vector_field(
+        self,
+        observation: _model.Observation,
+        noisy_actions: _model.Actions,
+        time: at.Float[at.Array, " b"],
+        prefix_tokens,
+        prefix_mask,
+        kv_cache,
+    ) -> _model.Actions:
+        suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(
+            observation,
+            noisy_actions,
+            time,
+        )
+        suffix_attn_mask = make_attn_mask(suffix_mask, suffix_ar_mask)
+        prefix_attn_mask = einops.repeat(prefix_mask, "b p -> b s p", s=suffix_tokens.shape[1])
+        full_attn_mask = jnp.concatenate([prefix_attn_mask, suffix_attn_mask], axis=-1)
+        positions = jnp.sum(prefix_mask, axis=-1)[:, None] + jnp.cumsum(suffix_mask, axis=-1) - 1
+        (_, suffix_out), _ = self.PaliGemma.llm(
+            [None, suffix_tokens],
+            mask=full_attn_mask,
+            positions=positions,
+            kv_cache=kv_cache,
+            adarms_cond=[None, adarms_cond],
+        )
+        return self.action_out_proj(suffix_out[:, -self.action_horizon :])
 
     @override
     def sample_actions(
@@ -223,56 +385,50 @@ class Pi0(_model.BaseModel):
         noise: at.Float[at.Array, "b ah ad"] | None = None,
     ) -> _model.Actions:
         observation = _model.preprocess_observation(None, observation, train=False)
-        # note that we use the convention more common in diffusion literature, where t=1 is noise and t=0 is the target
-        # distribution. yes, this is the opposite of the pi0 paper, and I'm sorry.
+        if self.casm_lite and observation.phase_id is None:
+            raise ValueError("CASM-lite requires phase_id")
         dt = -1.0 / num_steps
         batch_size = observation.state.shape[0]
         if noise is None:
             noise = jax.random.normal(rng, (batch_size, self.action_horizon, self.action_dim))
 
-        # first fill KV cache with a forward pass of the prefix
-        prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
-        prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
-        positions = jnp.cumsum(prefix_mask, axis=1) - 1
-        _, kv_cache = self.PaliGemma.llm([prefix_tokens, None], mask=prefix_attn_mask, positions=positions)
+        if self.casm_lite:
+            stream_observation = concatenate_stream_observations(
+                gate_arm_observation(observation, "left"),
+                gate_arm_observation(observation, "right"),
+            )
+            prefix = self._prepare_prefix(stream_observation)
+        else:
+            stream_observation = observation
+            prefix = self._prepare_prefix(observation)
 
         def step(carry):
             x_t, time = carry
-            suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(
-                observation, x_t, jnp.broadcast_to(time, batch_size)
-            )
-            # `suffix_attn_mask` is shape (b, suffix_len, suffix_len) indicating how the suffix tokens can attend to each
-            # other
-            suffix_attn_mask = make_attn_mask(suffix_mask, suffix_ar_mask)
-            # `prefix_attn_mask` is shape (b, suffix_len, prefix_len) indicating how the suffix tokens can attend to the
-            # prefix tokens
-            prefix_attn_mask = einops.repeat(prefix_mask, "b p -> b s p", s=suffix_tokens.shape[1])
-            # `combined_mask` is shape (b, suffix_len, prefix_len + suffix_len) indicating how the suffix tokens (which
-            # generate the queries) can attend to the full prefix + suffix sequence (which generates the keys and values)
-            full_attn_mask = jnp.concatenate([prefix_attn_mask, suffix_attn_mask], axis=-1)
-            assert full_attn_mask.shape == (
-                batch_size,
-                suffix_tokens.shape[1],
-                prefix_tokens.shape[1] + suffix_tokens.shape[1],
-            )
-            # `positions` is shape (b, suffix_len) indicating the positions of the suffix tokens
-            positions = jnp.sum(prefix_mask, axis=-1)[:, None] + jnp.cumsum(suffix_mask, axis=-1) - 1
-
-            (prefix_out, suffix_out), _ = self.PaliGemma.llm(
-                [None, suffix_tokens],
-                mask=full_attn_mask,
-                positions=positions,
-                kv_cache=kv_cache,
-                adarms_cond=[None, adarms_cond],
-            )
-            assert prefix_out is None
-            v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
-
+            batch_time = jnp.broadcast_to(time, batch_size)
+            if self.casm_lite:
+                stream_actions = casm_stream_action_inputs(
+                    x_t,
+                    observation.phase_id,
+                )
+                stream_time = jnp.concatenate([batch_time, batch_time], axis=0)
+                streams = self._cached_vector_field(
+                    stream_observation,
+                    stream_actions,
+                    stream_time,
+                    *prefix,
+                )
+                v_t = merge_casm_stream_vector_fields(streams, batch_size)
+            else:
+                v_t = self._cached_vector_field(
+                    observation,
+                    x_t,
+                    batch_time,
+                    *prefix,
+                )
             return x_t + dt * v_t, time + dt
 
         def cond(carry):
-            x_t, time = carry
-            # robust to floating-point error
+            _, time = carry
             return time >= -dt / 2
 
         x_0, _ = jax.lax.while_loop(cond, step, (noise, 1.0))

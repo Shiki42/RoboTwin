@@ -1,18 +1,19 @@
-import sys
 
+import argparse
+import json
 import os
+
+import cv2
 import h5py
 import numpy as np
-import pickle
-import cv2
-import argparse
-import yaml, json
+import yaml
+
+from openpi.training.robotwin_routing import scene_context_indices
 
 
-def load_hdf5(dataset_path):
+def load_hdf5(dataset_path, phase_metadata_path=None):
     if not os.path.isfile(dataset_path):
-        print(f"Dataset does not exist at \n{dataset_path}\n")
-        exit()
+        raise FileNotFoundError(f"dataset does not exist: {dataset_path}")
 
     with h5py.File(dataset_path, "r") as root:
         left_gripper, left_arm = (
@@ -23,37 +24,67 @@ def load_hdf5(dataset_path):
             root["/joint_action/right_gripper"][()],
             root["/joint_action/right_arm"][()],
         )
-        image_dict = dict()
-        for cam_name in root[f"/observation/"].keys():
+        image_dict = {}
+        for cam_name in root["/observation/"]:
             image_dict[cam_name] = root[f"/observation/{cam_name}/rgb"][()]
+        phase_type_id = None
+        arm_active_mask = None
+        if "parallelvla" in root:
+            if phase_metadata_path is not None:
+                raise ValueError("phase metadata is present both internally and externally")
+            phase_type_id = root["parallelvla/phase_type_id"][()]
+            arm_active_mask = root["parallelvla/arm_active_mask"][()]
 
-    return left_gripper, left_arm, right_gripper, right_arm, image_dict
+    if phase_metadata_path is not None:
+        if not os.path.isfile(phase_metadata_path):
+            raise FileNotFoundError(f"phase metadata does not exist: {phase_metadata_path}")
+        with np.load(phase_metadata_path) as metadata:
+            phase_type_id = metadata["phase_type_id"]
+            arm_active_mask = metadata["arm_active_mask"]
+
+    if phase_type_id is not None:
+        expected_frames = left_gripper.shape[0]
+        if phase_type_id.shape != (expected_frames,):
+            raise ValueError(f"invalid phase metadata shape: {phase_type_id.shape}")
+        if arm_active_mask.shape != (expected_frames, 2):
+            raise ValueError(f"invalid arm mask shape: {arm_active_mask.shape}")
+
+    return (
+        left_gripper,
+        left_arm,
+        right_gripper,
+        right_arm,
+        image_dict,
+        phase_type_id,
+        arm_active_mask,
+    )
 
 
 def images_encoding(imgs):
     encode_data = []
-    padded_data = []
     max_len = 0
     for i in range(len(imgs)):
         success, encoded_image = cv2.imencode(".jpg", imgs[i])
         jpeg_data = encoded_image.tobytes()
         encode_data.append(jpeg_data)
         max_len = max(max_len, len(jpeg_data))
-    # padding
-    for i in range(len(imgs)):
-        padded_data.append(encode_data[i].ljust(max_len, b"\0"))
     return encode_data, max_len
 
 
 def get_task_config(task_name):
-    with open(f"./task_config/{task_name}.yml", "r", encoding="utf-8") as f:
-        args = yaml.load(f.read(), Loader=yaml.FullLoader)
-    return args
+    with open(f"./task_config/{task_name}.yml", encoding="utf-8") as f:
+        return yaml.load(f.read(), Loader=yaml.FullLoader)
 
 
-def data_transform(path, episode_num, save_path):
+def data_transform(
+    path,
+    episode_num,
+    save_path,
+    phase_metadata_dir=None,
+    boundary_context_steps=20,
+):
     begin = 0
-    floders = os.listdir(path)
+    os.listdir(path)
     # assert episode_num <= len(floders), "data num not enough"
 
     if not os.path.exists(save_path):
@@ -63,7 +94,7 @@ def data_transform(path, episode_num, save_path):
 
         desc_type = "seen"
         instruction_data_path = os.path.join(path, "instructions", f"episode{i}.json")
-        with open(instruction_data_path, "r") as f_instr:
+        with open(instruction_data_path) as f_instr:
             instruction_dict = json.load(f_instr)
         instructions = instruction_dict[desc_type]
         save_instructions_json = {"instructions": instructions}
@@ -76,8 +107,30 @@ def data_transform(path, episode_num, save_path):
         ) as f:
             json.dump(save_instructions_json, f, indent=2)
 
-        left_gripper_all, left_arm_all, right_gripper_all, right_arm_all, image_dict = (load_hdf5(
-            os.path.join(path, "data", f"episode{i}.hdf5")))
+        (
+            left_gripper_all,
+            left_arm_all,
+            right_gripper_all,
+            right_arm_all,
+            image_dict,
+            phase_type_id,
+            arm_active_mask,
+        ) = load_hdf5(
+            os.path.join(path, "data", f"episode{i}.hdf5"),
+            (
+                os.path.join(phase_metadata_dir, f"episode{i}.npz")
+                if phase_metadata_dir is not None
+                else None
+            ),
+        )
+        sample_count = left_gripper_all.shape[0] - 1
+        main_camera_indices = np.arange(sample_count, dtype=np.int64)
+        if phase_type_id is not None:
+            main_camera_indices = scene_context_indices(
+                phase_type_id[1:],
+                boundary_context_steps,
+            )
+
         qpos = []
         actions = []
         cam_high = []
@@ -85,9 +138,7 @@ def data_transform(path, episode_num, save_path):
         cam_left_wrist = []
         left_arm_dim = []
         right_arm_dim = []
-
-        last_state = None
-        for j in range(0, left_gripper_all.shape[0]):
+        for j in range(left_gripper_all.shape[0]):
 
             left_gripper, left_arm, right_gripper, right_arm = (
                 left_gripper_all[j],
@@ -96,14 +147,14 @@ def data_transform(path, episode_num, save_path):
                 right_arm_all[j],
             )
 
-            state = np.array(left_arm.tolist() + [left_gripper] + right_arm.tolist() + [right_gripper])  # joints angle
+            state = np.array([*left_arm.tolist(), left_gripper, *right_arm.tolist(), right_gripper])  # joints angle
 
             state = state.astype(np.float32)
 
             if j != left_gripper_all.shape[0] - 1:
                 qpos.append(state)
 
-                camera_high_bits = image_dict["head_camera"][j]
+                camera_high_bits = image_dict["head_camera"][main_camera_indices[j]]
                 camera_high = cv2.imdecode(np.frombuffer(camera_high_bits, np.uint8), cv2.IMREAD_COLOR)
                 camera_high_resized = cv2.resize(camera_high, (640, 480))
                 cam_high.append(camera_high_resized)
@@ -132,6 +183,12 @@ def data_transform(path, episode_num, save_path):
             obs.create_dataset("qpos", data=np.array(qpos))
             obs.create_dataset("left_arm_dim", data=np.array(left_arm_dim))
             obs.create_dataset("right_arm_dim", data=np.array(right_arm_dim))
+            if phase_type_id is not None:
+                obs.create_dataset("phase_type_id", data=phase_type_id[1:])
+                obs.create_dataset("arm_active_mask", data=arm_active_mask[1:])
+                obs.attrs["main_camera_routing"] = "async_frozen_with_dynamic_boundary_context"
+                obs.attrs["boundary_context_steps"] = boundary_context_steps
+                obs.attrs["wrist_camera_routing"] = "native_dynamic_per_arm"
             image = obs.create_group("images")
             cam_high_enc, len_high = images_encoding(cam_high)
             cam_right_wrist_enc, len_right = images_encoding(cam_right_wrist)
@@ -161,6 +218,9 @@ if __name__ == "__main__":
         default=50,
         help="Number of episodes to process (e.g., 50)",
     )
+    parser.add_argument("--phase-metadata-dir")
+    parser.add_argument("--target-dir")
+    parser.add_argument("--boundary-context-steps", type=int, default=20)
     args = parser.parse_args()
 
     task_name = args.task_name
@@ -172,9 +232,11 @@ if __name__ == "__main__":
     begin = 0
     print(f'read data from path:{os.path.join("data", load_dir)}')
 
-    target_dir = f"processed_data/{task_name}-{setting}-{expert_data_num}"
+    target_dir = args.target_dir or f"processed_data/{task_name}-{setting}-{expert_data_num}"
     begin = data_transform(
         load_dir,
         expert_data_num,
         target_dir,
+        phase_metadata_dir=args.phase_metadata_dir,
+        boundary_context_steps=args.boundary_context_steps,
     )

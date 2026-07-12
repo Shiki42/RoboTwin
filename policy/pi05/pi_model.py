@@ -3,48 +3,73 @@
 """
 #!/usr/bin/python3
 """
-import json
-import sys
-import jax
+
+from pathlib import Path
+
 import numpy as np
-from openpi.models import model as _model
-from openpi.policies import aloha_policy
-from openpi.policies import policy_config as _policy_config
-from openpi.shared import download
-from openpi.training import config as _config
-from openpi.training import data_loader as _data_loader
 
-import cv2
-from PIL import Image
-
-from openpi.models import model as _model
 from openpi.policies import policy_config as _policy_config
-from openpi.shared import download
 from openpi.training import config as _config
-from openpi.training import data_loader as _data_loader
-import os
+from openpi.training.robotwin_routing import EpisodeStartSceneContextRouter
+from openpi.training.robotwin_routing import RolloutActivityMetrics
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def checkpoint_asset_id(assets_dir: str | Path) -> str:
+    assets_path = Path(assets_dir)
+    norm_stats_paths = sorted(assets_path.rglob("norm_stats.json"))
+    if len(norm_stats_paths) != 1:
+        raise ValueError(f"expected exactly one norm_stats.json under {assets_path}, " f"found {len(norm_stats_paths)}")
+    return norm_stats_paths[0].parent.relative_to(assets_path).as_posix()
+
 
 class PI0:
-
-    def __init__(self, train_config_name, model_name, checkpoint_id, pi0_step):
+    def __init__(
+        self,
+        train_config_name,
+        model_name,
+        checkpoint_id,
+        pi0_step,
+        *,
+        async_scene_context_steps=0,
+        sync_action_chunk_steps=10,
+        phase_prompt_conditioning=True,
+        boundary_context_steps=20,
+    ):
         self.train_config_name = train_config_name
         self.model_name = model_name
         self.checkpoint_id = checkpoint_id
 
-        specified_path = f"policy/pi05/checkpoints/{self.train_config_name}/{self.model_name}/{self.checkpoint_id}/assets/"
-        entries = os.listdir(specified_path)
-        assets_id = entries[0]
+        checkpoint_dir = (
+            _REPO_ROOT
+            / "policy"
+            / "pi05"
+            / "checkpoints"
+            / self.train_config_name
+            / self.model_name
+            / str(self.checkpoint_id)
+        )
+        assets_id = checkpoint_asset_id(checkpoint_dir / "assets")
 
         config = _config.get_config(self.train_config_name)
         self.policy = _policy_config.create_trained_policy(
             config,
-            f"policy/pi05/checkpoints/{self.train_config_name}/{self.model_name}/{self.checkpoint_id}",
+            checkpoint_dir,
             robotwin_repo_id=assets_id,
-            )
+        )
         print("loading model success!")
         self.img_size = (224, 224)
         self.observation_window = None
         self.pi0_step = pi0_step
+        self.sync_action_chunk_steps = sync_action_chunk_steps
+        self.phase_prompt_conditioning = phase_prompt_conditioning
+        self.main_camera_router = EpisodeStartSceneContextRouter(
+            async_scene_context_steps,
+            boundary_context_steps,
+        )
+        self.base_instruction = None
+        self.activity_metrics = RolloutActivityMetrics()
 
     # set img_size
     def set_img_size(self, img_size):
@@ -52,36 +77,67 @@ class PI0:
 
     # set language randomly
     def set_language(self, instruction):
-        self.instruction = instruction
-        print(f"successfully set instruction:{instruction}")
+        self.base_instruction = instruction
+        print(f"successfully set instruction:{self.phase_conditioned_instruction}")
+
+    @property
+    def phase_conditioned_instruction(self):
+        if self.base_instruction is None:
+            return None
+        if not self.phase_prompt_conditioning:
+            return self.base_instruction
+        return self.main_camera_router.phase_conditioned_prompt(self.base_instruction)
+
+    def execution_steps(self):
+        return self.main_camera_router.execution_steps(self.pi0_step, self.sync_action_chunk_steps)
 
     # Update the observation window buffer
-    def update_observation_window(self, img_arr, state):
-        img_front, img_right, img_left, puppet_arm = (
-            img_arr[0],
-            img_arr[1],
-            img_arr[2],
-            state,
-        )
+    def update_observation_window(self, img_arr, state, *, action_executed=False):
+        img_front, img_right, img_left = img_arr
+        if action_executed:
+            self.main_camera_router.advance()
+        img_front = self.main_camera_router.route(img_front)
         img_front = np.transpose(img_front, (2, 0, 1))
         img_right = np.transpose(img_right, (2, 0, 1))
         img_left = np.transpose(img_left, (2, 0, 1))
 
         self.observation_window = {
             "state": state,
+            "phase_id": np.asarray(
+                [1 if self.main_camera_router.async_phase else 0],
+                dtype=np.int32,
+            ),
             "images": {
                 "cam_high": img_front,
                 "cam_left_wrist": img_left,
                 "cam_right_wrist": img_right,
             },
-            "prompt": self.instruction,
+            "prompt": self.phase_conditioned_instruction,
         }
+
+    def record_chunk(self, length):
+        self.activity_metrics.record_chunk(
+            async_phase=self.main_camera_router.async_phase,
+            length=length,
+        )
+
+    def record_action(self, action, state):
+        self.activity_metrics.record_action(
+            action,
+            state,
+            async_phase=self.main_camera_router.async_phase,
+        )
+
+    def rollout_metrics(self):
+        return self.activity_metrics.summary()
 
     def get_action(self):
         assert self.observation_window is not None, "update observation_window first!"
         return self.policy.infer(self.observation_window)["actions"]
 
     def reset_obsrvationwindows(self):
-        self.instruction = None
+        self.base_instruction = None
         self.observation_window = None
+        self.main_camera_router.reset()
+        self.activity_metrics.reset()
         print("successfully unset obs and language intruction")

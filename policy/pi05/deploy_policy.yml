@@ -11,3 +11,9 @@ train_config_name: null
 model_name: null
 checkpoint_id: 30000
 pi0_step: 50
+async_scene_context_steps: 0
+sync_action_chunk_steps: 10
+phase_prompt_conditioning: 1
+boundary_context_steps: 20
+remote_policy_host: 127.0.0.1
+remote_policy_port: 0
