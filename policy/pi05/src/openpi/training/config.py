@@ -610,7 +610,7 @@ def _putcab_casm_config(
             "gs://openpi-assets/checkpoints/pi05_base/params",
             missing_regex=".*(lora|cooperation_gate|cross_attention).*",
         ),
-        batch_size=4,
+        batch_size=1,
         num_workers=0,
         num_train_steps=train_steps,
         save_interval=save_interval,
@@ -740,8 +740,8 @@ _CONFIGS = [
         save_interval=1_000,
     ),
     _putcab_casm_config(
-        "pi05_putcab_casm_soft_mixture_lora",
-        "soft_mixture",
+        "pi05_putcab_casm_hard_gate_lora",
+        "hard_gate",
     ),
     _putcab_casm_config(
         "pi05_putcab_casm_gated_cross_attention_lora",

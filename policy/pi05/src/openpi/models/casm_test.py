@@ -32,13 +32,9 @@ def test_coordination_target_and_usefulness_target():
     assert target[1] < 0.5
 
 
-def test_soft_mixture_gate_endpoints_and_gradient():
-    factorized = jnp.zeros((2, 3, 4))
-    joint = jnp.ones((2, 3, 4))
-    assert np.array_equal(casm.mix_vector_fields(factorized, joint, jnp.zeros(2)), factorized)
-    assert np.array_equal(casm.mix_vector_fields(factorized, joint, jnp.ones(2)), joint)
-    gradient = jax.grad(lambda gate: jnp.sum(casm.mix_vector_fields(factorized, joint, gate)))(jnp.full(2, 0.5))
-    assert np.all(np.asarray(gradient) > 0)
+def test_hard_gate_route_threshold():
+    selected = casm.select_joint_route(jnp.array([0.49, 0.5]))
+    assert selected.tolist() == [False, True]
 
 
 def test_hard_mask_keeps_joint_context_only_for_sync_samples():
@@ -70,6 +66,10 @@ def test_gate_and_cross_attention_shapes_and_zero_gate_identity():
     assert np.allclose(probability, 0.5)
 
     module = casm.GatedBidirectionalCrossAttention(16, 4, rngs=nnx.Rngs(1))
+    second_module = casm.GatedBidirectionalCrossAttention(16, 4, rngs=nnx.Rngs(2))
+    assert module.left_output.kernel_init is second_module.left_output.kernel_init
+    assert module.right_output.kernel_init is second_module.right_output.kernel_init
+
     left = jax.random.normal(jax.random.key(2), (2, 5, 16))
     right = jax.random.normal(jax.random.key(3), (2, 5, 16))
     left_off, right_off = module(left, right, jnp.zeros(2))

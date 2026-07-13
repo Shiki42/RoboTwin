@@ -199,7 +199,7 @@ def test_merge_casm_stream_vector_fields_selects_arm_outputs():
 @pytest.mark.parametrize(
     "name",
     [
-        "pi05_putcab_casm_soft_mixture_lora",
+        "pi05_putcab_casm_hard_gate_lora",
         "pi05_putcab_casm_gated_cross_attention_lora",
         "pi05_putcab_casm_usefulness_gate_lora",
     ],
@@ -208,6 +208,7 @@ def test_casm_configs_use_public_pi05_base_weights(name):
     config = _config.get_config(name)
 
     assert config.data.base_config.video_backend == "pyav"
+    assert config.batch_size == 1
     assert config.weight_loader.params_path == "gs://openpi-assets/checkpoints/pi05_base/params"
     assert config.data.repo_id == (
         "Shiki42/parallelvla_putcab_official_clean50_native_path_retimed_paired_v2"

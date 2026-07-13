@@ -50,12 +50,13 @@ def test_pi0_all_lora():
 
 
 def _casm_training_shape(config: _pi0_config.Pi0Config):
+    batch_size = 1 if config.casm_mode == "hard_gate" else 2
     pi0 = config.create(jax.random.key(0))
-    observation = config.fake_obs(2).replace(
-        phase_id=jnp.array([[1], [0]], dtype=jnp.int32),
-        action_mask=jnp.ones((2, config.action_horizon, config.action_dim)),
+    observation = config.fake_obs(batch_size).replace(
+        phase_id=jnp.array([[1]], dtype=jnp.int32) if batch_size == 1 else jnp.array([[1], [0]], dtype=jnp.int32),
+        action_mask=jnp.ones((batch_size, config.action_horizon, config.action_dim)),
     )
-    return pi0.compute_loss(jax.random.key(1), observation, config.fake_act(2))
+    return pi0.compute_loss(jax.random.key(1), observation, config.fake_act(batch_size))
 
 
 def _casm_sampling_shape(config: _pi0_config.Pi0Config):
@@ -72,10 +73,11 @@ def _casm_sampling_shape(config: _pi0_config.Pi0Config):
 
 
 def test_casm_modes_support_training_and_sampling_shapes():
-    modes = ("hard_mask", "soft_mixture", "gated_cross_attention", "usefulness_gate")
+    modes = ("hard_mask", "hard_gate", "gated_cross_attention", "usefulness_gate")
     for mode in modes:
         config = _pi0_config.Pi0Config(pi05=True, casm_mode=mode)
         training = nnx.eval_shape(functools.partial(_casm_training_shape, config))
         sampling = nnx.eval_shape(functools.partial(_casm_sampling_shape, config))
-        assert training.shape == (2, config.action_horizon)
+        expected_batch_size = 1 if mode == "hard_gate" else 2
+        assert training.shape == (expected_batch_size, config.action_horizon)
         assert sampling.shape == (1, config.action_horizon, config.action_dim)

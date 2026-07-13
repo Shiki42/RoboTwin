@@ -12,13 +12,14 @@ from openpi.shared import array_typing as at
 CasmMode = Literal[
     "none",
     "hard_mask",
-    "soft_mixture",
+    "hard_gate",
     "gated_cross_attention",
     "usefulness_gate",
 ]
-LEARNED_GATE_MODES = frozenset({"soft_mixture", "gated_cross_attention", "usefulness_gate"})
+LEARNED_GATE_MODES = frozenset({"hard_gate", "gated_cross_attention", "usefulness_gate"})
 CROSS_ATTENTION_MODES = frozenset({"gated_cross_attention", "usefulness_gate"})
 VALID_CASM_MODES = frozenset({"none", "hard_mask", *LEARNED_GATE_MODES})
+CROSS_ATTENTION_OUTPUT_INIT = jax.nn.initializers.normal(1e-3)
 
 
 def coordination_target(phase_id: at.Int[at.Array, "*b p"]) -> at.Float[at.Array, "*b"]:
@@ -44,15 +45,8 @@ def usefulness_target(
     return jax.lax.stop_gradient(jax.nn.sigmoid(advantage))
 
 
-def mix_vector_fields(
-    factorized: _model.Actions,
-    joint: _model.Actions,
-    gate: at.Float[at.Array, "*b"],
-) -> _model.Actions:
-    if factorized.shape != joint.shape:
-        raise ValueError(f"vector-field shape mismatch: {factorized.shape} != {joint.shape}")
-    weight = gate[..., None, None].astype(factorized.dtype)
-    return factorized + weight * (joint - factorized)
+def select_joint_route(gate: at.Float[at.Array, "*b"]) -> at.Bool[at.Array, "*b"]:
+    return gate >= 0.5
 
 
 def isolate_arm_observation(
@@ -155,9 +149,8 @@ class GatedBidirectionalCrossAttention(nnx.Module):
         self.right_key = nnx.Linear(width, attention_dim, use_bias=False, rngs=rngs)
         self.left_value = nnx.Linear(width, attention_dim, use_bias=False, rngs=rngs)
         self.right_value = nnx.Linear(width, attention_dim, use_bias=False, rngs=rngs)
-        output_init = jax.nn.initializers.normal(1e-3)
-        self.left_output = nnx.Linear(attention_dim, width, kernel_init=output_init, rngs=rngs)
-        self.right_output = nnx.Linear(attention_dim, width, kernel_init=output_init, rngs=rngs)
+        self.left_output = nnx.Linear(attention_dim, width, kernel_init=CROSS_ATTENTION_OUTPUT_INIT, rngs=rngs)
+        self.right_output = nnx.Linear(attention_dim, width, kernel_init=CROSS_ATTENTION_OUTPUT_INIT, rngs=rngs)
 
     def _message(self, query, key, value):
         scores = jnp.einsum("bhd,bkd->bhk", query, key) / self.attention_dim**0.5

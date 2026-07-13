@@ -1,6 +1,8 @@
 import sys
 import os
 import subprocess
+import json
+import time
 
 sys.path.append("./")
 sys.path.append(f"./policy")
@@ -23,6 +25,14 @@ from generate_episode_instructions import *
 
 current_file_path = os.path.abspath(__file__)
 parent_directory = os.path.dirname(current_file_path)
+
+
+def compose_instruction(instruction, prefix=""):
+    instruction = str(instruction).strip()
+    prefix = str(prefix or "").strip()
+    if not prefix:
+        return instruction
+    return f"{prefix} {instruction}"
 
 
 def class_decorator(task_name):
@@ -77,6 +87,16 @@ def main(usr_args):
 
     with open(f"./task_config/{task_config}.yml", "r", encoding="utf-8") as f:
         args = yaml.load(f.read(), Loader=yaml.FullLoader)
+
+    for runtime_key in (
+        "eval_video_log",
+        "render_freq",
+        "clear_cache_freq",
+        "expert_check",
+        "instruction_prefix",
+    ):
+        if runtime_key in usr_args:
+            args[runtime_key] = usr_args[runtime_key]
 
     args['task_name'] = task_name
     args["task_config"] = task_config
@@ -157,9 +177,10 @@ def main(usr_args):
 
     seed = usr_args["seed"]
 
-    st_seed = 100000 * (1 + seed)
+    st_seed = int(usr_args.get("start_seed", 100000 * (1 + seed)))
     suc_nums = []
-    test_num = 100
+    test_num = int(usr_args.get("test_num", 100))
+    start_episode_index = int(usr_args.get("start_episode_index", 0))
     topk = 1
 
     model = get_model(usr_args)
@@ -169,8 +190,10 @@ def main(usr_args):
                                    model,
                                    st_seed,
                                    test_num=test_num,
+                                   start_episode_index=start_episode_index,
                                    video_size=video_size,
-                                   instruction_type=instruction_type)
+                                   instruction_type=instruction_type,
+                                   save_dir=save_dir)
     suc_nums.append(suc_num)
 
     topk_success_rate = sorted(suc_nums, reverse=True)[:topk]
@@ -192,16 +215,18 @@ def eval_policy(task_name,
                 model,
                 st_seed,
                 test_num=100,
+                start_episode_index=0,
                 video_size=None,
-                instruction_type=None):
+                instruction_type=None,
+                save_dir=None):
     print(f"\033[34mTask Name: {args['task_name']}\033[0m")
     print(f"\033[34mPolicy Name: {args['policy_name']}\033[0m")
 
-    expert_check = True
+    expert_check = bool(args.get("expert_check", True))
     TASK_ENV.suc = 0
-    TASK_ENV.test_num = 0
+    TASK_ENV.test_num = int(start_episode_index)
 
-    now_id = 0
+    now_id = int(start_episode_index)
     succ_seed = 0
     suc_test_seed_list = []
 
@@ -254,9 +279,15 @@ def eval_policy(task_name,
         args["render_freq"] = render_freq
 
         TASK_ENV.setup_demo(now_ep_num=now_id, seed=now_seed, is_test=True, **args)
+        if not expert_check:
+            episode_info = TASK_ENV.prepare_episode_metadata()
         episode_info_list = [episode_info["info"]]
         results = generate_episode_descriptions(args["task_name"], episode_info_list, test_num)
-        instruction = np.random.choice(results[0][instruction_type])
+        instruction = compose_instruction(
+            np.random.choice(results[0][instruction_type]),
+            args.get("instruction_prefix", ""),
+        )
+        print(f"Evaluation instruction: {instruction}")
         TASK_ENV.set_instruction(instruction=instruction)  # set language instruction
 
         if TASK_ENV.eval_video_path is not None:
@@ -289,6 +320,10 @@ def eval_policy(task_name,
             TASK_ENV._set_eval_video_ffmpeg(ffmpeg)
 
         succ = False
+        episode_start_time = time.time()
+        set_episode_seed = getattr(model, "set_episode_seed", None)
+        if set_episode_seed is not None:
+            set_episode_seed(now_seed)
         reset_func(model)
         while TASK_ENV.take_action_cnt < TASK_ENV.step_lim:
             observation = TASK_ENV.get_obs()
@@ -299,6 +334,34 @@ def eval_policy(task_name,
         # task_total_reward += TASK_ENV.episode_score
         if TASK_ENV.eval_video_path is not None:
             TASK_ENV._del_eval_video_ffmpeg()
+
+        episode_steps = int(TASK_ENV.take_action_cnt)
+        episode_elapsed_sec = time.time() - episode_start_time
+
+        if save_dir is not None:
+            metrics_path = Path(save_dir) / "rollout_metrics.jsonl"
+            rollout_metrics = {
+                    "task_name": task_name,
+                    "policy_name": args["policy_name"],
+                    "task_config": args["task_config"],
+                    "ckpt_setting": args["ckpt_setting"],
+                    "seed": int(now_seed),
+                    "episode_index": int(TASK_ENV.test_num),
+                    "success": bool(succ),
+                    "episode_steps": episode_steps,
+                    "elapsed_sec": episode_elapsed_sec,
+                    "instruction": instruction,
+                }
+            activity_summary = getattr(model, "rollout_metrics", None)
+            if activity_summary is not None:
+                rollout_metrics.update(activity_summary())
+            with open(metrics_path, "a", encoding="utf-8") as metrics_file:
+                metrics_file.write(json.dumps(rollout_metrics) + "\n")
+
+        print(
+            f"Episode metrics: seed={now_seed}, success={succ}, "
+            f"steps={episode_steps}, elapsed_sec={episode_elapsed_sec:.3f}"
+        )
 
         if succ:
             TASK_ENV.suc += 1

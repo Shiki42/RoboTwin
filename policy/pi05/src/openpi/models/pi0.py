@@ -317,6 +317,25 @@ class Pi0(_model.BaseModel):
             return factorized, None, None
 
         gate = self._cooperation_probability(observation)
+        if self.casm_mode == "hard_gate":
+            if observation.phase_id is None:
+                raise ValueError("hard-gate CASM requires phase_id during training")
+            if noisy_actions.shape[0] != 1:
+                raise ValueError("hard-gate CASM requires batch size one during training")
+            use_joint = casm.coordination_target(observation.phase_id)[0] >= 0.5
+            predicted = jax.lax.cond(
+                use_joint,
+                lambda _: self._vector_field(observation, noisy_actions, time),
+                lambda _: self._factorized_vector_field(
+                    observation,
+                    noisy_actions,
+                    time,
+                    hard_mask=False,
+                ),
+                operand=None,
+            )
+            return predicted, gate, None
+
         left_hidden, right_hidden = self._stream_hidden_fields(
             observation,
             noisy_actions,
@@ -328,10 +347,6 @@ class Pi0(_model.BaseModel):
             right_hidden,
             noisy_actions.shape[0],
         )
-        if self.casm_mode == "soft_mixture":
-            joint = self._vector_field(observation, noisy_actions, time)
-            return casm.mix_vector_fields(factorized, joint, gate), gate, None
-
         predicted = self._cross_attention_fields(
             left_hidden,
             right_hidden,
@@ -445,6 +460,85 @@ class Pi0(_model.BaseModel):
         hidden = self._cached_hidden_field(observation, noisy_actions, time, *prefix)
         return self.action_out_proj(hidden)
 
+    def _integrate_actions(self, noise, num_steps, vector_field) -> _model.Actions:
+        dt = -1.0 / num_steps
+        batch_size = noise.shape[0]
+
+        def step(carry):
+            x_t, time = carry
+            batch_time = jnp.broadcast_to(time, batch_size)
+            v_t = vector_field(x_t, batch_time)
+            return x_t + dt * v_t, time + dt
+
+        def cond(carry):
+            _, time = carry
+            return time >= -dt / 2
+
+        x_0, _ = jax.lax.while_loop(cond, step, (noise, 1.0))
+        return x_0
+
+    def _cached_factorized_vector_field(
+        self,
+        stream_observation: _model.Observation,
+        x_t: _model.Actions,
+        batch_time: at.Float[at.Array, " b"],
+        stream_prefix,
+    ) -> _model.Actions:
+        batch_size = x_t.shape[0]
+        stream_actions = casm.isolated_stream_action_inputs(x_t)
+        stream_time = jnp.concatenate([batch_time, batch_time], axis=0)
+        stream_hidden = self._cached_hidden_field(
+            stream_observation,
+            stream_actions,
+            stream_time,
+            *stream_prefix,
+        )
+        left_hidden = stream_hidden[:batch_size]
+        right_hidden = stream_hidden[batch_size:]
+        return self._project_stream_hidden(left_hidden, right_hidden, batch_size)
+
+    def _sample_hard_gate_actions(
+        self,
+        observation: _model.Observation,
+        noise: _model.Actions,
+        num_steps: int | at.Int[at.Array, ""],
+    ) -> _model.Actions:
+        if observation.state.shape[0] != 1:
+            raise ValueError("hard-gate CASM requires batch size one during sampling")
+        gate = self._cooperation_probability(observation)
+
+        def joint_route(_):
+            joint_prefix = self._prepare_prefix(observation)
+            return self._integrate_actions(
+                noise,
+                num_steps,
+                lambda x_t, batch_time: self._cached_vector_field(
+                    observation,
+                    x_t,
+                    batch_time,
+                    *joint_prefix,
+                ),
+            )
+
+        def factorized_route(_):
+            stream_observation = casm.concatenate_observations(
+                casm.isolate_arm_observation(observation, "left"),
+                casm.isolate_arm_observation(observation, "right"),
+            )
+            stream_prefix = self._prepare_prefix(stream_observation)
+            return self._integrate_actions(
+                noise,
+                num_steps,
+                lambda x_t, batch_time: self._cached_factorized_vector_field(
+                    stream_observation,
+                    x_t,
+                    batch_time,
+                    stream_prefix,
+                ),
+            )
+
+        return jax.lax.cond(casm.select_joint_route(gate)[0], joint_route, factorized_route, operand=None)
+
     @override
     def sample_actions(
         self,
@@ -461,14 +555,16 @@ class Pi0(_model.BaseModel):
         batch_size = observation.state.shape[0]
         if noise is None:
             noise = jax.random.normal(rng, (batch_size, self.action_horizon, self.action_dim))
+        if self.casm_mode == "hard_gate":
+            return self._sample_hard_gate_actions(observation, noise, num_steps)
 
         joint_prefix = None
         stream_prefix = None
         stream_observation = None
         gate = None
-        if self.casm_mode in casm.LEARNED_GATE_MODES:
+        if self.casm_mode in casm.CROSS_ATTENTION_MODES:
             gate = self._cooperation_probability(observation)
-        if self.casm_mode in {"hard_mask", *casm.LEARNED_GATE_MODES}:
+        if self.casm_mode in {"hard_mask", *casm.CROSS_ATTENTION_MODES}:
             observation_fn = (
                 casm.hard_mask_arm_observation if self.casm_mode == "hard_mask" else casm.isolate_arm_observation
             )
@@ -477,7 +573,7 @@ class Pi0(_model.BaseModel):
                 observation_fn(observation, "right"),
             )
             stream_prefix = self._prepare_prefix(stream_observation)
-        if self.casm_mode in {"none", "soft_mixture"}:
+        if self.casm_mode == "none":
             joint_prefix = self._prepare_prefix(observation)
 
         def step(carry):
@@ -508,14 +604,6 @@ class Pi0(_model.BaseModel):
             factorized = self._project_stream_hidden(left_hidden, right_hidden, batch_size)
             if self.casm_mode == "hard_mask":
                 v_t = factorized
-            elif self.casm_mode == "soft_mixture":
-                joint = self._cached_vector_field(
-                    observation,
-                    x_t,
-                    batch_time,
-                    *joint_prefix,
-                )
-                v_t = casm.mix_vector_fields(factorized, joint, gate)
             else:
                 v_t = self._cross_attention_fields(
                     left_hidden,
