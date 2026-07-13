@@ -16,6 +16,7 @@ from .utils import *
 import math
 from .robot import Robot
 from .camera import Camera
+from .rendering import resolve_ray_tracing_denoiser
 
 from copy import deepcopy
 import subprocess
@@ -68,6 +69,9 @@ class Base_Task(gym.Env):
         self.save_data = kwags.get("save_data", False)
         self.dual_arm = kwags.get("dual_arm", True)
         self.eval_mode = kwags.get("eval_mode", False)
+        self.ray_tracing_denoiser = resolve_ray_tracing_denoiser(
+            kwags.get("ray_tracing_denoiser")
+        )
 
         self.need_topp = True  # TODO
 
@@ -214,7 +218,7 @@ class Base_Task(gym.Env):
         sapien.render.set_camera_shader_dir("rt")
         sapien.render.set_ray_tracing_samples_per_pixel(32)
         sapien.render.set_ray_tracing_path_depth(8)
-        sapien.render.set_ray_tracing_denoiser("oidn")
+        sapien.render.set_ray_tracing_denoiser(self.ray_tracing_denoiser)
 
         # declare sapien scene
         scene_config = sapien.SceneConfig()
