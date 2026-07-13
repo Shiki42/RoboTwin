@@ -82,3 +82,32 @@ def test_with_real_dataset():
 
     for _, actions in batches:
         assert actions.shape == (config.batch_size, config.model.action_horizon, config.model.action_dim)
+
+
+def test_create_torch_dataset_passes_explicit_video_backend(monkeypatch):
+    model_config = pi0_config.Pi0Config(action_dim=24, action_horizon=2, max_token_len=48)
+    captured = {}
+    sentinel = object()
+
+    class DatasetMetadata:
+        fps = 10
+
+    monkeypatch.setattr(
+        _data_loader.lerobot_dataset,
+        "LeRobotDatasetMetadata",
+        lambda repo_id: DatasetMetadata(),
+    )
+
+    def create_dataset(repo_id, **kwargs):
+        captured["repo_id"] = repo_id
+        captured.update(kwargs)
+        return sentinel
+
+    monkeypatch.setattr(_data_loader.lerobot_dataset, "LeRobotDataset", create_dataset)
+    data_config = _config.DataConfig(repo_id="owner/dataset", video_backend="pyav")
+
+    dataset = _data_loader.create_torch_dataset(data_config, 2, model_config)
+
+    assert dataset is sentinel
+    assert captured["repo_id"] == "owner/dataset"
+    assert captured["video_backend"] == "pyav"

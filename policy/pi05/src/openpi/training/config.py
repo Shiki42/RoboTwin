@@ -90,6 +90,9 @@ class DataConfig:
     # If true, will use the LeRobot dataset task to define the prompt.
     prompt_from_task: bool = False
 
+    # Explicit LeRobot video decoder. None uses the platform default.
+    video_backend: Literal["torchcodec", "pyav"] | None = None
+
     # Only used for RLDS data loader (ie currently only used for DROID).
     rlds_data_dir: str | None = None
     # Action space for DROID dataset.
@@ -575,7 +578,7 @@ def _putcab_casm_data(repo_id: str) -> LeRobotAlohaDataConfig:
                 "prompt": "prompt",
             })
         ]),
-        base_config=DataConfig(prompt_from_task=True),
+        base_config=DataConfig(prompt_from_task=True, video_backend="pyav"),
         action_sequence_keys=(
             "action",
             "observation.arm_active_mask",

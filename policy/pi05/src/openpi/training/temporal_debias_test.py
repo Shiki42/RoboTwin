@@ -207,6 +207,7 @@ def test_merge_casm_stream_vector_fields_selects_arm_outputs():
 def test_casm_configs_use_public_pi05_base_weights(name):
     config = _config.get_config(name)
 
+    assert config.data.base_config.video_backend == "pyav"
     assert config.weight_loader.params_path == "gs://openpi-assets/checkpoints/pi05_base/params"
     assert config.data.repo_id == (
         "Shiki42/parallelvla_putcab_official_clean50_native_path_retimed_paired_v2"
