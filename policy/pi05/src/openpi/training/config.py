@@ -588,7 +588,7 @@ def _putcab_casm_config(
     name: str,
     mode: casm.CasmMode,
     *,
-    repo_id: str = "Shiki42/parallelvla_putcab_official_clean50_retimed_paired_v1",
+    repo_id: str = "Shiki42/parallelvla_putcab_official_clean50_native_path_retimed_paired_v2",
     train_steps: int = 20_000,
     save_interval: int = 5_000,
 ) -> TrainConfig:
