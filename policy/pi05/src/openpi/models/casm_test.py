@@ -69,6 +69,9 @@ def test_gate_and_cross_attention_shapes_and_zero_gate_identity():
     second_module = casm.GatedBidirectionalCrossAttention(16, 4, rngs=nnx.Rngs(2))
     assert module.left_output.kernel_init is second_module.left_output.kernel_init
     assert module.right_output.kernel_init is second_module.right_output.kernel_init
+    state = nnx.state(module).to_pure_dict()
+    for name in ("left_query", "right_query", "left_key", "right_key", "left_value", "right_value"):
+        assert set(state[name]) == {"kernel"}
 
     left = jax.random.normal(jax.random.key(2), (2, 5, 16))
     right = jax.random.normal(jax.random.key(3), (2, 5, 16))

@@ -138,17 +138,38 @@ class CooperationGate(nnx.Module):
         return jax.nn.sigmoid(self.output(nnx.swish(self.input(state)))[..., 0])
 
 
+class BiasFreeLinear(nnx.Module):
+    """Linear projection whose parameter tree contains only the kernel."""
+
+    def __init__(self, in_features: int, out_features: int, *, rngs: nnx.Rngs):
+        self.kernel = nnx.Param(
+            jax.nn.initializers.lecun_normal()(
+                rngs.params(),
+                (in_features, out_features),
+                jnp.float32,
+            )
+        )
+
+    def __call__(self, inputs: at.Float[at.Array, "... d"]) -> at.Float[at.Array, "... f"]:
+        return jnp.einsum(
+            "...d,df->...f",
+            inputs,
+            self.kernel.value,
+            precision=jax.lax.Precision.DEFAULT,
+        )
+
+
 class GatedBidirectionalCrossAttention(nnx.Module):
     def __init__(self, width: int, attention_dim: int, *, rngs: nnx.Rngs):
         if attention_dim < 1:
             raise ValueError("cross-attention dimension must be positive")
         self.attention_dim = attention_dim
-        self.left_query = nnx.Linear(width, attention_dim, use_bias=False, rngs=rngs)
-        self.right_query = nnx.Linear(width, attention_dim, use_bias=False, rngs=rngs)
-        self.left_key = nnx.Linear(width, attention_dim, use_bias=False, rngs=rngs)
-        self.right_key = nnx.Linear(width, attention_dim, use_bias=False, rngs=rngs)
-        self.left_value = nnx.Linear(width, attention_dim, use_bias=False, rngs=rngs)
-        self.right_value = nnx.Linear(width, attention_dim, use_bias=False, rngs=rngs)
+        self.left_query = BiasFreeLinear(width, attention_dim, rngs=rngs)
+        self.right_query = BiasFreeLinear(width, attention_dim, rngs=rngs)
+        self.left_key = BiasFreeLinear(width, attention_dim, rngs=rngs)
+        self.right_key = BiasFreeLinear(width, attention_dim, rngs=rngs)
+        self.left_value = BiasFreeLinear(width, attention_dim, rngs=rngs)
+        self.right_value = BiasFreeLinear(width, attention_dim, rngs=rngs)
         self.left_output = nnx.Linear(attention_dim, width, kernel_init=CROSS_ATTENTION_OUTPUT_INIT, rngs=rngs)
         self.right_output = nnx.Linear(attention_dim, width, kernel_init=CROSS_ATTENTION_OUTPUT_INIT, rngs=rngs)
 
