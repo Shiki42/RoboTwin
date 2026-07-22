@@ -9,6 +9,7 @@ from openpi.models.casm import hard_mask_stream_action_inputs
 from openpi.models.casm import merge_stream_vector_fields
 from openpi.models.pi0 import reduce_action_loss
 from openpi.policies.aloha_policy import AlohaInputs
+from openpi.policies.aloha_policy import AlohaOutputs
 from openpi.training import config as _config
 
 
@@ -26,6 +27,16 @@ def test_aloha_inputs_expands_arm_mask_to_action_dimensions():
     assert output["action_mask"].shape == (2, 14)
     assert output["action_mask"][0].tolist() == [1] * 7 + [0] * 7
     assert output["action_mask"][1].tolist() == [0] * 7 + [1] * 7
+
+
+def test_aloha_outputs_preserves_async_probability():
+    output = AlohaOutputs(adapt_to_pi=False)(
+        {
+            "actions": np.zeros((2, 14), dtype=np.float32),
+            "async_probability": np.array(0.75, dtype=np.float32),
+        }
+    )
+    assert output["async_probability"] == pytest.approx(0.75)
 
 
 def test_soft_arm_mask_keeps_boundary_labels_zero():
@@ -210,6 +221,17 @@ def test_casm_configs_use_public_pi05_base_weights(name):
     assert config.data.base_config.video_backend == "pyav"
     assert config.batch_size == 1
     assert config.weight_loader.params_path == "gs://openpi-assets/checkpoints/pi05_base/params"
-    assert config.data.repo_id == (
-        "Shiki42/parallelvla_putcab_official_clean50_native_path_retimed_paired_v2"
-    )
+    assert config.data.repo_id == ("Shiki42/parallelvla_putcab_official_clean50_native_path_retimed_paired_v2")
+
+
+def test_visual_phase_gate_config_is_ready_for_autodl_training():
+    config = _config.get_config("pi05_putcab_casm_visual_phase_gate_lora")
+
+    assert config.model.casm_mode == "visual_phase_gate"
+    assert config.project_name == "parallelvla-casm"
+    assert config.batch_size == 16
+    assert config.num_train_steps == 20_000
+    assert config.params_only_checkpoint is False
+    assert config.ema_decay is None
+    assert config.wandb_enabled is True
+    assert config.data.repo_id == "Shiki42/robotwin_put_obj_cabinet_50_dynFcam_nFov"

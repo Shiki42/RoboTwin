@@ -34,6 +34,7 @@ class Pi0Config(_model.BaseModelConfig):
     coordination_gate_hidden_dim: int = 64
     cross_attention_dim: int = 128
     gate_loss_weight: float = 0.2
+    gate_positive_weight: float = 1.0
     usefulness_loss_weight: float = 0.2
     phase_prior_loss_weight: float = 0.1
     usefulness_temperature: float = 0.1
@@ -47,6 +48,8 @@ class Pi0Config(_model.BaseModelConfig):
             raise ValueError("CASM hidden dimensions must be positive")
         if min(self.gate_loss_weight, self.usefulness_loss_weight, self.phase_prior_loss_weight) < 0:
             raise ValueError("CASM loss weights must be non-negative")
+        if self.gate_positive_weight <= 0:
+            raise ValueError("gate positive weight must be positive")
         if self.usefulness_temperature <= 0:
             raise ValueError("usefulness temperature must be positive")
         if self.max_token_len is None:

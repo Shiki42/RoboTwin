@@ -12,6 +12,7 @@ def test_merge_params_initializes_explicit_new_casm_parameters():
         "block": {
             "lora_kernel": np.full((2,), 2.0, dtype=np.float32),
             "cooperation_gate": np.full((2,), 3.0, dtype=np.float32),
+            "phase_gate": np.full((2,), 6.0, dtype=np.float32),
             "cross_attention": np.full((2,), 4.0, dtype=np.float32),
             "unrequested": np.full((2,), 5.0, dtype=np.float32),
         },
@@ -19,10 +20,11 @@ def test_merge_params_initializes_explicit_new_casm_parameters():
     merged = _merge_params(
         loaded,
         reference,
-        missing_regex=".*(lora|cooperation_gate|cross_attention).*",
+        missing_regex=".*(lora|cooperation_gate|cross_attention|phase_gate).*",
     )
     assert merged["base"].tolist() == [1.0, 1.0]
     assert merged["block"]["lora_kernel"].tolist() == [2.0, 2.0]
     assert merged["block"]["cooperation_gate"].tolist() == [3.0, 3.0]
     assert merged["block"]["cross_attention"].tolist() == [4.0, 4.0]
+    assert merged["block"]["phase_gate"].tolist() == [6.0, 6.0]
     assert "unrequested" not in merged["block"]

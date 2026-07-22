@@ -27,6 +27,7 @@ def observation(phase_ids=(1, 0)) -> model.Observation:
 def test_coordination_target_and_usefulness_target():
     phase = jnp.array([[0], [1], [2]], dtype=jnp.int32)
     assert casm.coordination_target(phase).tolist() == [1.0, 0.0, 0.0]
+    assert casm.async_target(phase).tolist() == [0.0, 1.0, 1.0]
     target = casm.usefulness_target(jnp.array([2.0, 1.0]), jnp.array([1.0, 2.0]), 0.5)
     assert target[0] > 0.5
     assert target[1] < 0.5
@@ -35,6 +36,16 @@ def test_coordination_target_and_usefulness_target():
 def test_hard_gate_route_threshold():
     selected = casm.select_joint_route(jnp.array([0.49, 0.5]))
     assert selected.tolist() == [False, True]
+
+
+def test_weighted_bce_with_logits_is_finite_and_weights_async_examples():
+    logits = jnp.zeros(2)
+    target = jnp.array([0.0, 1.0])
+    unweighted = casm.binary_cross_entropy_with_logits(logits, target, 1.0)
+    weighted = casm.binary_cross_entropy_with_logits(logits, target, 3.0)
+    assert np.isfinite(weighted).all()
+    assert weighted[0] == unweighted[0]
+    assert weighted[1] == 3 * unweighted[1]
 
 
 def test_hard_mask_keeps_joint_context_only_for_sync_samples():
@@ -81,3 +92,19 @@ def test_gate_and_cross_attention_shapes_and_zero_gate_identity():
     left_on, right_on = module(left, right, jnp.ones(2))
     assert not np.array_equal(left_on, left)
     assert not np.array_equal(right_on, right)
+
+
+def test_visual_proprioception_gate_shapes_and_detaches_inputs():
+    gate = casm.VisualProprioceptionGate(16, 32, 8, rngs=nnx.Rngs(3))
+    visual = jnp.ones((2, 16))
+    state = jnp.ones((2, 32))
+    logits = gate(visual, state)
+    assert logits.shape == (2,)
+    assert np.allclose(logits, 0)
+
+    visual_grad, state_grad = jax.grad(
+        lambda visual_value, state_value: gate(visual_value, state_value).sum(),
+        argnums=(0, 1),
+    )(visual, state)
+    assert np.allclose(visual_grad, 0)
+    assert np.allclose(state_grad, 0)

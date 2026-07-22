@@ -54,6 +54,7 @@ class Policy(BasePolicy):
         self._metadata = metadata or {}
         self._is_pytorch_model = is_pytorch
         self._pytorch_device = pytorch_device
+        self._predict_async_probability = None
 
         if self._is_pytorch_model:
             self._model = self._model.to(pytorch_device)
@@ -63,6 +64,8 @@ class Policy(BasePolicy):
             # JAX model setup
             self._sample_actions = nnx_utils.module_jit(model.sample_actions)
             self._rng = rng or jax.random.key(0)
+            if getattr(model, "casm_mode", "none") == "visual_phase_gate":
+                self._predict_async_probability = nnx_utils.module_jit(model.predict_async_probability)
 
     @override
     def infer(self, obs: dict, *, noise: np.ndarray | None = None) -> dict:  # type: ignore[misc]
@@ -93,6 +96,8 @@ class Policy(BasePolicy):
             "state": inputs["state"],
             "actions": self._sample_actions(sample_rng_or_pytorch_device, observation, **sample_kwargs),
         }
+        if self._predict_async_probability is not None:
+            outputs["async_probability"] = self._predict_async_probability(observation)
         model_time = time.monotonic() - start_time
         if self._is_pytorch_model:
             outputs = jax.tree.map(lambda x: np.asarray(x[0, ...].detach().cpu()), outputs)

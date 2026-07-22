@@ -1,6 +1,7 @@
 import dataclasses
 import functools
 import logging
+import os
 import platform
 from typing import Any
 
@@ -38,7 +39,6 @@ def init_logging():
     }
 
     class CustomFormatter(logging.Formatter):
-
         def format(self, record):
             record.levelname = level_mapping.get(record.levelname, record.levelname)
             return super().format(record)
@@ -57,7 +57,6 @@ def init_wandb(
     config: _config.TrainConfig,
     *,
     resuming: bool,
-    log_code: bool = False,
     enabled: bool = True,
 ):
     if not enabled:
@@ -69,17 +68,15 @@ def init_wandb(
         raise FileNotFoundError(f"Checkpoint directory {ckpt_dir} does not exist.")
     if resuming:
         run_id = (ckpt_dir / "wandb_id.txt").read_text().strip()
-        wandb.init(id=run_id, resume="must", project=config.project_name)
+        wandb.init(id=run_id, resume="must", project=config.project_name, settings=wandb.Settings(disable_code=True))
     else:
         wandb.init(
             name=config.exp_name,
             config=dataclasses.asdict(config),
             project=config.project_name,
+            settings=wandb.Settings(disable_code=True),
         )
         (ckpt_dir / "wandb_id.txt").write_text(wandb.run.id)
-
-    if log_code:
-        wandb.run.log_code(epath.Path(__file__).parent.parent)
 
 
 def _load_weights_and_validate(loader: _weight_loaders.WeightLoader, params_shape: at.Params) -> at.Params:
@@ -88,10 +85,9 @@ def _load_weights_and_validate(loader: _weight_loaders.WeightLoader, params_shap
     at.check_pytree_equality(expected=params_shape, got=loaded_params, check_shapes=True, check_dtypes=True)
 
     # Remove jax.ShapeDtypeStruct from the loaded params. This makes sure that only the loaded params are returned.
-    return traverse_util.unflatten_dict({
-        k: v
-        for k, v in traverse_util.flatten_dict(loaded_params).items() if not isinstance(v, jax.ShapeDtypeStruct)
-    })
+    return traverse_util.unflatten_dict(
+        {k: v for k, v in traverse_util.flatten_dict(loaded_params).items() if not isinstance(v, jax.ShapeDtypeStruct)}
+    )
 
 
 def _cast_floating_param_to_float32(param):
@@ -156,7 +152,7 @@ def init_train_state(
     # Initialize the train state and mix in the partial params.
     train_state = jax.jit(
         init,
-        donate_argnums=(1, ),  # donate the partial params buffer.
+        donate_argnums=(1,),  # donate the partial params buffer.
         in_shardings=replicated_sharding,
         out_shardings=state_sharding,
     )(init_rng, partial_params)
@@ -181,15 +177,20 @@ def train_step(
         observation: _model.Observation,
         actions: _model.Actions,
     ):
-        chunked_loss = model.compute_loss(rng, observation, actions, train=True)
-        return jnp.mean(chunked_loss)
+        if getattr(config.model, "casm_mode", "none") == "visual_phase_gate":
+            chunked_loss, aux = model.compute_loss(rng, observation, actions, train=True, return_aux=True)
+        else:
+            chunked_loss, aux = model.compute_loss(rng, observation, actions, train=True), {}
+        return jnp.mean(chunked_loss), aux
 
     train_rng = jax.random.fold_in(rng, state.step)
     observation, actions = batch
 
     # Filter out frozen params.
     diff_state = nnx.DiffState(0, config.trainable_filter)
-    loss, grads = nnx.value_and_grad(loss_fn, argnums=diff_state)(model, train_rng, observation, actions)
+    (loss, aux), grads = nnx.value_and_grad(loss_fn, argnums=diff_state, has_aux=True)(
+        model, train_rng, observation, actions
+    )
 
     params = state.params.filter(config.trainable_filter)
     updates, new_opt_state = state.tx.update(grads, state.opt_state, params)
@@ -224,6 +225,7 @@ def train_step(
         "grad_norm": optax.global_norm(grads),
         "param_norm": optax.global_norm(kernel_params),
     }
+    info.update(aux)
     return new_state, info
 
 
@@ -233,9 +235,11 @@ def main(config: _config.TrainConfig):
 
     if config.batch_size % jax.device_count() != 0:
         raise ValueError(
-            f"Batch size {config.batch_size} must be divisible by the number of devices {jax.device_count()}.")
+            f"Batch size {config.batch_size} must be divisible by the number of devices {jax.device_count()}."
+        )
 
-    jax.config.update("jax_compilation_cache_dir", str(epath.Path("~/.cache/jax").expanduser()))
+    compilation_cache = os.environ.get("JAX_COMPILATION_CACHE_DIR", "~/.cache/jax")
+    jax.config.update("jax_compilation_cache_dir", str(epath.Path(compilation_cache).expanduser()))
 
     rng = jax.random.key(config.seed)
     train_rng, init_rng = jax.random.split(rng)
@@ -273,7 +277,7 @@ def main(config: _config.TrainConfig):
         functools.partial(train_step, config),
         in_shardings=(replicated_sharding, train_state_sharding, data_sharding),
         out_shardings=(train_state_sharding, replicated_sharding),
-        donate_argnums=(1, ),
+        donate_argnums=(1,),
     )
 
     start_step = int(train_state.step)

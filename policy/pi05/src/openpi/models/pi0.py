@@ -83,6 +83,7 @@ class Pi0(_model.BaseModel):
         self.pi05 = config.pi05
         self.casm_mode = config.casm_mode
         self.gate_loss_weight = config.gate_loss_weight
+        self.gate_positive_weight = config.gate_positive_weight
         self.usefulness_loss_weight = config.usefulness_loss_weight
         self.phase_prior_loss_weight = config.phase_prior_loss_weight
         self.usefulness_temperature = config.usefulness_temperature
@@ -117,7 +118,14 @@ class Pi0(_model.BaseModel):
             self.action_time_mlp_in = nnx.Linear(2 * action_expert_config.width, action_expert_config.width, rngs=rngs)
             self.action_time_mlp_out = nnx.Linear(action_expert_config.width, action_expert_config.width, rngs=rngs)
         self.action_out_proj = nnx.Linear(action_expert_config.width, config.action_dim, rngs=rngs)
-        if self.casm_mode in casm.LEARNED_GATE_MODES:
+        if self.casm_mode == "visual_phase_gate":
+            self.phase_gate = casm.VisualProprioceptionGate(
+                paligemma_config.width,
+                config.action_dim,
+                config.coordination_gate_hidden_dim,
+                rngs=rngs,
+            )
+        if self.casm_mode in casm.LEARNED_GATE_MODES - {"visual_phase_gate"}:
             self.cooperation_gate = casm.CooperationGate(
                 config.action_dim,
                 config.coordination_gate_hidden_dim,
@@ -133,17 +141,14 @@ class Pi0(_model.BaseModel):
         # This attribute gets automatically set by model.train() and model.eval().
         self.deterministic = True
 
-    @at.typecheck
-    def embed_prefix(
-        self, obs: _model.Observation
-    ) -> tuple[at.Float[at.Array, "b s emb"], at.Bool[at.Array, "b s"], at.Bool[at.Array, " s"]]:
+    def _embed_prefix_with_visual(self, obs: _model.Observation):
         input_mask = []
         ar_mask = []
         tokens = []
-        # embed images
+        visual_summaries = []
+        visual_presence = []
         for name in obs.images:
             image_tokens, _ = self.PaliGemma.img(obs.images[name], train=False)
-
             tokens.append(image_tokens)
             input_mask.append(
                 einops.repeat(
@@ -152,19 +157,30 @@ class Pi0(_model.BaseModel):
                     s=image_tokens.shape[1],
                 )
             )
-            # image tokens attend to each other
+            visual_summaries.append(jnp.mean(image_tokens, axis=1))
+            visual_presence.append(obs.image_masks[name].astype(image_tokens.dtype))
             ar_mask += [False] * image_tokens.shape[1]
 
-        # add language (aka tokenized inputs)
+        presence = jnp.stack(visual_presence, axis=1)
+        summaries = jnp.stack(visual_summaries, axis=1)
+        visual_summary = jnp.sum(summaries * presence[..., None], axis=1)
+        visual_summary /= jnp.maximum(jnp.sum(presence, axis=1, keepdims=True), 1)
+
         if obs.tokenized_prompt is not None:
             tokenized_inputs = self.PaliGemma.llm(obs.tokenized_prompt, method="embed")
             tokens.append(tokenized_inputs)
             input_mask.append(obs.tokenized_prompt_mask)
-            # full attention between image and language inputs
             ar_mask += [False] * tokenized_inputs.shape[1]
         tokens = jnp.concatenate(tokens, axis=1)
         input_mask = jnp.concatenate(input_mask, axis=1)
         ar_mask = jnp.array(ar_mask)
+        return tokens, input_mask, ar_mask, visual_summary
+
+    @at.typecheck
+    def embed_prefix(
+        self, obs: _model.Observation
+    ) -> tuple[at.Float[at.Array, "b s emb"], at.Bool[at.Array, "b s"], at.Bool[at.Array, " s"]]:
+        tokens, input_mask, ar_mask, _ = self._embed_prefix_with_visual(obs)
         return tokens, input_mask, ar_mask
 
     @at.typecheck
@@ -223,6 +239,24 @@ class Pi0(_model.BaseModel):
         time: at.Float[at.Array, " b"],
     ):
         prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
+        return self._hidden_field_from_prefix(
+            observation,
+            noisy_actions,
+            time,
+            prefix_tokens,
+            prefix_mask,
+            prefix_ar_mask,
+        )
+
+    def _hidden_field_from_prefix(
+        self,
+        observation: _model.Observation,
+        noisy_actions: _model.Actions,
+        time: at.Float[at.Array, " b"],
+        prefix_tokens,
+        prefix_mask,
+        prefix_ar_mask,
+    ):
         suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(
             observation,
             noisy_actions,
@@ -239,6 +273,23 @@ class Pi0(_model.BaseModel):
             adarms_cond=[None, adarms_cond],
         )
         return suffix_out[:, -self.action_horizon :]
+
+    def _hidden_field_with_visual(
+        self,
+        observation: _model.Observation,
+        noisy_actions: _model.Actions,
+        time: at.Float[at.Array, " b"],
+    ):
+        prefix_tokens, prefix_mask, prefix_ar_mask, visual_summary = self._embed_prefix_with_visual(observation)
+        hidden = self._hidden_field_from_prefix(
+            observation,
+            noisy_actions,
+            time,
+            prefix_tokens,
+            prefix_mask,
+            prefix_ar_mask,
+        )
+        return hidden, visual_summary
 
     def _vector_field(
         self,
@@ -305,6 +356,12 @@ class Pi0(_model.BaseModel):
         noisy_actions: _model.Actions,
         time: at.Float[at.Array, " b"],
     ):
+        if self.casm_mode == "visual_phase_gate":
+            hidden, visual_summary = self._hidden_field_with_visual(observation, noisy_actions, time)
+            gate_logits = self.phase_gate(visual_summary, observation.state)
+            predicted = self.action_out_proj(hidden)
+            return predicted, gate_logits, None
+
         if self.casm_mode == "none":
             return self._vector_field(observation, noisy_actions, time), None, None
         if self.casm_mode == "hard_mask":
@@ -375,7 +432,13 @@ class Pi0(_model.BaseModel):
 
     @override
     def compute_loss(
-        self, rng: at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions, *, train: bool = False
+        self,
+        rng: at.KeyArrayLike,
+        observation: _model.Observation,
+        actions: _model.Actions,
+        *,
+        train: bool = False,
+        return_aux: bool = False,
     ) -> at.Float[at.Array, "*b ah"]:
         preprocess_rng, noise_rng, time_rng = jax.random.split(rng, 3)
         observation = _model.preprocess_observation(preprocess_rng, observation, train=train)
@@ -392,6 +455,24 @@ class Pi0(_model.BaseModel):
             return action_loss
         if observation.phase_id is None:
             raise ValueError("learned CASM gates require phase_id during training")
+        if self.casm_mode == "visual_phase_gate":
+            target = casm.async_target(observation.phase_id)
+            gate_loss = casm.binary_cross_entropy_with_logits(
+                gate,
+                target,
+                self.gate_positive_weight,
+            )
+            total_loss = action_loss + self.gate_loss_weight * gate_loss[..., None]
+            probability = jax.nn.sigmoid(gate)
+            aux = {
+                "action_loss": jnp.mean(action_loss),
+                "gate_loss": jnp.mean(gate_loss),
+                "gate_accuracy": jnp.mean((probability >= 0.5) == (target >= 0.5)),
+                "gate_async_probability": jnp.mean(probability),
+                "gate_predicted_async_rate": jnp.mean(probability >= 0.5),
+                "gate_target_async_rate": jnp.mean(target),
+            }
+            return (total_loss, aux) if return_aux else total_loss
 
         phase_target = casm.coordination_target(observation.phase_id)
         phase_loss = casm.binary_cross_entropy(gate, phase_target)[..., None]
@@ -539,6 +620,14 @@ class Pi0(_model.BaseModel):
 
         return jax.lax.cond(casm.select_joint_route(gate)[0], joint_route, factorized_route, operand=None)
 
+    def predict_async_probability(self, observation: _model.Observation):
+        if self.casm_mode != "visual_phase_gate":
+            raise ValueError("async probability is only available for visual-phase-gate CASM")
+        observation = _model.preprocess_observation(None, observation, train=False)
+        _, _, _, visual_summary = self._embed_prefix_with_visual(observation)
+        logits = self.phase_gate(visual_summary, observation.state)
+        return jax.nn.sigmoid(logits)
+
     @override
     def sample_actions(
         self,
@@ -573,13 +662,13 @@ class Pi0(_model.BaseModel):
                 observation_fn(observation, "right"),
             )
             stream_prefix = self._prepare_prefix(stream_observation)
-        if self.casm_mode == "none":
+        if self.casm_mode in {"none", "visual_phase_gate"}:
             joint_prefix = self._prepare_prefix(observation)
 
         def step(carry):
             x_t, time = carry
             batch_time = jnp.broadcast_to(time, batch_size)
-            if self.casm_mode == "none":
+            if self.casm_mode in {"none", "visual_phase_gate"}:
                 v_t = self._cached_vector_field(
                     observation,
                     x_t,

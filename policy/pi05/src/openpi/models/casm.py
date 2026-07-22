@@ -15,8 +15,9 @@ CasmMode = Literal[
     "hard_gate",
     "gated_cross_attention",
     "usefulness_gate",
+    "visual_phase_gate",
 ]
-LEARNED_GATE_MODES = frozenset({"hard_gate", "gated_cross_attention", "usefulness_gate"})
+LEARNED_GATE_MODES = frozenset({"hard_gate", "gated_cross_attention", "usefulness_gate", "visual_phase_gate"})
 CROSS_ATTENTION_MODES = frozenset({"gated_cross_attention", "usefulness_gate"})
 VALID_CASM_MODES = frozenset({"none", "hard_mask", *LEARNED_GATE_MODES})
 CROSS_ATTENTION_OUTPUT_INIT = jax.nn.initializers.normal(1e-3)
@@ -26,12 +27,26 @@ def coordination_target(phase_id: at.Int[at.Array, "*b p"]) -> at.Float[at.Array
     return (phase_id[..., 0] == 0).astype(jnp.float32)
 
 
+def async_target(phase_id: at.Int[at.Array, "*b p"]) -> at.Float[at.Array, "*b"]:
+    return (phase_id[..., 0] != 0).astype(jnp.float32)
+
+
 def binary_cross_entropy(
     probability: at.Float[at.Array, "*b"],
     target: at.Float[at.Array, "*b"],
 ) -> at.Float[at.Array, "*b"]:
     probability = jnp.clip(probability, 1e-6, 1 - 1e-6)
     return -(target * jnp.log(probability) + (1 - target) * jnp.log1p(-probability))
+
+
+def binary_cross_entropy_with_logits(
+    logits: at.Float[at.Array, "*b"],
+    target: at.Float[at.Array, "*b"],
+    positive_weight: float,
+) -> at.Float[at.Array, "*b"]:
+    if positive_weight <= 0:
+        raise ValueError("positive weight must be positive")
+    return (1 - target) * jax.nn.softplus(logits) + target * positive_weight * jax.nn.softplus(-logits)
 
 
 def usefulness_target(
@@ -136,6 +151,38 @@ class CooperationGate(nnx.Module):
 
     def __call__(self, state: at.Float[at.Array, "*b d"]) -> at.Float[at.Array, "*b"]:
         return jax.nn.sigmoid(self.output(nnx.swish(self.input(state)))[..., 0])
+
+
+class VisualProprioceptionGate(nnx.Module):
+    """Predicts async/sync from pooled visual tokens and continuous robot state."""
+
+    def __init__(self, visual_dim: int, state_dim: int, hidden_dim: int, *, rngs: nnx.Rngs):
+        self.visual_norm = nnx.LayerNorm(visual_dim, rngs=rngs)
+        self.state_norm = nnx.LayerNorm(state_dim, rngs=rngs)
+        self.visual_proj = nnx.Linear(visual_dim, hidden_dim, rngs=rngs)
+        self.state_proj = nnx.Linear(state_dim, hidden_dim, rngs=rngs)
+        self.fusion = nnx.Linear(2 * hidden_dim, hidden_dim, rngs=rngs)
+        self.output = nnx.Linear(
+            hidden_dim,
+            1,
+            kernel_init=jax.nn.initializers.zeros,
+            bias_init=jax.nn.initializers.zeros,
+            rngs=rngs,
+        )
+
+    def __call__(
+        self,
+        visual_features: at.Float[at.Array, "*b v"],
+        state: at.Float[at.Array, "*b d"],
+    ) -> at.Float[at.Array, "*b"]:
+        # The phase objective trains only the compact head. This keeps 50-demo
+        # supervision from perturbing the pretrained visual representation.
+        visual_features = jax.lax.stop_gradient(visual_features)
+        state = jax.lax.stop_gradient(state)
+        visual = jax.nn.gelu(self.visual_proj(self.visual_norm(visual_features)))
+        proprioception = jax.nn.gelu(self.state_proj(self.state_norm(state)))
+        fused = jnp.concatenate([visual, proprioception], axis=-1)
+        return self.output(jax.nn.gelu(self.fusion(fused)))[..., 0]
 
 
 class BiasFreeLinear(nnx.Module):

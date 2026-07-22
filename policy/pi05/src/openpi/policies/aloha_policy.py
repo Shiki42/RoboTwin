@@ -95,9 +95,7 @@ class AlohaInputs(transforms.DataTransformFn):
             if "action_phase" in data:
                 phase_sequence = np.asarray(data["action_phase"])
                 if phase_sequence.shape != (*arm_mask.shape[:-1], 2):
-                    raise ValueError(
-                        f"action phase/mask shape mismatch: {phase_sequence.shape} and {arm_mask.shape}"
-                    )
+                    raise ValueError(f"action phase/mask shape mismatch: {phase_sequence.shape} and {arm_mask.shape}")
                 canonical_phase = phase_sequence[..., 1:2] > 0.5
                 phase_consistent = canonical_phase == canonical_phase[:1]
                 arm_mask = arm_mask * phase_consistent.astype(np.float32)
@@ -131,7 +129,10 @@ class AlohaOutputs(transforms.DataTransformFn):
     def __call__(self, data: dict) -> dict:
         # Only return the first 14 dims.
         actions = np.asarray(data["actions"][:, :14])
-        return {"actions": _encode_actions(actions, adapt_to_pi=self.adapt_to_pi)}
+        outputs = {"actions": _encode_actions(actions, adapt_to_pi=self.adapt_to_pi)}
+        if "async_probability" in data:
+            outputs["async_probability"] = np.asarray(data["async_probability"])
+        return outputs
 
 
 def _joint_flip_mask() -> np.ndarray:

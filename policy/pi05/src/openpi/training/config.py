@@ -5,6 +5,7 @@ from collections.abc import Sequence
 import dataclasses
 import difflib
 import logging
+import os
 import pathlib
 from typing import Any, Literal, Protocol, TypeAlias
 
@@ -594,29 +595,40 @@ def _putcab_casm_config(
     repo_id: str = "Shiki42/parallelvla_putcab_official_clean50_native_path_retimed_paired_v2",
     train_steps: int = 20_000,
     save_interval: int = 5_000,
+    batch_size: int = 1,
+    num_workers: int = 0,
+    wandb_enabled: bool = False,
+    project_name: str = "openpi",
+    params_only_checkpoint: bool = True,
+    ema_decay: float | None = 0.99,
+    gate_positive_weight: float = 1.0,
+    base_checkpoint: str = "gs://openpi-assets/checkpoints/pi05_base/params",
 ) -> TrainConfig:
     model = pi0_config.Pi0Config(
         pi05=True,
         casm_mode=mode,
         paligemma_variant="gemma_2b_lora",
         action_expert_variant="gemma_300m_lora",
+        gate_positive_weight=gate_positive_weight,
     )
     return TrainConfig(
         name=name,
         model=model,
+        project_name=project_name,
+        ema_decay=ema_decay,
         data=_putcab_casm_data(repo_id),
         freeze_filter=model.get_freeze_filter(),
         weight_loader=weight_loaders.CheckpointWeightLoader(
-            "gs://openpi-assets/checkpoints/pi05_base/params",
-            missing_regex=".*(lora|cooperation_gate|cross_attention).*",
+            base_checkpoint,
+            missing_regex=".*(lora|cooperation_gate|cross_attention|phase_gate).*",
         ),
-        batch_size=1,
-        num_workers=0,
+        batch_size=batch_size,
+        num_workers=num_workers,
         num_train_steps=train_steps,
         save_interval=save_interval,
         keep_period=train_steps,
-        params_only_checkpoint=True,
-        wandb_enabled=False,
+        params_only_checkpoint=params_only_checkpoint,
+        wandb_enabled=wandb_enabled,
         fsdp_devices=1,
     )
 
@@ -750,6 +762,20 @@ _CONFIGS = [
     _putcab_casm_config(
         "pi05_putcab_casm_usefulness_gate_lora",
         "usefulness_gate",
+    ),
+    _putcab_casm_config(
+        "pi05_putcab_casm_visual_phase_gate_lora",
+        "visual_phase_gate",
+        repo_id=os.environ.get("PARALLELVLA_DATASET_REPO", "Shiki42/robotwin_put_obj_cabinet_50_dynFcam_nFov"),
+        base_checkpoint=os.environ.get("PI05_BASE_CHECKPOINT", "gs://openpi-assets/checkpoints/pi05_base/params"),
+        train_steps=20_000,
+        save_interval=2_000,
+        batch_size=16,
+        num_workers=4,
+        wandb_enabled=True,
+        project_name="parallelvla-casm",
+        params_only_checkpoint=False,
+        ema_decay=None,
     ),
     # pi0_base by lora
     TrainConfig(

@@ -73,7 +73,7 @@ def _casm_sampling_shape(config: _pi0_config.Pi0Config):
 
 
 def test_casm_modes_support_training_and_sampling_shapes():
-    modes = ("hard_mask", "hard_gate", "gated_cross_attention", "usefulness_gate")
+    modes = ("hard_mask", "hard_gate", "gated_cross_attention", "usefulness_gate", "visual_phase_gate")
     for mode in modes:
         config = _pi0_config.Pi0Config(pi05=True, casm_mode=mode)
         training = nnx.eval_shape(functools.partial(_casm_training_shape, config))
@@ -81,3 +81,41 @@ def test_casm_modes_support_training_and_sampling_shapes():
         expected_batch_size = 1 if mode == "hard_gate" else 2
         assert training.shape == (expected_batch_size, config.action_horizon)
         assert sampling.shape == (1, config.action_horizon, config.action_dim)
+
+
+def _visual_phase_gate_aux_shape():
+    config = _pi0_config.Pi0Config(pi05=True, casm_mode="visual_phase_gate")
+    model = config.create(jax.random.key(0))
+    observation = config.fake_obs(2).replace(
+        phase_id=jnp.array([[1], [0]], dtype=jnp.int32),
+        action_mask=jnp.ones((2, config.action_horizon, config.action_dim)),
+    )
+    return model.compute_loss(
+        jax.random.key(1),
+        observation,
+        config.fake_act(2),
+        train=True,
+        return_aux=True,
+    )
+
+
+def test_visual_phase_gate_returns_separate_training_metrics():
+    loss, aux = nnx.eval_shape(_visual_phase_gate_aux_shape)
+    assert loss.shape == (2, 50)
+    assert set(aux) == {
+        "action_loss",
+        "gate_loss",
+        "gate_accuracy",
+        "gate_async_probability",
+        "gate_predicted_async_rate",
+        "gate_target_async_rate",
+    }
+    assert all(value.shape == () for value in aux.values())
+
+
+def test_visual_phase_gate_prediction_shape():
+    config = _pi0_config.Pi0Config(pi05=True, casm_mode="visual_phase_gate")
+    model = config.create(jax.random.key(0))
+    observation = config.fake_obs(3)
+    probability = nnx.eval_shape(model.predict_async_probability, observation)
+    assert probability.shape == (3,)
