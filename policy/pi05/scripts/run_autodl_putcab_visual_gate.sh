@@ -9,6 +9,9 @@ DATASET_DIR="${DATASET_DIR:-${HF_LEROBOT_HOME}/${DATASET_REPO}}"
 BASE_PARAMS="${BASE_PARAMS:-${WORK_ROOT}/base/pi05_base/params}"
 DATASET_MANIFEST="${DATASET_MANIFEST:-${WORK_ROOT}/receipts/dataset.sha256}"
 BASE_MANIFEST="${BASE_MANIFEST:-${WORK_ROOT}/receipts/pi05_base.sha256}"
+CUDA128_WHEELHOUSE="${CUDA128_WHEELHOUSE:-${WORK_ROOT}/cuda128-wheelhouse}"
+CUDA128_MANIFEST="${CUDA128_MANIFEST:-${WORK_ROOT}/receipts/cuda128-wheelhouse.sha256}"
+CUDA128_OVERLAY="${CUDA128_OVERLAY:-${WORK_ROOT}/cuda128-overlay}"
 AUDIT_RECEIPT="${AUDIT_RECEIPT:-${WORK_ROOT}/receipts/dataset_audit.json}"
 CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-${WORK_ROOT}/checkpoints}"
 ASSETS_ROOT="${ASSETS_ROOT:-${WORK_ROOT}/assets}"
@@ -74,7 +77,30 @@ run_train() {
 }
 
 require_file "${PI05_RUNTIME}"
+require_dir /root/autodl-tmp
 source "${PI05_RUNTIME}"
+
+COMPUTE_CAPABILITY="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | tr -d ' ')"
+COMPUTE_MAJOR="${COMPUTE_CAPABILITY%%.*}"
+if [[ ! "${COMPUTE_MAJOR}" =~ ^[0-9]+$ ]]; then
+    echo "invalid GPU compute capability: ${COMPUTE_CAPABILITY}" >&2
+    exit 1
+fi
+if (( COMPUTE_MAJOR >= 10 )); then
+    verify_manifest "${CUDA128_WHEELHOUSE}" "${CUDA128_MANIFEST}"
+    if [[ ! -f "${CUDA128_OVERLAY}/cuda128-ready.json" ]]; then
+        export PIP_CACHE_DIR="${WORK_ROOT}/pip-cache"
+        bootstrap_args=(
+            "${SOURCE_ROOT}/scripts/bootstrap_blackwell_cuda128.sh"
+            "${CUDA128_WHEELHOUSE}"
+            "${CUDA128_OVERLAY}"
+        )
+        BASE_PYTHON="${PYTHON_BIN}" "${bootstrap_args[@]}"
+    fi
+    source "${CUDA128_OVERLAY}/bin/activate"
+    PYTHON_BIN="${CUDA128_OVERLAY}/bin/python"
+fi
+
 export PYTHONPATH="${SOURCE_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
 export HF_LEROBOT_HOME
 export PARALLELVLA_DATASET_REPO="${DATASET_REPO}"
@@ -86,9 +112,9 @@ export WANDB_DATA_DIR="${WORK_ROOT}/wandb-data"
 export WANDB_LOG_MODEL=false
 export WANDB_DISABLE_CODE=true
 export WANDB_SILENT=true
+export JAX_PLATFORMS=cuda
 export LD_LIBRARY_PATH="/usr/local/cuda/compat/lib:/usr/local/nvidia/lib:/usr/local/nvidia/lib64"
 
-require_dir /root/autodl-tmp
 require_dir "${DATASET_DIR}"
 require_dir "${BASE_PARAMS}"
 runtime_dirs=(
@@ -113,10 +139,16 @@ export WANDB_MODE=online
 nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader
 "${PYTHON_BIN}" - <<'PY'
 import jax
+import jax.numpy as jnp
+import numpy as np
 import wandb
 
-if len(jax.devices()) != 1:
-    raise RuntimeError(f"expected exactly one JAX GPU device, got {jax.devices()}")
+devices = jax.devices()
+if len(devices) != 1 or devices[0].platform != "gpu":
+    raise RuntimeError(f"expected exactly one JAX GPU device, got {devices}")
+product = jnp.ones((256, 256), dtype=jnp.bfloat16) @ jnp.ones((256, 256), dtype=jnp.bfloat16)
+if not np.isfinite(np.asarray(product.block_until_ready())).all():
+    raise RuntimeError("Blackwell JAX matrix smoke produced non-finite values")
 viewer = wandb.Api(timeout=20).viewer
 if viewer is None:
     raise RuntimeError("W&B authentication is not available")
