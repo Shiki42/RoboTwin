@@ -30,6 +30,7 @@ import openpi.training.optimizer as _optimizer
 import openpi.training.weight_loaders as weight_loaders
 import openpi.transforms as _transforms
 
+logger = logging.getLogger(__name__)
 ModelType: TypeAlias = _model.ModelType
 # Work around a tyro issue with using nnx.filterlib.Filter directly.
 Filter: TypeAlias = nnx.filterlib.Filter
@@ -197,10 +198,10 @@ class DataConfigFactory(abc.ABC):
         try:
             data_assets_dir = str(assets_dir / asset_id)
             norm_stats = _normalize.load(_download.maybe_download(data_assets_dir))
-            logging.info(f"Loaded norm stats from {data_assets_dir}")
+            logger.info("Loaded norm stats from %s", data_assets_dir)
             return norm_stats
         except FileNotFoundError:
-            logging.info(f"Norm stats not found in {data_assets_dir}, skipping.")
+            logger.info("Norm stats not found in %s, skipping", data_assets_dir)
         return None
 
 
@@ -633,6 +634,35 @@ def _putcab_casm_config(
     )
 
 
+def _putcab_pytorch_config(name: str, mode: Literal["none", "visual_phase_gate"]) -> TrainConfig:
+    model = pi0_config.Pi0Config(
+        pi05=True,
+        casm_mode=mode,
+        paligemma_variant="gemma_2b",
+        action_expert_variant="gemma_300m",
+    )
+    dataset_repo = os.environ.get(
+        "PARALLELVLA_DATASET_REPO",
+        "Shiki42/robotwin_put_obj_cabinet_50_dynFcam_nFov_lerobot",
+    )
+    return TrainConfig(
+        name=name,
+        project_name="parallelvla-putcab-pytorch",
+        model=model,
+        data=_putcab_casm_data(dataset_repo),
+        pytorch_weight_path=os.environ.get("PI05_PYTORCH_BASE"),
+        batch_size=16,
+        num_workers=0,
+        num_train_steps=20_000,
+        save_interval=2_000,
+        keep_period=20_000,
+        params_only_checkpoint=False,
+        ema_decay=None,
+        wandb_enabled=True,
+        fsdp_devices=1,
+    )
+
+
 # Use `get_config` if you need to get a config by name in your code.
 _CONFIGS = [
     ###
@@ -777,6 +807,8 @@ _CONFIGS = [
         params_only_checkpoint=False,
         ema_decay=None,
     ),
+    _putcab_pytorch_config("pi05_putcab_pytorch_matched_full", "none"),
+    _putcab_pytorch_config("pi05_putcab_casm_visual_phase_gate_pytorch_full", "visual_phase_gate"),
     # pi0_base by lora
     TrainConfig(
         name="pi0_base_aloha_robotwin_lora",

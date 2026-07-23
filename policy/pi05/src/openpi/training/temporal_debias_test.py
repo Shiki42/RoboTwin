@@ -235,3 +235,31 @@ def test_visual_phase_gate_config_is_ready_for_autodl_training():
     assert config.ema_decay is None
     assert config.wandb_enabled is True
     assert config.data.repo_id == "Shiki42/robotwin_put_obj_cabinet_50_dynFcam_nFov"
+
+
+@pytest.mark.parametrize(
+    ("name", "mode"),
+    [
+        ("pi05_putcab_pytorch_matched_full", "none"),
+        ("pi05_putcab_casm_visual_phase_gate_pytorch_full", "visual_phase_gate"),
+    ],
+)
+def test_putcab_pytorch_configs_are_matched_full_finetunes(name, mode):
+    config = _config.get_config(name)
+
+    assert config.model.casm_mode == mode
+    assert config.model.paligemma_variant == "gemma_2b"
+    assert config.model.action_expert_variant == "gemma_300m"
+    assert config.batch_size == 16
+    assert config.num_workers == 0
+    assert config.num_train_steps == 20_000
+    assert config.save_interval == 2_000
+    assert config.params_only_checkpoint is False
+    assert config.ema_decay is None
+    assert config.wandb_enabled is True
+    assert config.data.repo_id == "Shiki42/robotwin_put_obj_cabinet_50_dynFcam_nFov_lerobot"
+    assert config.data.action_sequence_keys == (
+        "action",
+        "observation.arm_active_mask",
+        "observation.phase_one_hot",
+    )

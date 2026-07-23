@@ -123,6 +123,7 @@ def save_checkpoint(
     global_step: int,
     checkpoint_root: pathlib.Path,
     metadata: Mapping[str, Any],
+    extra_files: Mapping[pathlib.Path, str | bytes] | None = None,
 ) -> pathlib.Path:
     if global_step < 1:
         raise ValueError("global_step must be positive")
@@ -150,11 +151,35 @@ def save_checkpoint(
             },
             temporary_dir / "training_state.pt",
         )
+        for path, contents in (extra_files or {}).items():
+            relative = pathlib.Path(path)
+            if relative.is_absolute() or ".." in relative.parts:
+                raise ValueError(f"checkpoint extra file must be relative: {relative}")
+            output_path = temporary_dir / relative
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_bytes(contents if isinstance(contents, bytes) else contents.encode())
         temporary_dir.rename(final_dir)
     finally:
         if temporary_dir.exists():
             shutil.rmtree(temporary_dir)
     return final_dir
+
+
+def prune_checkpoints(checkpoint_root: pathlib.Path, *, current_step: int, keep_period: int | None) -> None:
+    if current_step < 1:
+        raise ValueError("current_step must be positive")
+    if keep_period is not None and keep_period < 1:
+        raise ValueError("keep_period must be positive")
+    checkpoint_root = pathlib.Path(checkpoint_root)
+    for checkpoint in checkpoint_root.iterdir():
+        if not checkpoint.is_dir() or not checkpoint.name.isdigit():
+            continue
+        step = int(checkpoint.name)
+        if step == current_step:
+            continue
+        if keep_period is not None and step % keep_period == 0:
+            continue
+        shutil.rmtree(checkpoint)
 
 
 def latest_checkpoint(checkpoint_root: pathlib.Path) -> pathlib.Path:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import pathlib
 import random
 
 import numpy as np
@@ -85,6 +86,7 @@ def test_checkpoint_round_trip_restores_model_optimizer_step_and_rng(tmp_path):
         global_step=20,
         checkpoint_root=tmp_path,
         metadata={"run": "smoke"},
+        extra_files={pathlib.Path("assets/task/norm_stats.json"): "{}"},
     )
     expected_python = random.random()
     expected_numpy = np.random.random()
@@ -101,6 +103,7 @@ def test_checkpoint_round_trip_restores_model_optimizer_step_and_rng(tmp_path):
 
     assert step == 20
     assert metadata == {"run": "smoke"}
+    assert (checkpoint / "assets/task/norm_stats.json").read_text() == "{}"
     for expected, actual in zip(model.parameters(), restored_model.parameters(), strict=True):
         assert torch.equal(expected, actual)
     assert restored_optimizer.state_dict()["state"]
@@ -130,3 +133,26 @@ def test_save_checkpoint_is_atomic_and_rejects_duplicate_step(tmp_path):
             metadata={},
         )
     assert not list(tmp_path.glob(".tmp-*"))
+
+
+def test_checkpoint_extra_files_reject_path_traversal(tmp_path):
+    model = nn.Linear(2, 1)
+    optimizer = torch.optim.AdamW(model.parameters())
+
+    with pytest.raises(ValueError, match="must be relative"):
+        pytorch_training.save_checkpoint(
+            model,
+            optimizer,
+            global_step=1,
+            checkpoint_root=tmp_path,
+            metadata={},
+            extra_files={pathlib.Path("../outside"): "forbidden"},
+        )
+    assert not (tmp_path.parent / "outside").exists()
+
+
+def test_prune_checkpoints_keeps_current_and_periodic_steps(tmp_path):
+    for step in (2_000, 4_000, 20_000):
+        (tmp_path / str(step)).mkdir()
+    pytorch_training.prune_checkpoints(tmp_path, current_step=4_000, keep_period=20_000)
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["20000", "4000"]
