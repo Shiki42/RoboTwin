@@ -1,6 +1,7 @@
 import dataclasses
 
 import jax
+import pytest
 import torch
 
 from openpi.models import pi0_config
@@ -53,6 +54,61 @@ def test_pytorch_loader_does_not_call_jax_tree_or_process_api(monkeypatch):
     batch = next(iter(loader))
 
     assert torch.equal(batch["nested"]["value"], torch.tensor([0, 1]))
+
+
+def test_resumable_random_sampler_restores_exact_next_index():
+    dataset = list(range(10))
+    sampler = _data_loader.ResumableRandomSampler(dataset, seed=7)
+    iterator = iter(sampler)
+    consumed = [next(iterator) for _ in range(4)]
+    state = sampler.state_dict()
+    expected = [next(iterator) for _ in range(6)]
+
+    restored = _data_loader.ResumableRandomSampler(dataset, seed=7)
+    restored.load_state_dict(state)
+    actual = list(iter(restored))
+
+    assert len(set(consumed + expected)) == len(dataset)
+    assert actual == expected
+
+
+def test_pytorch_loader_state_restores_exact_next_batch():
+    dataset = [{"value": index} for index in range(10)]
+    sampler = _data_loader.ResumableRandomSampler(dataset, seed=11)
+    loader = _data_loader.TorchDataLoader(
+        dataset,
+        local_batch_size=2,
+        sampler=sampler,
+        framework="pytorch",
+    )
+    iterator = iter(loader)
+    next(iterator)
+    next(iterator)
+    state = loader.state_dict()
+    expected = next(iterator)["value"]
+
+    restored_sampler = _data_loader.ResumableRandomSampler(dataset, seed=11)
+    restored_loader = _data_loader.TorchDataLoader(
+        dataset,
+        local_batch_size=2,
+        sampler=restored_sampler,
+        framework="pytorch",
+    )
+    restored_loader.load_state_dict(state)
+    actual = next(iter(restored_loader))["value"]
+
+    assert torch.equal(actual, expected)
+
+
+def test_exact_loader_checkpoint_rejects_worker_prefetch():
+    dataset = [{"value": index} for index in range(4)]
+    sampler = _data_loader.ResumableRandomSampler(dataset, seed=0)
+    loader = _data_loader.TorchDataLoader(
+        dataset, local_batch_size=2, sampler=sampler, num_workers=1, framework="pytorch"
+    )
+
+    with pytest.raises(ValueError, match="num_workers=0"):
+        loader.state_dict()
 
 
 def test_torch_data_loader_parallel():

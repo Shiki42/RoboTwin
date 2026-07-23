@@ -52,6 +52,50 @@ class DataLoader(Protocol[T_co]):
         raise NotImplementedError("Subclasses of DataLoader should implement __iter__.")
 
 
+class ResumableRandomSampler(torch.utils.data.Sampler[int]):
+    """Deterministic random sampler with an exact serializable cursor."""
+
+    def __init__(self, dataset: Dataset, *, seed: int):
+        if seed < 0:
+            raise ValueError("sampler seed must be non-negative")
+        self._dataset = dataset
+        self._seed = seed
+        self._epoch = 0
+        self._position = 0
+
+    def __iter__(self):
+        generator = torch.Generator().manual_seed(self._seed + self._epoch)
+        permutation = torch.randperm(len(self._dataset), generator=generator).tolist()
+        for index in permutation[self._position :]:
+            self._position += 1
+            yield index
+        self._epoch += 1
+        self._position = 0
+
+    def __len__(self) -> int:
+        return len(self._dataset) - self._position
+
+    def state_dict(self) -> dict[str, int]:
+        return {
+            "seed": self._seed,
+            "length": len(self._dataset),
+            "epoch": self._epoch,
+            "position": self._position,
+        }
+
+    def load_state_dict(self, state: dict[str, int]) -> None:
+        if set(state) != {"seed", "length", "epoch", "position"}:
+            raise ValueError(f"invalid sampler state keys: {sorted(state)}")
+        if state["seed"] != self._seed:
+            raise ValueError(f"sampler seed mismatch: {state['seed']} != {self._seed}")
+        if state["length"] != len(self._dataset):
+            raise ValueError(f"sampler dataset length mismatch: {state['length']} != {len(self._dataset)}")
+        if state["epoch"] < 0 or not 0 <= state["position"] <= len(self._dataset):
+            raise ValueError(f"invalid sampler cursor: {state}")
+        self._epoch = state["epoch"]
+        self._position = state["position"]
+
+
 class TransformedDataset(Dataset[T_co]):
     def __init__(self, dataset: Dataset, transforms: Sequence[_transforms.DataTransformFn]):
         self._dataset = dataset
@@ -320,6 +364,8 @@ def create_torch_data_loader(
             )
             local_batch_size = batch_size // torch.distributed.get_world_size()
         else:
+            if shuffle:
+                sampler = ResumableRandomSampler(dataset, seed=seed)
             local_batch_size = batch_size
     else:
         local_batch_size = batch_size // jax.process_count()
@@ -427,6 +473,7 @@ class TorchDataLoader:
                 jax.sharding.PartitionSpec("B"),
             )
         self._num_batches = num_batches
+        self._num_workers = num_workers
 
         mp_context = None
         if num_workers > 0:
@@ -451,6 +498,24 @@ class TorchDataLoader:
     @property
     def torch_loader(self) -> torch.utils.data.DataLoader:
         return self._data_loader
+
+    def state_dict(self) -> dict[str, dict[str, int]]:
+        if self._num_workers != 0:
+            raise ValueError("exact loader checkpointing requires num_workers=0")
+        sampler = self._data_loader.sampler
+        if not isinstance(sampler, ResumableRandomSampler):
+            raise ValueError("exact loader checkpointing requires ResumableRandomSampler")
+        return {"sampler": sampler.state_dict()}
+
+    def load_state_dict(self, state: dict[str, dict[str, int]]) -> None:
+        if set(state) != {"sampler"}:
+            raise ValueError(f"invalid loader state keys: {sorted(state)}")
+        if self._num_workers != 0:
+            raise ValueError("exact loader checkpointing requires num_workers=0")
+        sampler = self._data_loader.sampler
+        if not isinstance(sampler, ResumableRandomSampler):
+            raise ValueError("exact loader checkpointing requires ResumableRandomSampler")
+        sampler.load_state_dict(state["sampler"])
 
     def __iter__(self):
         num_items = 0
@@ -577,3 +642,9 @@ class DataLoaderImpl(DataLoader):
     def __iter__(self):
         for batch in self._data_loader:
             yield _model.Observation.from_dict(batch), batch["actions"]
+
+    def state_dict(self) -> dict[str, dict[str, int]]:
+        return self._data_loader.state_dict()
+
+    def load_state_dict(self, state: dict[str, dict[str, int]]) -> None:
+        self._data_loader.load_state_dict(state)
