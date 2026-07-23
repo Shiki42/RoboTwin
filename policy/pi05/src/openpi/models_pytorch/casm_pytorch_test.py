@@ -32,6 +32,17 @@ def test_visual_gate_starts_at_half_probability_and_detaches_inputs():
     assert gate.output.weight.grad is not None
 
 
+def test_visual_gate_casts_inputs_to_parameter_dtype():
+    gate = casm_pytorch.VisualProprioceptionGate(4, 3, 5).to(torch.float64)
+    visual = torch.randn(2, 4, dtype=torch.float32)
+    state = torch.randn(2, 3, dtype=torch.float32)
+
+    logits = gate(visual, state)
+
+    assert logits.dtype == torch.float64
+    assert torch.equal(logits, torch.zeros(2, dtype=torch.float64))
+
+
 def test_visual_phase_gate_loss_matches_weighted_bce_and_metrics():
     action_loss = torch.tensor([[1.0, 3.0], [2.0, 4.0]])
     logits = torch.zeros(2)

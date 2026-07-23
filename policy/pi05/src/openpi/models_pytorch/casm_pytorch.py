@@ -49,8 +49,10 @@ class VisualProprioceptionGate(nn.Module):
         nn.init.zeros_(self.output.bias)
 
     def forward(self, visual_features: Tensor, state: Tensor) -> Tensor:
-        visual = F.gelu(self.visual_proj(self.visual_norm(visual_features.detach())))
-        proprioception = F.gelu(self.state_proj(self.state_norm(state.detach())))
+        visual_input = visual_features.detach().to(self.visual_norm.weight)
+        state_input = state.detach().to(self.state_norm.weight)
+        visual = F.gelu(self.visual_proj(self.visual_norm(visual_input)))
+        proprioception = F.gelu(self.state_proj(self.state_norm(state_input)))
         fused = torch.cat([visual, proprioception], dim=-1)
         return self.output(F.gelu(self.fusion(fused)))[..., 0]
 
