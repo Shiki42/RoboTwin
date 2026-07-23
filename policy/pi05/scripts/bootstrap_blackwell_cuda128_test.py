@@ -60,7 +60,7 @@ def test_install_command_contains_only_pip_arguments():
     assert "--no-index" in source
 
 
-def test_jax_runtime_lock_keeps_repo_api_and_blackwell_toolchain():
+def test_jax_runtime_lock_matches_repo_api_and_pytorch_cupti():
     pins = {}
     for line in JAX_REQUIREMENTS.read_text().splitlines():
         if not line or line.startswith("#"):
@@ -69,9 +69,10 @@ def test_jax_runtime_lock_keeps_repo_api_and_blackwell_toolchain():
         assert name not in pins
         pins[name] = version
 
-    assert pins["jax"] == "0.5.0"
-    assert pins["jaxlib"] == "0.5.0"
-    assert pins["jax-cuda12-plugin"] == "0.5.0"
-    assert pins["jax-cuda12-pjrt"] == "0.5.0"
+    assert pins["jax"] == "0.6.2"
+    assert pins["jaxlib"] == "0.6.2"
+    assert pins["jax-cuda12-plugin"] == "0.6.2"
+    assert pins["jax-cuda12-pjrt"] == "0.6.2"
     assert pins["nvidia-cuda-nvcc-cu12"] == "12.9.86"
+    assert pins["nvidia-cuda-cupti-cu12"] == "12.8.90"
     assert pins["nvidia-cudnn-cu12"] == "9.24.0.43"
