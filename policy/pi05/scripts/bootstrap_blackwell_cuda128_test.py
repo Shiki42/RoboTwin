@@ -51,3 +51,9 @@ def test_wheelhouse_check_rejects_missing_wheel(tmp_path):
     result = _run_check(wheelhouse, tmp_path / "overlay")
     assert result.returncode != 0
     assert "nvidia-cudnn-cu12==9.8.0.87" in result.stderr
+
+
+def test_install_command_contains_only_pip_arguments():
+    source = SCRIPT.read_text()
+    assert "pip install +" not in source
+    assert "--no-index" in source

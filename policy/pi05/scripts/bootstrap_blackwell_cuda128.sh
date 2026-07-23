@@ -50,7 +50,11 @@ if [[ -e "${OVERLAY_DIR}" ]]; then
 fi
 
 "${BASE_PYTHON}" -m venv --system-site-packages "${OVERLAY_DIR}"
-"${OVERLAY_DIR}/bin/python" -m pip install +    --no-index +    --find-links "${WHEELHOUSE}" +    --upgrade +    "${requirements[@]}"
+"${OVERLAY_DIR}/bin/python" -m pip install \
+    --no-index \
+    --find-links "${WHEELHOUSE}" \
+    --upgrade \
+    "${requirements[@]}"
 
 "${OVERLAY_DIR}/bin/python" - "${OVERLAY_DIR}/cuda128-ready.json" <<'PY'
 import importlib.metadata
