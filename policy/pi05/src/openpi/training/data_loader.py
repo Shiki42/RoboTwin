@@ -52,48 +52,65 @@ class DataLoader(Protocol[T_co]):
         raise NotImplementedError("Subclasses of DataLoader should implement __iter__.")
 
 
-class ResumableRandomSampler(torch.utils.data.Sampler[int]):
-    """Deterministic random sampler with an exact serializable cursor."""
+class DeterministicBatchSampler(torch.utils.data.Sampler[list[int]]):
+    """Derive each shuffled batch from seed and consumed batch count.
 
-    def __init__(self, dataset: Dataset, *, seed: int):
+    Worker prefetch may request future batches, so iteration never mutates the
+    checkpoint cursor. The loader advances the cursor only when a batch is
+    returned to the training process.
+    """
+
+    def __init__(self, dataset: Dataset, *, batch_size: int, seed: int):
         if seed < 0:
-            raise ValueError("sampler seed must be non-negative")
+            raise ValueError("batch-plan seed must be non-negative")
+        if batch_size < 1:
+            raise ValueError("batch size must be positive")
+        if len(dataset) < batch_size:
+            raise ValueError(f"batch size ({batch_size}) is larger than dataset size ({len(dataset)})")
         self._dataset = dataset
+        self._batch_size = batch_size
         self._seed = seed
-        self._epoch = 0
-        self._position = 0
+        self._consumed_batches = 0
+
+    @property
+    def steps_per_epoch(self) -> int:
+        return len(self._dataset) // self._batch_size
 
     def __iter__(self):
-        generator = torch.Generator().manual_seed(self._seed + self._epoch)
-        permutation = torch.randperm(len(self._dataset), generator=generator).tolist()
-        for index in permutation[self._position :]:
-            self._position += 1
-            yield index
-        self._epoch += 1
-        self._position = 0
+        start = self._consumed_batches
+        epoch = start // self.steps_per_epoch
+        batch_in_epoch = start % self.steps_per_epoch
+        generator = torch.Generator().manual_seed(self._seed + epoch)
+        permutation = torch.randperm(len(self._dataset), generator=generator)
+        for batch_index in range(batch_in_epoch, self.steps_per_epoch):
+            offset = batch_index * self._batch_size
+            yield permutation[offset : offset + self._batch_size].tolist()
 
     def __len__(self) -> int:
-        return len(self._dataset) - self._position
+        return self.steps_per_epoch - self._consumed_batches % self.steps_per_epoch
+
+    def mark_consumed(self) -> None:
+        self._consumed_batches += 1
 
     def state_dict(self) -> dict[str, int]:
         return {
             "seed": self._seed,
             "length": len(self._dataset),
-            "epoch": self._epoch,
-            "position": self._position,
+            "batch_size": self._batch_size,
+            "consumed_batches": self._consumed_batches,
         }
 
     def load_state_dict(self, state: dict[str, int]) -> None:
-        if set(state) != {"seed", "length", "epoch", "position"}:
-            raise ValueError(f"invalid sampler state keys: {sorted(state)}")
-        if state["seed"] != self._seed:
-            raise ValueError(f"sampler seed mismatch: {state['seed']} != {self._seed}")
-        if state["length"] != len(self._dataset):
-            raise ValueError(f"sampler dataset length mismatch: {state['length']} != {len(self._dataset)}")
-        if state["epoch"] < 0 or not 0 <= state["position"] <= len(self._dataset):
-            raise ValueError(f"invalid sampler cursor: {state}")
-        self._epoch = state["epoch"]
-        self._position = state["position"]
+        expected_keys = {"seed", "length", "batch_size", "consumed_batches"}
+        if set(state) != expected_keys:
+            raise ValueError(f"invalid batch-plan state keys: {sorted(state)}")
+        expected = {"seed": self._seed, "length": len(self._dataset), "batch_size": self._batch_size}
+        actual = {key: state[key] for key in expected}
+        if actual != expected:
+            raise ValueError(f"batch-plan signature mismatch: {actual} != {expected}")
+        if state["consumed_batches"] < 0:
+            raise ValueError(f"invalid consumed batch count: {state['consumed_batches']}")
+        self._consumed_batches = state["consumed_batches"]
 
 
 class TransformedDataset(Dataset[T_co]):
@@ -309,6 +326,9 @@ def create_data_loader(
         shuffle=shuffle,
         num_batches=num_batches,
         num_workers=config.num_workers,
+        prefetch_factor=config.prefetch_factor,
+        persistent_workers=config.persistent_workers,
+        pin_memory=config.pin_memory,
         seed=config.seed,
         skip_norm_stats=skip_norm_stats,
         framework=framework,
@@ -326,6 +346,9 @@ def create_torch_data_loader(
     shuffle: bool = False,
     num_batches: int | None = None,
     num_workers: int = 0,
+    prefetch_factor: int = 2,
+    persistent_workers: bool = False,
+    pin_memory: bool = False,
     seed: int = 0,
     framework: str = "jax",
 ) -> DataLoader[tuple[_model.Observation, _model.Actions]]:
@@ -353,6 +376,7 @@ def create_torch_data_loader(
     # For PyTorch DDP, create DistributedSampler and divide batch size by world size
     # For JAX, divide by process count
     sampler = None
+    batch_sampler = None
     if framework == "pytorch":
         if torch.distributed.is_initialized():
             sampler = torch.utils.data.distributed.DistributedSampler(
@@ -364,21 +388,25 @@ def create_torch_data_loader(
             )
             local_batch_size = batch_size // torch.distributed.get_world_size()
         else:
-            if shuffle:
-                sampler = ResumableRandomSampler(dataset, seed=seed)
             local_batch_size = batch_size
     else:
         local_batch_size = batch_size // jax.process_count()
+    if shuffle and sampler is None:
+        batch_sampler = DeterministicBatchSampler(dataset, batch_size=local_batch_size, seed=seed)
 
     logger.info("local_batch_size: %s", local_batch_size)
     data_loader = TorchDataLoader(
         dataset,
         local_batch_size=local_batch_size,
         sharding=None if framework == "pytorch" else sharding,
-        shuffle=(sampler is None and shuffle),  # Don't shuffle if using sampler
+        shuffle=(sampler is None and batch_sampler is None and shuffle),
         sampler=sampler,
+        batch_sampler=batch_sampler,
         num_batches=num_batches,
         num_workers=num_workers,
+        prefetch_factor=prefetch_factor,
+        persistent_workers=persistent_workers,
+        pin_memory=pin_memory,
         seed=seed,
         framework=framework,
     )
@@ -438,8 +466,12 @@ class TorchDataLoader:
         sharding: jax.sharding.Sharding | None = None,
         shuffle: bool = False,
         sampler: torch.utils.data.Sampler | None = None,
+        batch_sampler: DeterministicBatchSampler | None = None,
         num_batches: int | None = None,
         num_workers: int = 0,
+        prefetch_factor: int = 2,
+        persistent_workers: bool = False,
+        pin_memory: bool = False,
         seed: int = 0,
         framework: str = "jax",
     ):
@@ -473,7 +505,12 @@ class TorchDataLoader:
                 jax.sharding.PartitionSpec("B"),
             )
         self._num_batches = num_batches
-        self._num_workers = num_workers
+        self._batch_sampler = batch_sampler
+
+        if prefetch_factor < 1:
+            raise ValueError("prefetch factor must be positive")
+        if batch_sampler is not None and (sampler is not None or shuffle):
+            raise ValueError("batch sampler cannot be combined with sampler or shuffle")
 
         mp_context = None
         if num_workers > 0:
@@ -481,41 +518,44 @@ class TorchDataLoader:
 
         generator = torch.Generator()
         generator.manual_seed(seed)
-        self._data_loader = torch.utils.data.DataLoader(
-            typing.cast(torch.utils.data.Dataset, dataset),
-            batch_size=local_batch_size,
-            shuffle=(sampler is None and shuffle),  # Don't shuffle if using sampler
-            sampler=sampler,
-            num_workers=num_workers,
-            multiprocessing_context=mp_context,
-            persistent_workers=num_workers > 0,
-            collate_fn=_collate_fn,
-            worker_init_fn=_worker_init_fn,
-            drop_last=True,
-            generator=generator,
-        )
+        loader_kwargs = {
+            "dataset": typing.cast(torch.utils.data.Dataset, dataset),
+            "num_workers": num_workers,
+            "multiprocessing_context": mp_context,
+            "persistent_workers": persistent_workers and num_workers > 0,
+            "collate_fn": _collate_torch_fn if framework == "pytorch" else _collate_fn,
+            "worker_init_fn": _worker_init_fn,
+            "generator": generator,
+            "pin_memory": pin_memory and framework == "pytorch",
+        }
+        if num_workers > 0:
+            loader_kwargs["prefetch_factor"] = prefetch_factor
+        if batch_sampler is None:
+            loader_kwargs.update(
+                batch_size=local_batch_size,
+                shuffle=(sampler is None and shuffle),
+                sampler=sampler,
+                drop_last=True,
+            )
+        else:
+            loader_kwargs["batch_sampler"] = batch_sampler
+        self._data_loader = torch.utils.data.DataLoader(**loader_kwargs)
 
     @property
     def torch_loader(self) -> torch.utils.data.DataLoader:
         return self._data_loader
 
     def state_dict(self) -> dict[str, dict[str, int]]:
-        if self._num_workers != 0:
-            raise ValueError("exact loader checkpointing requires num_workers=0")
-        sampler = self._data_loader.sampler
-        if not isinstance(sampler, ResumableRandomSampler):
-            raise ValueError("exact loader checkpointing requires ResumableRandomSampler")
-        return {"sampler": sampler.state_dict()}
+        if self._batch_sampler is None:
+            raise ValueError("exact loader checkpointing requires DeterministicBatchSampler")
+        return {"batch_plan": self._batch_sampler.state_dict()}
 
     def load_state_dict(self, state: dict[str, dict[str, int]]) -> None:
-        if set(state) != {"sampler"}:
+        if set(state) != {"batch_plan"}:
             raise ValueError(f"invalid loader state keys: {sorted(state)}")
-        if self._num_workers != 0:
-            raise ValueError("exact loader checkpointing requires num_workers=0")
-        sampler = self._data_loader.sampler
-        if not isinstance(sampler, ResumableRandomSampler):
-            raise ValueError("exact loader checkpointing requires ResumableRandomSampler")
-        sampler.load_state_dict(state["sampler"])
+        if self._batch_sampler is None:
+            raise ValueError("exact loader checkpointing requires DeterministicBatchSampler")
+        self._batch_sampler.load_state_dict(state["batch_plan"])
 
     def __iter__(self):
         num_items = 0
@@ -529,6 +569,8 @@ class TorchDataLoader:
                 except StopIteration:
                     break  # We've exhausted the dataset. Create a new iterator and start over.
                 num_items += 1
+                if self._batch_sampler is not None:
+                    self._batch_sampler.mark_consumed()
                 # For JAX, convert to sharded arrays; for PyTorch, return torch tensors
                 if self._sharding is not None:
                     yield jax.tree.map(lambda x: jax.make_array_from_process_local_data(self._sharding, x), batch)
@@ -577,6 +619,11 @@ def _collate_fn(items):
     # Make sure to convert to numpy arrays before stacking since some of the incoming elements
     # may be JAX arrays.
     return _tree_map_many(lambda *xs: np.stack([np.asarray(x) for x in xs], axis=0), items)
+
+
+def _collate_torch_fn(items):
+    """Collate numeric leaves into tensors so DataLoader pinning is effective."""
+    return _tree_map(torch.as_tensor, _collate_fn(items))
 
 
 def _worker_init_fn(worker_id: int) -> None:

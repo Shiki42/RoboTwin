@@ -488,6 +488,12 @@ class TrainConfig:
 
     # Precision for PyTorch training.
     pytorch_training_precision: Literal["bfloat16", "float32"] = "bfloat16"
+    # Trade recomputation for memory during PyTorch backward.
+    pytorch_gradient_checkpointing: bool = True
+    # Use the CUDA fused AdamW implementation.
+    pytorch_fused_optimizer: bool = False
+    # Compile the PyTorch module in place while preserving state-dict keys.
+    pytorch_compile_mode: Literal["none", "default", "reduce-overhead", "max-autotune"] = "none"
 
     lr_schedule: _optimizer.LRScheduleConfig = dataclasses.field(default_factory=_optimizer.CosineDecaySchedule)
     optimizer: _optimizer.OptimizerConfig = dataclasses.field(default_factory=_optimizer.AdamW)
@@ -511,6 +517,12 @@ class TrainConfig:
     # Number of workers to use for the data loader. Increasing this number will speed up data loading but
     # will increase memory and CPU usage.
     num_workers: int = 2
+    # Number of batches each worker prepares ahead. Used only when num_workers > 0.
+    prefetch_factor: int = 2
+    # Keep worker processes alive across dataset epochs. Used only when num_workers > 0.
+    persistent_workers: bool = False
+    # Stage PyTorch batches in page-locked host memory for asynchronous host-to-device copies.
+    pin_memory: bool = False
     # Number of train steps (batches) to run.
     num_train_steps: int = 30_000
 
@@ -651,6 +663,38 @@ def _putcab_pytorch_config(name: str, mode: Literal["none", "visual_phase_gate"]
         model=model,
         data=_putcab_casm_data(dataset_repo),
         pytorch_weight_path=os.environ.get("PI05_PYTORCH_BASE"),
+        batch_size=16,
+        num_workers=0,
+        num_train_steps=20_000,
+        save_interval=2_000,
+        keep_period=20_000,
+        params_only_checkpoint=False,
+        ema_decay=None,
+        wandb_enabled=True,
+        fsdp_devices=1,
+    )
+
+
+def _putcab_jax_config(name: str, mode: Literal["none", "visual_phase_gate"]) -> TrainConfig:
+    model = pi0_config.Pi0Config(
+        pi05=True,
+        casm_mode=mode,
+        paligemma_variant="gemma_2b",
+        action_expert_variant="gemma_300m",
+    )
+    dataset_repo = os.environ.get(
+        "PARALLELVLA_DATASET_REPO",
+        "Shiki42/robotwin_put_obj_cabinet_50_dynFcam_nFov_lerobot",
+    )
+    return TrainConfig(
+        name=name,
+        project_name="parallelvla-putcab-jax",
+        model=model,
+        data=_putcab_casm_data(dataset_repo),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            os.environ.get("PI05_BASE_CHECKPOINT", "gs://openpi-assets/checkpoints/pi05_base/params"),
+            missing_regex=".*phase_gate.*" if mode == "visual_phase_gate" else r"(?!x)x",
+        ),
         batch_size=16,
         num_workers=0,
         num_train_steps=20_000,
@@ -807,6 +851,8 @@ _CONFIGS = [
         params_only_checkpoint=False,
         ema_decay=None,
     ),
+    _putcab_jax_config("pi05_putcab_casm_visual_phase_gate_jax_full", "visual_phase_gate"),
+    _putcab_jax_config("pi05_putcab_jax_matched_full", "none"),
     _putcab_pytorch_config("pi05_putcab_pytorch_matched_full", "none"),
     _putcab_pytorch_config("pi05_putcab_casm_visual_phase_gate_pytorch_full", "visual_phase_gate"),
     # pi0_base by lora

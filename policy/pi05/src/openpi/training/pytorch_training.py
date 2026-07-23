@@ -14,23 +14,31 @@ import torch
 from torch import nn
 
 
-def move_to_device(value: Any, device: torch.device) -> Any:
+def move_to_device(
+    value: Any,
+    device: torch.device,
+    *,
+    non_blocking: bool = False,
+) -> Any:
     """Recursively move an OpenPI observation tree to a torch device."""
     if isinstance(value, torch.Tensor):
-        return value.to(device)
+        return value.to(device, non_blocking=non_blocking)
     if isinstance(value, np.ndarray):
-        return torch.as_tensor(value, device=device)
+        return torch.as_tensor(value).to(device, non_blocking=non_blocking)
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
         updates = {
-            field.name: move_to_device(getattr(value, field.name), device) for field in dataclasses.fields(value)
+            field.name: move_to_device(getattr(value, field.name), device, non_blocking=non_blocking)
+            for field in dataclasses.fields(value)
         }
         return dataclasses.replace(value, **updates)
     if isinstance(value, Mapping):
-        return type(value)((key, move_to_device(item, device)) for key, item in value.items())
+        return type(value)(
+            (key, move_to_device(item, device, non_blocking=non_blocking)) for key, item in value.items()
+        )
     if isinstance(value, tuple):
-        return tuple(move_to_device(item, device) for item in value)
+        return tuple(move_to_device(item, device, non_blocking=non_blocking) for item in value)
     if isinstance(value, list):
-        return [move_to_device(item, device) for item in value]
+        return [move_to_device(item, device, non_blocking=non_blocking) for item in value]
     return value
 
 

@@ -1,8 +1,12 @@
 import dataclasses
 import functools
+import json
 import logging
+import math
 import os
+import pathlib
 import platform
+import time
 from typing import Any
 
 import etils.epath as epath
@@ -23,6 +27,7 @@ import openpi.training.checkpoints as _checkpoints
 import openpi.training.config as _config
 import openpi.training.data_loader as _data_loader
 import openpi.training.optimizer as _optimizer
+import openpi.training.performance as _performance
 import openpi.training.sharding as sharding
 import openpi.training.utils as training_utils
 import openpi.training.weight_loaders as _weight_loaders
@@ -263,7 +268,9 @@ def main(config: _config.TrainConfig):
         shuffle=True,
     )
     data_iter = iter(data_loader)
+    data_wait_started = time.perf_counter()
     batch = next(data_iter)
+    data_wait_ms = (time.perf_counter() - data_wait_started) * 1000
     logging.info(f"Initialized data loader:\n{training_utils.array_tree_to_info(batch)}")
 
     train_state, train_state_sharding = init_train_state(config, init_rng, mesh, resume=resuming)
@@ -288,29 +295,107 @@ def main(config: _config.TrainConfig):
         dynamic_ncols=True,
     )
 
-    infos = []
-    for step in pbar:
+    performance_receipt = None
+    performance_path = os.environ.get("PARALLELVLA_PERFORMANCE_RECEIPT")
+    compile_s = None
+    if performance_path:
+        performance_receipt = _performance.TimingReceipt(
+            pathlib.Path(performance_path),
+            warmup_steps=int(os.environ.get("PARALLELVLA_PERFORMANCE_WARMUP_STEPS", "5")),
+            metadata={
+                "framework": "jax",
+                "mode": "end-to-end",
+                "config_name": config.name,
+                "batch_size": config.batch_size,
+                "images_per_sample": 3,
+                "num_workers": config.num_workers,
+                "prefetch_factor": config.prefetch_factor,
+                "persistent_workers": config.persistent_workers,
+                "pin_memory": config.pin_memory,
+                "seed": config.seed,
+                "code_commit": os.environ.get("PARALLELVLA_CODE_COMMIT"),
+                "dataset_revision": os.environ.get("PARALLELVLA_DATASET_REVISION"),
+                "xla_preallocate": os.environ.get("XLA_PYTHON_CLIENT_PREALLOCATE"),
+                "xla_memory_fraction": os.environ.get("XLA_PYTHON_CLIENT_MEM_FRACTION"),
+            },
+        )
+        compile_started = time.perf_counter()
         with sharding.set_mesh(mesh):
-            train_state, info = ptrain_step(train_rng, train_state, batch)
-        infos.append(info)
-        if step % config.log_interval == 0:
-            stacked_infos = common_utils.stack_forest(infos)
-            reduced_info = jax.device_get(jax.tree.map(jnp.mean, stacked_infos))
-            info_str = ", ".join(f"{k}={v:.4f}" for k, v in reduced_info.items())
-            pbar.write(f"Step {step}: {info_str}")
-            wandb.log(reduced_info, step=step)
-            infos = []
-        batch = next(data_iter)
+            ptrain_step = ptrain_step.lower(train_rng, train_state, batch).compile()
+        compile_s = time.perf_counter() - compile_started
 
-        if (step % config.save_interval == 0 and step > start_step) or step == config.num_train_steps - 1:
-            checkpoint_step = step + 1 if step == config.num_train_steps - 1 else step
-            _checkpoints.save_state(
-                checkpoint_manager,
-                train_state,
-                data_loader,
-                checkpoint_step,
-                params_only=config.params_only_checkpoint,
-            )
+    infos = []
+    first_step_s = None
+    try:
+        for step in pbar:
+            step_started = time.perf_counter()
+            compute_started = time.perf_counter()
+            with sharding.set_mesh(mesh):
+                train_state, info = ptrain_step(train_rng, train_state, batch)
+            if performance_receipt is not None:
+                jax.block_until_ready((train_state, info))
+            compute_ms = (time.perf_counter() - compute_started) * 1000
+
+            logging_started = time.perf_counter()
+            infos.append(info)
+            if step % config.log_interval == 0:
+                stacked_infos = common_utils.stack_forest(infos)
+                reduced_info = jax.device_get(jax.tree.map(jnp.mean, stacked_infos))
+                info_str = ", ".join(f"{k}={v:.4f}" for k, v in reduced_info.items())
+                pbar.write(f"Step {step}: {info_str}")
+                wandb.log(reduced_info, step=step)
+                infos = []
+            logging_ms = (time.perf_counter() - logging_started) * 1000
+
+            data_wait_started = time.perf_counter()
+            batch = next(data_iter)
+            next_data_wait_ms = (time.perf_counter() - data_wait_started) * 1000
+
+            checkpoint_started = time.perf_counter()
+            checkpoint_saved = (
+                step % config.save_interval == 0 and step > start_step
+            ) or step == config.num_train_steps - 1
+            if checkpoint_saved:
+                checkpoint_step = step + 1 if step == config.num_train_steps - 1 else step
+                _checkpoints.save_state(
+                    checkpoint_manager,
+                    train_state,
+                    data_loader,
+                    checkpoint_step,
+                    params_only=config.params_only_checkpoint,
+                )
+                if performance_receipt is not None:
+                    checkpoint_manager.wait_until_finished()
+            checkpoint_ms = (time.perf_counter() - checkpoint_started) * 1000
+
+            if performance_receipt is not None:
+                host_info = jax.device_get(info)
+                metrics = {name: float(value) for name, value in host_info.items()}
+                if not all(math.isfinite(value) for value in metrics.values()):
+                    raise FloatingPointError(f"non-finite benchmark metrics at step {step}: {metrics}")
+                step_total_ms = (time.perf_counter() - step_started) * 1000
+                if first_step_s is None:
+                    first_step_s = step_total_ms / 1000
+                performance_receipt.append(
+                    {
+                        "step": step + 1,
+                        "data_wait_ms": data_wait_ms,
+                        "compute_ms": compute_ms,
+                        "logging_ms": logging_ms,
+                        "checkpoint_ms": checkpoint_ms,
+                        "checkpoint_saved": checkpoint_saved,
+                        "step_total_ms": step_total_ms,
+                        **metrics,
+                    }
+                )
+            data_wait_ms = next_data_wait_ms
+    finally:
+        if performance_receipt is not None:
+            summary_path = performance_receipt.close()
+            summary = json.loads(summary_path.read_text())
+            summary["compile_s"] = compile_s
+            summary["first_compiled_step_s"] = first_step_s
+            summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
 
     logging.info("Waiting for checkpoint manager to finish")
     checkpoint_manager.wait_until_finished()

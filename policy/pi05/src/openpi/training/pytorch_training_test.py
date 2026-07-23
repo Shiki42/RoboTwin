@@ -26,7 +26,7 @@ def test_move_to_device_preserves_dataclass_and_nested_structure():
         state=np.zeros((2, 4), dtype=np.float32),
     )
 
-    moved = pytorch_training.move_to_device(value, torch.device("cpu"))
+    moved = pytorch_training.move_to_device(value, torch.device("cpu"), non_blocking=True)
 
     assert isinstance(moved, ObservationFixture)
     assert isinstance(moved.images["main"], torch.Tensor)
