@@ -78,6 +78,16 @@ IMAGE_RESOLUTION = (224, 224)
 #   s = state dimension
 #   l = sequence length
 #
+def convert_uint8_images(images: dict[str, ArrayT]) -> dict[str, ArrayT]:
+    """Convert uint8 images to the framework-specific float32 model layout."""
+    for key, image in images.items():
+        if image.dtype == np.uint8:
+            images[key] = image.astype(np.float32) / 255.0 * 2.0 - 1.0
+        elif hasattr(image, "dtype") and image.dtype == torch.uint8:
+            images[key] = image.to(torch.float32).permute(0, 3, 1, 2) / 255.0 * 2.0 - 1.0
+    return images
+
+
 @at.typecheck
 @struct.dataclass
 class Observation(Generic[ArrayT]):
@@ -116,14 +126,8 @@ class Observation(Generic[ArrayT]):
         # Ensure that tokenized_prompt and tokenized_prompt_mask are provided together.
         if ("tokenized_prompt" in data) != ("tokenized_prompt_mask" in data):
             raise ValueError("tokenized_prompt and tokenized_prompt_mask must be provided together.")
-        # If images are uint8, convert them to [-1, 1] float32.
-        for key in data["image"]:
-            if data["image"][key].dtype == np.uint8:
-                data["image"][key] = data["image"][key].astype(np.float32) / 255.0 * 2.0 - 1.0
-            elif hasattr(data["image"][key], "dtype") and data["image"][key].dtype == torch.uint8:
-                data["image"][key] = data["image"][key].to(torch.float32).permute(0, 3, 1, 2) / 255.0 * 2.0 - 1.0
         return cls(
-            images=data["image"],
+            images=convert_uint8_images(data["image"]),
             image_masks=data["image_mask"],
             state=data["state"],
             action_mask=data.get("action_mask"),

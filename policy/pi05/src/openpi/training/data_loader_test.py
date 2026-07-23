@@ -55,6 +55,20 @@ def test_pytorch_loader_does_not_call_jax_tree_or_process_api(monkeypatch):
     assert torch.equal(batch["nested"]["value"], torch.tensor([0, 1]))
 
 
+def test_pytorch_collate_prepares_final_images_before_pin_memory():
+    items = [
+        {"image": {"cam": torch.tensor([[[0], [255]]], dtype=torch.uint8)}},
+        {"image": {"cam": torch.tensor([[[255], [0]]], dtype=torch.uint8)}},
+    ]
+
+    batch = _data_loader._collate_torch_fn(items)  # noqa: SLF001
+    images = batch["image"]["cam"]
+
+    assert images.dtype == torch.float32
+    assert images.shape == (2, 1, 1, 2)
+    assert torch.equal(images, torch.tensor([[[[-1.0, 1.0]]], [[[1.0, -1.0]]]]))
+
+
 def test_deterministic_batch_sampler_restores_exact_next_batch():
     dataset = list(range(10))
     plan = _data_loader.DeterministicBatchSampler(dataset, batch_size=2, seed=7)

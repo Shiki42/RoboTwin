@@ -622,8 +622,11 @@ def _collate_fn(items):
 
 
 def _collate_torch_fn(items):
-    """Collate numeric leaves into tensors so DataLoader pinning is effective."""
-    return _tree_map(torch.as_tensor, _collate_fn(items))
+    """Prepare final numeric tensors before DataLoader moves them to pinned memory."""
+    batch = _tree_map(torch.as_tensor, _collate_fn(items))
+    if isinstance(batch, dict) and "image" in batch:
+        _model.convert_uint8_images(batch["image"])
+    return batch
 
 
 def _worker_init_fn(worker_id: int) -> None:
