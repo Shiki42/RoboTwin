@@ -18,6 +18,34 @@ def _gradient_checkpointing_enabled(
     return training and (expert_enabled or wrapper_enabled)
 
 
+def _attention_forward(
+    module,
+    query,
+    key,
+    value,
+    attention_mask,
+    scaling,
+):
+    implementation = module.config._attn_implementation  # noqa: SLF001
+    if implementation == "eager":
+        attention_forward = modeling_gemma.eager_attention_forward
+    elif implementation == "sdpa":
+        attention_forward = modeling_gemma.ALL_ATTENTION_FUNCTIONS["sdpa"]
+    else:
+        raise ValueError(f"Unsupported Gemma attention implementation: {implementation}")
+    output, _ = attention_forward(
+        module,
+        query,
+        key,
+        value,
+        attention_mask,
+        scaling=scaling,
+        dropout=0.0,
+        is_causal=False,
+    )
+    return output
+
+
 class PaliGemmaWithExpertModel(nn.Module):
     def __init__(
         self,
@@ -186,7 +214,7 @@ class PaliGemmaWithExpertModel(nn.Module):
                 scaling = self.paligemma.language_model.layers[layer_idx].self_attn.scaling
 
                 # Attention computation
-                att_output, _ = modeling_gemma.eager_attention_forward(
+                att_output = _attention_forward(
                     self.paligemma.language_model.layers[layer_idx].self_attn,
                     query_states,
                     key_states,
