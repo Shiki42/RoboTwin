@@ -1,0 +1,132 @@
+from __future__ import annotations
+
+import dataclasses
+import random
+
+import numpy as np
+import pytest
+import safetensors.torch
+import torch
+from torch import nn
+
+from openpi.training import pytorch_training
+
+
+@dataclasses.dataclass(frozen=True)
+class ObservationFixture:
+    images: dict[str, np.ndarray]
+    state: np.ndarray
+    optional: None = None
+
+
+def test_move_to_device_preserves_dataclass_and_nested_structure():
+    value = ObservationFixture(
+        images={"main": np.ones((2, 3), dtype=np.float32)},
+        state=np.zeros((2, 4), dtype=np.float32),
+    )
+
+    moved = pytorch_training.move_to_device(value, torch.device("cpu"))
+
+    assert isinstance(moved, ObservationFixture)
+    assert isinstance(moved.images["main"], torch.Tensor)
+    assert isinstance(moved.state, torch.Tensor)
+    assert moved.optional is None
+
+
+def test_learning_rate_warmup_and_cosine_endpoints():
+    kwargs = {
+        "warmup_steps": 2,
+        "peak_lr": 3e-4,
+        "decay_steps": 10,
+        "end_lr": 3e-5,
+    }
+
+    assert pytorch_training.learning_rate(0, **kwargs) == pytest.approx(1e-4)
+    assert pytorch_training.learning_rate(2, **kwargs) == pytest.approx(3e-4)
+    assert pytorch_training.learning_rate(10, **kwargs) == pytest.approx(3e-5)
+    assert pytorch_training.learning_rate(20, **kwargs) == pytest.approx(3e-5)
+
+
+def test_load_pretrained_allows_only_explicit_new_head(tmp_path):
+    source = nn.Linear(3, 2)
+    checkpoint = tmp_path / "base"
+    checkpoint.mkdir()
+    safetensors.torch.save_model(source, checkpoint / "model.safetensors")
+    target = nn.ModuleDict({"base": nn.Linear(3, 2), "phase_gate": nn.Linear(2, 1)})
+
+    with pytest.raises(ValueError, match="pretrained state mismatch"):
+        pytorch_training.load_pretrained(target, checkpoint)
+
+    compatible = nn.ModuleDict({"base": nn.Linear(3, 2), "phase_gate": nn.Linear(2, 1)})
+    base_only = nn.ModuleDict({"base": compatible["base"]})
+    safetensors.torch.save_model(base_only, checkpoint / "model.safetensors")
+    missing, unexpected = pytorch_training.load_pretrained(
+        compatible,
+        checkpoint,
+        allowed_missing_prefixes=("phase_gate.",),
+    )
+
+    assert set(missing) == {"phase_gate.weight", "phase_gate.bias"}
+    assert unexpected == []
+
+
+def test_checkpoint_round_trip_restores_model_optimizer_step_and_rng(tmp_path):
+    pytorch_training.seed_everything(17)
+    model = nn.Linear(3, 2)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    inputs = torch.randn(4, 3)
+    model(inputs).sum().backward()
+    optimizer.step()
+    optimizer.zero_grad(set_to_none=True)
+
+    checkpoint = pytorch_training.save_checkpoint(
+        model,
+        optimizer,
+        global_step=20,
+        checkpoint_root=tmp_path,
+        metadata={"run": "smoke"},
+    )
+    expected_python = random.random()
+    expected_numpy = np.random.random()
+    expected_torch = torch.rand(3)
+
+    restored_model = nn.Linear(3, 2)
+    restored_optimizer = torch.optim.AdamW(restored_model.parameters(), lr=9e-4)
+    step, metadata = pytorch_training.load_checkpoint(
+        restored_model,
+        restored_optimizer,
+        checkpoint,
+        device=torch.device("cpu"),
+    )
+
+    assert step == 20
+    assert metadata == {"run": "smoke"}
+    for expected, actual in zip(model.parameters(), restored_model.parameters(), strict=True):
+        assert torch.equal(expected, actual)
+    assert restored_optimizer.state_dict()["state"]
+    assert random.random() == expected_python
+    assert np.random.random() == expected_numpy
+    assert torch.equal(torch.rand(3), expected_torch)
+
+
+def test_save_checkpoint_is_atomic_and_rejects_duplicate_step(tmp_path):
+    model = nn.Linear(2, 1)
+    optimizer = torch.optim.AdamW(model.parameters())
+
+    pytorch_training.save_checkpoint(
+        model,
+        optimizer,
+        global_step=1,
+        checkpoint_root=tmp_path,
+        metadata={},
+    )
+
+    with pytest.raises(FileExistsError):
+        pytorch_training.save_checkpoint(
+            model,
+            optimizer,
+            global_step=1,
+            checkpoint_root=tmp_path,
+            metadata={},
+        )
+    assert not list(tmp_path.glob(".tmp-*"))
