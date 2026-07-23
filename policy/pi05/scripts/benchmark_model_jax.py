@@ -56,6 +56,13 @@ def _initialize_jax_runtime(jax_module) -> None:
     jax_module.block_until_ready(startup_key)
 
 
+def _to_jax_model_layout(cpu_batch):
+    """Convert PyTorch BCHW images to JAX BHWC without changing values."""
+    observation, actions = cpu_batch
+    images = {name: image.permute(0, 2, 3, 1).contiguous() for name, image in observation.images.items()}
+    return dataclasses.replace(observation, images=images), actions
+
+
 def main() -> None:
     args = _parse_args()
     summary_path = args.output.with_suffix(".summary.json")
@@ -104,6 +111,7 @@ def main() -> None:
     )
     cpu_batch = next(iter(loader))
     batch_hash = _performance.tree_sha256(cpu_batch)
+    cpu_batch = _to_jax_model_layout(cpu_batch)
     numpy_batch = jax.tree.map(np.asarray, cpu_batch)
 
     rng = jax.random.key(config.seed)
