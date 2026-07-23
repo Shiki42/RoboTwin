@@ -50,6 +50,12 @@ def _require_receipts() -> dict[str, str]:
     return values
 
 
+def _initialize_jax_runtime(jax_module) -> None:
+    """Load JAX CUDA libraries before the PyTorch-backed input loader."""
+    startup_key = jax_module.random.key(0)
+    jax_module.block_until_ready(startup_key)
+
+
 def main() -> None:
     args = _parse_args()
     summary_path = args.output.with_suffix(".summary.json")
@@ -66,6 +72,8 @@ def main() -> None:
 
     import jax  # noqa: PLC0415
     import numpy as np  # noqa: PLC0415
+
+    _initialize_jax_runtime(jax)
     import train as _trainer  # noqa: PLC0415
 
     from openpi.training import config as _config  # noqa: PLC0415
