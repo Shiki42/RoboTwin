@@ -21,6 +21,7 @@ from openpi.training import performance as _performance
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config-name", required=True)
+    parser.add_argument("--assets-base-dir", type=pathlib.Path, required=True)
     parser.add_argument("--output", type=pathlib.Path, required=True)
     parser.add_argument("--mode", choices=("loader", "decode-only"), default="loader")
     parser.add_argument("--backend", choices=("pyav", "torchcodec"), required=True)
@@ -128,9 +129,11 @@ def main() -> None:
     if args.mode == "decode-only" and args.num_workers != 0:
         raise ValueError("decode-only mode benchmarks the decoder in the calling process")
 
+    assets_base_dir = _performance.resolve_benchmark_assets_base_dir(args.assets_base_dir)
     config = _replace_backend(_config.get_config(args.config_name), args.backend)
     config = dataclasses.replace(
         config,
+        assets_base_dir=assets_base_dir,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         prefetch_factor=args.prefetch_factor,
@@ -149,6 +152,7 @@ def main() -> None:
         "persistent_workers": args.persistent_workers,
         "pin_memory": args.pin_memory,
         "run_index": args.run_index,
+        "assets_base_dir": assets_base_dir,
         "seed": args.seed,
     }
     receipt = _performance.TimingReceipt(

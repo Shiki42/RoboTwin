@@ -26,6 +26,7 @@ from openpi.training import pytorch_training
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config-name", required=True)
+    parser.add_argument("--assets-base-dir", type=pathlib.Path, required=True)
     parser.add_argument("--output", type=pathlib.Path, required=True)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--warmup-steps", type=int, default=5)
@@ -93,8 +94,10 @@ def main() -> None:
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is required")
 
+    assets_base_dir = _performance.resolve_benchmark_assets_base_dir(args.assets_base_dir)
     config = dataclasses.replace(
         _config.get_config(args.config_name),
+        assets_base_dir=assets_base_dir,
         batch_size=args.batch_size,
         pytorch_compile_mode=args.compile_mode,
         pytorch_gradient_checkpointing=args.gradient_checkpointing,
@@ -141,6 +144,7 @@ def main() -> None:
         "images_per_sample": 3,
         "run_index": args.run_index,
         "channels_last": args.channels_last,
+        "assets_base_dir": assets_base_dir,
     }
     receipt = _performance.TimingReceipt(
         args.output,

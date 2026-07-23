@@ -16,6 +16,14 @@ import torch
 CUDA_STAGE_NAMES = ("h2d", "forward", "backward", "optimizer")
 
 
+def resolve_benchmark_assets_base_dir(path: pathlib.Path) -> str:
+    """Return an existing benchmark assets directory as an absolute path."""
+    resolved = path.expanduser().resolve(strict=True)
+    if not resolved.is_dir():
+        raise NotADirectoryError(resolved)
+    return str(resolved)
+
+
 class CudaStageTimer:
     """Record ordered CUDA stages and synchronize once when resolving them."""
 

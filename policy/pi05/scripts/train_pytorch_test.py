@@ -37,7 +37,7 @@ def test_train_step_updates_torch_model_and_reports_finite_metrics():
     model = TinyPolicy()
     optimizer = torch.optim.AdamW(model.parameters(), lr=0.1)
 
-    metrics = train_pytorch._train_step(  # noqa: SLF001
+    metrics = train_pytorch.train_step(
         model,
         optimizer,
         observation=None,
@@ -58,7 +58,7 @@ def test_resume_signature_allows_only_training_budget_extension(monkeypatch):
     config = _config.get_config("pi05_putcab_pytorch_matched_full")
     extended = dataclasses.replace(config, num_train_steps=config.num_train_steps + 1)
 
-    assert train_pytorch._config_signature(config) == train_pytorch._config_signature(extended)  # noqa: SLF001
+    assert train_pytorch.config_signature(config) == train_pytorch.config_signature(extended)
 
 
 @pytest.mark.parametrize("code_commit", ["", "abc123", "A" * 40, "g" * 40])
@@ -67,7 +67,7 @@ def test_config_signature_requires_full_lowercase_code_commit(monkeypatch, code_
     config = _config.get_config("pi05_putcab_pytorch_matched_full")
 
     with pytest.raises(ValueError, match="PARALLELVLA_CODE_COMMIT"):
-        train_pytorch._config_signature(config)  # noqa: SLF001
+        train_pytorch.config_signature(config)
 
 
 def test_checkpoint_files_include_normalizer_and_manifest():

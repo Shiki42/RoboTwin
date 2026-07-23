@@ -16,6 +16,7 @@ import time
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config-name", required=True)
+    parser.add_argument("--assets-base-dir", type=pathlib.Path, required=True)
     parser.add_argument("--output", type=pathlib.Path, required=True)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--warmup-steps", type=int, default=5)
@@ -63,21 +64,23 @@ def main() -> None:
     os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = str(args.xla_preallocate).lower()
     os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = str(args.xla_memory_fraction)
 
-    import jax
-    import numpy as np
-    import train as _trainer
+    import jax  # noqa: PLC0415
+    import numpy as np  # noqa: PLC0415
+    import train as _trainer  # noqa: PLC0415
 
-    from openpi.training import config as _config
-    from openpi.training import data_loader as _data
-    from openpi.training import performance as _performance
-    from openpi.training import sharding
+    from openpi.training import config as _config  # noqa: PLC0415
+    from openpi.training import data_loader as _data  # noqa: PLC0415
+    from openpi.training import performance as _performance  # noqa: PLC0415
+    from openpi.training import sharding  # noqa: PLC0415
 
     environment = _require_receipts()
     if not any(device.platform == "gpu" for device in jax.devices()):
         raise RuntimeError(f"JAX did not initialize a GPU backend: {jax.devices()}")
 
+    assets_base_dir = _performance.resolve_benchmark_assets_base_dir(args.assets_base_dir)
     config = dataclasses.replace(
         _config.get_config(args.config_name),
+        assets_base_dir=assets_base_dir,
         batch_size=args.batch_size,
         num_workers=0,
         persistent_workers=False,
@@ -93,7 +96,7 @@ def main() -> None:
     )
     cpu_batch = next(iter(loader))
     batch_hash = _performance.tree_sha256(cpu_batch)
-    numpy_batch = jax.tree.map(lambda value: np.asarray(value), cpu_batch)
+    numpy_batch = jax.tree.map(np.asarray, cpu_batch)
 
     rng = jax.random.key(config.seed)
     train_rng, init_rng = jax.random.split(rng)
@@ -132,6 +135,7 @@ def main() -> None:
         "code_commit": environment["PARALLELVLA_CODE_COMMIT"],
         "dataset_revision": environment["PARALLELVLA_DATASET_REVISION"],
         "xla_preallocate": args.xla_preallocate,
+        "assets_base_dir": assets_base_dir,
         "xla_memory_fraction": args.xla_memory_fraction,
     }
     receipt = _performance.TimingReceipt(

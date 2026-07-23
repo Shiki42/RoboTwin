@@ -6,6 +6,19 @@ import torch
 from openpi.training import performance
 
 
+def test_resolve_benchmark_assets_base_dir_requires_an_existing_directory(tmp_path):
+    assets_dir = tmp_path / "assets"
+    assets_dir.mkdir()
+    file_path = tmp_path / "not-a-directory"
+    file_path.write_text("x")
+
+    assert performance.resolve_benchmark_assets_base_dir(assets_dir) == str(assets_dir.resolve())
+    with pytest.raises(FileNotFoundError):
+        performance.resolve_benchmark_assets_base_dir(tmp_path / "missing")
+    with pytest.raises(NotADirectoryError):
+        performance.resolve_benchmark_assets_base_dir(file_path)
+
+
 def test_timing_receipt_keeps_raw_warmup_and_summarizes_measured(tmp_path):
     path = tmp_path / "timings.jsonl"
     receipt = performance.TimingReceipt(path, warmup_steps=1, metadata={"batch_size": 16, "images_per_sample": 3})
