@@ -7,8 +7,8 @@ import json
 import logging
 import os
 import pathlib
+import re
 import shutil
-import subprocess
 import time
 from typing import Any
 
@@ -26,6 +26,13 @@ from openpi.training import data_loader as _data
 from openpi.training import pytorch_training
 
 logger = logging.getLogger(__name__)
+
+
+def _required_code_commit() -> str:
+    code_commit = os.environ.get("PARALLELVLA_CODE_COMMIT", "")
+    if re.fullmatch(r"[0-9a-f]{40}", code_commit) is None:
+        raise ValueError("PARALLELVLA_CODE_COMMIT must be a full lowercase Git commit SHA")
+    return code_commit
 
 
 def _config_signature(config: _config.TrainConfig) -> dict[str, Any]:
@@ -46,12 +53,7 @@ def _config_signature(config: _config.TrainConfig) -> dict[str, Any]:
         "dataset_repo": config.data.repo_id,
         "dataset_revision": os.environ.get("PARALLELVLA_DATASET_REVISION"),
         "base_sha256": os.environ.get("PI05_BASE_SHA256"),
-        "code_commit": subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip(),
+        "code_commit": _required_code_commit(),
     }
 
 

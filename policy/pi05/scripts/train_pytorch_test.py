@@ -54,10 +54,20 @@ def test_train_step_updates_torch_model_and_reports_finite_metrics():
 def test_resume_signature_allows_only_training_budget_extension(monkeypatch):
     monkeypatch.setenv("PARALLELVLA_DATASET_REVISION", "revision")
     monkeypatch.setenv("PI05_BASE_SHA256", "sha")
+    monkeypatch.setenv("PARALLELVLA_CODE_COMMIT", "a" * 40)
     config = _config.get_config("pi05_putcab_pytorch_matched_full")
     extended = dataclasses.replace(config, num_train_steps=config.num_train_steps + 1)
 
     assert train_pytorch._config_signature(config) == train_pytorch._config_signature(extended)  # noqa: SLF001
+
+
+@pytest.mark.parametrize("code_commit", ["", "abc123", "A" * 40, "g" * 40])
+def test_config_signature_requires_full_lowercase_code_commit(monkeypatch, code_commit):
+    monkeypatch.setenv("PARALLELVLA_CODE_COMMIT", code_commit)
+    config = _config.get_config("pi05_putcab_pytorch_matched_full")
+
+    with pytest.raises(ValueError, match="PARALLELVLA_CODE_COMMIT"):
+        train_pytorch._config_signature(config)  # noqa: SLF001
 
 
 def test_checkpoint_files_include_normalizer_and_manifest():
