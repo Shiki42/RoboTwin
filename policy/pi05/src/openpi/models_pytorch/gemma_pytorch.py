@@ -33,6 +33,8 @@ def _attention_forward(
         attention_forward = modeling_gemma.ALL_ATTENTION_FUNCTIONS["sdpa"]
     else:
         raise ValueError(f"Unsupported Gemma attention implementation: {implementation}")
+    if attention_mask is not None and attention_mask.dtype != query.dtype:
+        attention_mask = attention_mask.to(query.dtype)
     output, _ = attention_forward(
         module,
         query,

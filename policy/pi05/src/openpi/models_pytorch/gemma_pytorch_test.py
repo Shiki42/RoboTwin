@@ -66,3 +66,27 @@ def test_sdpa_attention_matches_eager_forward_and_backward():
 def test_attention_rejects_unvalidated_implementation():
     with pytest.raises(ValueError, match="Unsupported Gemma attention implementation"):
         _run_attention("flash_attention_2")
+
+
+def test_sdpa_casts_attention_bias_to_bfloat16_query_dtype():
+    query = torch.randn(1, 2, 4, 8, dtype=torch.bfloat16)
+    key = torch.randn(1, 1, 4, 8, dtype=torch.bfloat16)
+    value = torch.randn(1, 1, 4, 8, dtype=torch.bfloat16)
+    attention_mask = torch.full((1, 1, 4, 4), float("-inf"), dtype=torch.float32).triu(diagonal=1)
+    module = SimpleNamespace(
+        config=SimpleNamespace(_attn_implementation="sdpa"),
+        num_key_value_groups=2,
+        training=True,
+    )
+
+    output = gemma_pytorch._attention_forward(  # noqa: SLF001
+        module,
+        query,
+        key,
+        value,
+        attention_mask,
+        scaling=8**-0.5,
+    )
+
+    assert output.dtype == torch.bfloat16
+    assert torch.isfinite(output).all()
