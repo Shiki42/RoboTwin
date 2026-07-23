@@ -168,18 +168,10 @@ def preprocess_observation_pytorch(
         else:
             out_masks[key] = observation.image_masks[key]
 
-    # Create a simple object with the required attributes instead of using the complex Observation class
-    class SimpleProcessedObservation:
-        def __init__(self, **kwargs):
-            for key, value in kwargs.items():
-                setattr(self, key, value)
-
-    return SimpleProcessedObservation(
-        images=out_images,
-        image_masks=out_masks,
-        state=observation.state,
-        tokenized_prompt=observation.tokenized_prompt,
-        tokenized_prompt_mask=observation.tokenized_prompt_mask,
-        token_ar_mask=observation.token_ar_mask,
-        token_loss_mask=observation.token_loss_mask,
+    return (
+        tuple(out_images.values()),
+        tuple(out_masks.values()),
+        observation.tokenized_prompt,
+        observation.tokenized_prompt_mask,
+        observation.state,
     )

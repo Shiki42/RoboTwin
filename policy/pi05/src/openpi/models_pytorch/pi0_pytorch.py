@@ -176,14 +176,7 @@ class PI0Pytorch(nn.Module):
 
     def _preprocess_observation(self, observation, *, train=True):
         """Helper method to preprocess observation."""
-        observation = _preprocessing.preprocess_observation_pytorch(observation, train=train)
-        return (
-            list(observation.images.values()),
-            list(observation.image_masks.values()),
-            observation.tokenized_prompt,
-            observation.tokenized_prompt_mask,
-            observation.state,
-        )
+        return _preprocessing.preprocess_observation_pytorch(observation, train=train)
 
     def sample_noise(self, shape, device):
         return torch.normal(
