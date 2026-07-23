@@ -261,11 +261,12 @@ def train(config: _config.TrainConfig) -> None:
     last_log_time = time.monotonic()
     performance_receipt = None
     performance_path = os.environ.get("PARALLELVLA_PERFORMANCE_RECEIPT")
+    record_batch_sha256 = os.environ.get("PARALLELVLA_RECORD_BATCH_SHA256") == "1"
     if performance_path:
         performance_receipt = _performance.TimingReceipt(
             pathlib.Path(performance_path),
             warmup_steps=int(os.environ.get("PARALLELVLA_PERFORMANCE_WARMUP_STEPS", "5")),
-            metadata={**manifest, "images_per_sample": 3},
+            metadata={**manifest, "images_per_sample": 3, "record_batch_sha256": record_batch_sha256},
         )
     cuda_timer = _performance.CudaStageTimer() if performance_receipt is not None else None
 
@@ -275,6 +276,7 @@ def train(config: _config.TrainConfig) -> None:
             data_started = time.perf_counter()
             observation, actions = next(iterator)
             data_wait_ms = (time.perf_counter() - data_started) * 1000
+            batch_sha256 = _performance.tree_sha256((observation, actions)) if record_batch_sha256 else None
             if cuda_timer is not None:
                 cuda_timer.start("h2d")
             observation = pytorch_training.move_to_device(observation, device, non_blocking=True)
@@ -326,17 +328,18 @@ def train(config: _config.TrainConfig) -> None:
                 )
             checkpoint_ms = (time.perf_counter() - checkpoint_started) * 1000
             if performance_receipt is not None:
-                performance_receipt.append(
-                    {
-                        "step": global_step,
-                        "data_wait_ms": data_wait_ms,
-                        **cuda_timings,
-                        "logging_ms": logging_ms,
-                        "checkpoint_ms": checkpoint_ms,
-                        "checkpoint_saved": should_save,
-                        "step_total_ms": (time.perf_counter() - step_started) * 1000,
-                    }
-                )
+                receipt_row = {
+                    "step": global_step,
+                    "data_wait_ms": data_wait_ms,
+                    **cuda_timings,
+                    "logging_ms": logging_ms,
+                    "checkpoint_ms": checkpoint_ms,
+                    "checkpoint_saved": should_save,
+                    "step_total_ms": (time.perf_counter() - step_started) * 1000,
+                }
+                if batch_sha256 is not None:
+                    receipt_row["batch_sha256"] = batch_sha256
+                performance_receipt.append(receipt_row)
     finally:
         if performance_receipt is not None:
             summary_path = performance_receipt.close()
