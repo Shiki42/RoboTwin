@@ -161,6 +161,14 @@ class PI0Pytorch(nn.Module):
         """Check if gradient checkpointing is enabled."""
         return self.gradient_checkpointing_enabled
 
+    def set_attention_implementation(self, implementation: str) -> None:
+        if implementation not in {"eager", "sdpa"}:
+            raise ValueError(f"Unsupported attention implementation: {implementation}")
+        for module in self.modules():
+            module_config = getattr(module, "config", None)
+            if getattr(module_config, "_attn_implementation", None) is not None:
+                setattr(module_config, "_attn_implementation", implementation)
+
     def _embed_image(self, image: torch.Tensor) -> torch.Tensor:
         """Checkpoint only the high-activation vision encoder."""
         if self.gradient_checkpointing_enabled and self.training:

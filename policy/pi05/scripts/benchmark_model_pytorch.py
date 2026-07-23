@@ -15,7 +15,7 @@ os.environ.setdefault("JAX_PLATFORMS", "cpu")
 os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
 
 import torch
-import train_pytorch as _trainer
+from scripts import train_pytorch as _trainer
 
 from openpi.training import config as _config
 from openpi.training import data_loader as _data
@@ -37,6 +37,11 @@ def _parse_args() -> argparse.Namespace:
         "--compile-mode",
         choices=("none", "default", "reduce-overhead", "max-autotune"),
         default="none",
+    )
+    parser.add_argument(
+        "--attention-implementation",
+        choices=("eager", "sdpa"),
+        default="sdpa",
     )
     parser.add_argument(
         "--gradient-checkpointing",
@@ -100,6 +105,7 @@ def main() -> None:
         assets_base_dir=assets_base_dir,
         batch_size=args.batch_size,
         pytorch_compile_mode=args.compile_mode,
+        pytorch_attention_implementation=args.attention_implementation,
         pytorch_gradient_checkpointing=args.gradient_checkpointing,
         pytorch_fused_optimizer=args.fused_optimizer,
         seed=args.seed,

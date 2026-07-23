@@ -46,6 +46,7 @@ def config_signature(config: _config.TrainConfig) -> dict[str, Any]:
         "persistent_workers": config.persistent_workers,
         "pin_memory": config.pin_memory,
         "pytorch_compile_mode": config.pytorch_compile_mode,
+        "pytorch_attention_implementation": config.pytorch_attention_implementation,
         "pytorch_fused_optimizer": config.pytorch_fused_optimizer,
         "pytorch_gradient_checkpointing": config.pytorch_gradient_checkpointing,
         "seed": config.seed,
@@ -85,6 +86,7 @@ def build_model(config: _config.TrainConfig, device: torch.device) -> pi0_pytorc
         raise ValueError("PyTorch trainer requires full PI0.5 variants; LoRA is not implemented")
     model_config = dataclasses.replace(config.model, dtype=config.pytorch_training_precision)
     model = pi0_pytorch.PI0Pytorch(model_config).to(device)
+    model.set_attention_implementation(config.pytorch_attention_implementation)
     if config.pytorch_gradient_checkpointing:
         model.gradient_checkpointing_enable()
     else:

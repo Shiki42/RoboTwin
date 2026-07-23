@@ -59,6 +59,9 @@ def test_resume_signature_allows_only_training_budget_extension(monkeypatch):
     extended = dataclasses.replace(config, num_train_steps=config.num_train_steps + 1)
 
     assert train_pytorch.config_signature(config) == train_pytorch.config_signature(extended)
+    eager_attention = dataclasses.replace(config, pytorch_attention_implementation="eager")
+    assert train_pytorch.config_signature(eager_attention)["pytorch_attention_implementation"] == "eager"
+    assert train_pytorch.config_signature(config) != train_pytorch.config_signature(eager_attention)
 
 
 @pytest.mark.parametrize("code_commit", ["", "abc123", "A" * 40, "g" * 40])

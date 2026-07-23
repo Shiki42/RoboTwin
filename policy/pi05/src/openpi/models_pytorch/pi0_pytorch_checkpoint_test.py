@@ -1,3 +1,6 @@
+from types import SimpleNamespace
+
+import pytest
 import torch
 from torch import nn
 
@@ -13,6 +16,7 @@ def _make_model(*, gradient_checkpointing_enabled: bool) -> pi0_pytorch.PI0Pytor
     model = pi0_pytorch.PI0Pytorch.__new__(pi0_pytorch.PI0Pytorch)
     nn.Module.__init__(model)
     model.paligemma_with_expert = _ImageEmbedder()
+    model.paligemma_with_expert.config = SimpleNamespace(_attn_implementation="sdpa")
     model.gradient_checkpointing_enabled = gradient_checkpointing_enabled
     model.train()
     return model
@@ -32,3 +36,12 @@ def test_selective_vision_checkpoint_preserves_output_and_gradient():
 
     torch.testing.assert_close(checkpointed_output, eager_output)
     torch.testing.assert_close(checkpointed_input.grad, eager_input.grad)
+
+
+def test_attention_implementation_is_explicit_and_validated():
+    model = _make_model(gradient_checkpointing_enabled=False)
+    model.set_attention_implementation("eager")
+    assert model.paligemma_with_expert.config._attn_implementation == "eager"  # noqa: SLF001
+
+    with pytest.raises(ValueError, match="Unsupported attention implementation"):
+        model.set_attention_implementation("flash_attention_2")
