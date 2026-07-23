@@ -1,4 +1,5 @@
 from collections.abc import Iterator, Sequence
+import dataclasses
 import logging
 import multiprocessing
 import os
@@ -17,6 +18,7 @@ from openpi.training.droid_rlds_dataset import DroidRldsDataset
 import openpi.transforms as _transforms
 
 T_co = TypeVar("T_co", covariant=True)
+logger = logging.getLogger(__name__)
 
 
 class Dataset(Protocol[T_co]):
@@ -241,7 +243,7 @@ def create_data_loader(
         framework: The framework to use ("jax" or "pytorch").
     """
     data_config = config.data.create(config.assets_dirs, config.model)
-    logging.info(f"data_config: {data_config}")
+    logger.info("data_config: %s", data_config)
 
     if data_config.rlds_data_dir is not None:
         return create_rlds_data_loader(
@@ -322,7 +324,7 @@ def create_torch_data_loader(
     else:
         local_batch_size = batch_size // jax.process_count()
 
-    logging.info(f"local_batch_size: {local_batch_size}")
+    logger.info("local_batch_size: %s", local_batch_size)
     data_loader = TorchDataLoader(
         dataset,
         local_batch_size=local_batch_size,
@@ -410,7 +412,7 @@ class TorchDataLoader:
                 execute in the main process.
             seed: The seed to use for shuffling the data.
         """
-        if jax.process_count() > 1:
+        if framework == "jax" and jax.process_count() > 1:
             raise NotImplementedError("Data loading with multiple processes is not supported.")
 
         if len(dataset) < local_batch_size:
@@ -466,14 +468,50 @@ class TorchDataLoader:
                 if self._sharding is not None:
                     yield jax.tree.map(lambda x: jax.make_array_from_process_local_data(self._sharding, x), batch)
                 else:
-                    yield jax.tree.map(torch.as_tensor, batch)
+                    yield _tree_map(torch.as_tensor, batch)
+
+
+def _tree_map(function, value):
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        updates = {field.name: _tree_map(function, getattr(value, field.name)) for field in dataclasses.fields(value)}
+        return dataclasses.replace(value, **updates)
+    if isinstance(value, dict):
+        return {key: _tree_map(function, item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return tuple(_tree_map(function, item) for item in value)
+    if isinstance(value, list):
+        return [_tree_map(function, item) for item in value]
+    if value is None:
+        return None
+    return function(value)
+
+
+def _tree_map_many(function, values):
+    first = values[0]
+    if first is None:
+        if any(value is not None for value in values):
+            raise ValueError("tree structure mismatch: mixed None and non-None values")
+        return None
+    if dataclasses.is_dataclass(first) and not isinstance(first, type):
+        updates = {
+            field.name: _tree_map_many(function, [getattr(value, field.name) for value in values])
+            for field in dataclasses.fields(first)
+        }
+        return dataclasses.replace(first, **updates)
+    if isinstance(first, dict):
+        return {key: _tree_map_many(function, [value[key] for value in values]) for key in first}
+    if isinstance(first, tuple):
+        return tuple(_tree_map_many(function, [value[index] for value in values]) for index in range(len(first)))
+    if isinstance(first, list):
+        return [_tree_map_many(function, [value[index] for value in values]) for index in range(len(first))]
+    return function(*values)
 
 
 def _collate_fn(items):
     """Collate the batch elements into batched numpy arrays."""
     # Make sure to convert to numpy arrays before stacking since some of the incoming elements
     # may be JAX arrays.
-    return jax.tree.map(lambda *xs: np.stack([np.asarray(x) for x in xs], axis=0), *items)
+    return _tree_map_many(lambda *xs: np.stack([np.asarray(x) for x in xs], axis=0), items)
 
 
 def _worker_init_fn(worker_id: int) -> None:

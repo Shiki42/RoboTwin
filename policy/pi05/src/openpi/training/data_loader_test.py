@@ -1,6 +1,7 @@
 import dataclasses
 
 import jax
+import torch
 
 from openpi.models import pi0_config
 from openpi.training import config as _config
@@ -32,6 +33,26 @@ def test_torch_data_loader_infinite():
 
     for _ in range(10):
         _ = next(data_iter)
+
+
+def test_pytorch_loader_does_not_call_jax_tree_or_process_api(monkeypatch):
+    dataset = [{"nested": {"value": index}} for index in range(4)]
+
+    def fail(*args, **kwargs):
+        raise AssertionError("PyTorch loader called a JAX API")
+
+    monkeypatch.setattr(_data_loader.jax, "process_count", fail)
+    monkeypatch.setattr(_data_loader.jax.tree, "map", fail)
+
+    loader = _data_loader.TorchDataLoader(
+        dataset,
+        local_batch_size=2,
+        num_batches=1,
+        framework="pytorch",
+    )
+    batch = next(iter(loader))
+
+    assert torch.equal(batch["nested"]["value"], torch.tensor([0, 1]))
 
 
 def test_torch_data_loader_parallel():
