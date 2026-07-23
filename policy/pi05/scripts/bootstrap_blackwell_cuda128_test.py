@@ -3,6 +3,7 @@ from pathlib import Path
 import subprocess
 
 SCRIPT = Path(__file__).with_name("bootstrap_blackwell_cuda128.sh")
+JAX_REQUIREMENTS = Path(__file__).with_name("jax_blackwell_cp311_requirements.txt")
 REQUIREMENTS = (
     ("nvidia_cublas_cu12", "12.8.4.1"),
     ("nvidia_cuda_cupti_cu12", "12.8.90"),
@@ -57,3 +58,20 @@ def test_install_command_contains_only_pip_arguments():
     source = SCRIPT.read_text()
     assert "pip install +" not in source
     assert "--no-index" in source
+
+
+def test_jax_runtime_lock_keeps_repo_api_and_blackwell_toolchain():
+    pins = {}
+    for line in JAX_REQUIREMENTS.read_text().splitlines():
+        if not line or line.startswith("#"):
+            continue
+        name, version = line.split("==", maxsplit=1)
+        assert name not in pins
+        pins[name] = version
+
+    assert pins["jax"] == "0.5.0"
+    assert pins["jaxlib"] == "0.5.0"
+    assert pins["jax-cuda12-plugin"] == "0.5.0"
+    assert pins["jax-cuda12-pjrt"] == "0.5.0"
+    assert pins["nvidia-cuda-nvcc-cu12"] == "12.9.86"
+    assert pins["nvidia-cudnn-cu12"] == "9.24.0.43"
