@@ -15,12 +15,12 @@ os.environ.setdefault("JAX_PLATFORMS", "cpu")
 os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
 
 import torch
-from scripts import train_pytorch as _trainer
 
 from openpi.training import config as _config
 from openpi.training import data_loader as _data
 from openpi.training import performance as _performance
 from openpi.training import pytorch_training
+from scripts import train_pytorch as _trainer
 
 
 def _parse_args() -> argparse.Namespace:

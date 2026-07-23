@@ -37,10 +37,7 @@ Array = jax.Array | torch.Tensor
 
 
 def _check_dataclass_annotations(self, typechecker):
-    if not any(
-        frame.frame.f_globals.get("__name__") in _JAX_DATACLASS_TRACING_MODULES
-        for frame in inspect.stack()
-    ):
+    if not any(frame.frame.f_globals.get("__name__") in _JAX_DATACLASS_TRACING_MODULES for frame in inspect.stack()):
         return _original_check_dataclass_annotations(self, typechecker)
     return None
 

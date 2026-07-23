@@ -488,7 +488,6 @@ class TrainConfig:
 
     # Precision for PyTorch training.
     pytorch_training_precision: Literal["bfloat16", "float32"] = "bfloat16"
-    # Select the PyTorch attention implementation explicitly.
     pytorch_attention_implementation: Literal["eager", "sdpa"] = "sdpa"
     # Trade recomputation for memory during PyTorch backward.
     pytorch_gradient_checkpointing: bool = True

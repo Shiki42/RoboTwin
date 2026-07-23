@@ -24,7 +24,7 @@ def _make_model(*, gradient_checkpointing_enabled: bool) -> pi0_pytorch.PI0Pytor
 
 def test_selective_vision_checkpoint_preserves_output_and_gradient():
     checkpointed_input = torch.randn(2, 3, requires_grad=True)
-    eager_input = checkpointed_input.detach().clone().requires_grad_(True)
+    eager_input = checkpointed_input.detach().clone().requires_grad_()
 
     checkpointed_model = _make_model(gradient_checkpointing_enabled=True)
     eager_model = _make_model(gradient_checkpointing_enabled=False)

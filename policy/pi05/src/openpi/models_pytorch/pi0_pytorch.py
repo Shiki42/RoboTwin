@@ -167,7 +167,7 @@ class PI0Pytorch(nn.Module):
         for module in self.modules():
             module_config = getattr(module, "config", None)
             if getattr(module_config, "_attn_implementation", None) is not None:
-                setattr(module_config, "_attn_implementation", implementation)
+                module_config._attn_implementation = implementation  # noqa: SLF001
 
     def _embed_image(self, image: torch.Tensor) -> torch.Tensor:
         """Checkpoint only the high-activation vision encoder."""
