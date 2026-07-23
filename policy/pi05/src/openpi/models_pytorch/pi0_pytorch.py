@@ -161,13 +161,13 @@ class PI0Pytorch(nn.Module):
         """Check if gradient checkpointing is enabled."""
         return self.gradient_checkpointing_enabled
 
-    def _apply_checkpoint(self, func, *args, **kwargs):
-        """Helper method to apply gradient checkpointing if enabled."""
+    def _embed_image(self, image: torch.Tensor) -> torch.Tensor:
+        """Checkpoint only the high-activation vision encoder."""
         if self.gradient_checkpointing_enabled and self.training:
             return torch.utils.checkpoint.checkpoint(
-                func, *args, use_reentrant=False, preserve_rng_state=False, **kwargs
+                self.paligemma_with_expert.embed_image, image, use_reentrant=False, preserve_rng_state=False
             )
-        return func(*args, **kwargs)
+        return self.paligemma_with_expert.embed_image(image)
 
     def _prepare_attention_masks_4d(self, att_2d_masks):
         """Helper method to prepare 4D attention masks for transformer."""
@@ -213,11 +213,7 @@ class PI0Pytorch(nn.Module):
 
         # Process images
         for img, img_mask in zip(images, img_masks, strict=True):
-
-            def image_embed_func(img):
-                return self.paligemma_with_expert.embed_image(img)
-
-            img_emb = self._apply_checkpoint(image_embed_func, img)
+            img_emb = self._embed_image(img)
 
             bsize, num_img_embs = img_emb.shape[:2]
 
@@ -230,12 +226,9 @@ class PI0Pytorch(nn.Module):
             att_masks += [0] * num_img_embs
 
         # Process language tokens
-        def lang_embed_func(lang_tokens):
-            lang_emb = self.paligemma_with_expert.embed_language_tokens(lang_tokens)
-            lang_emb_dim = lang_emb.shape[-1]
-            return lang_emb * math.sqrt(lang_emb_dim)
-
-        lang_emb = self._apply_checkpoint(lang_embed_func, lang_tokens)
+        lang_emb = self.paligemma_with_expert.embed_language_tokens(lang_tokens)
+        lang_emb_dim = lang_emb.shape[-1]
+        lang_emb = lang_emb * math.sqrt(lang_emb_dim)
 
         embs.append(lang_emb)
         pad_masks.append(lang_masks)
@@ -270,10 +263,7 @@ class PI0Pytorch(nn.Module):
                 state = state.to(torch.float32)
 
             # Embed state
-            def state_proj_func(state):
-                return self.state_proj(state)
-
-            state_emb = self._apply_checkpoint(state_proj_func, state)
+            state_emb = self.state_proj(state)
 
             embs.append(state_emb[:, None, :])
             bsize = state_emb.shape[0]
@@ -292,32 +282,23 @@ class PI0Pytorch(nn.Module):
         time_emb = time_emb.type(dtype=timestep.dtype)
 
         # Fuse timestep + action information using an MLP
-        def action_proj_func(noisy_actions):
-            return self.action_in_proj(noisy_actions)
-
-        action_emb = self._apply_checkpoint(action_proj_func, noisy_actions)
+        action_emb = self.action_in_proj(noisy_actions)
 
         if not self.pi05:
             time_emb = time_emb[:, None, :].expand_as(action_emb)
             action_time_emb = torch.cat([action_emb, time_emb], dim=2)
 
             # Apply MLP layers
-            def mlp_func(action_time_emb):
-                x = self.action_time_mlp_in(action_time_emb)
-                x = F.silu(x)  # swish == silu
-                return self.action_time_mlp_out(x)
-
-            action_time_emb = self._apply_checkpoint(mlp_func, action_time_emb)
+            action_time_emb = self.action_time_mlp_in(action_time_emb)
+            action_time_emb = F.silu(action_time_emb)  # swish == silu
+            action_time_emb = self.action_time_mlp_out(action_time_emb)
             adarms_cond = None
         else:
             # time MLP (for adaRMS)
-            def time_mlp_func(time_emb):
-                x = self.time_mlp_in(time_emb)
-                x = F.silu(x)  # swish == silu
-                x = self.time_mlp_out(x)
-                return F.silu(x)
-
-            time_emb = self._apply_checkpoint(time_mlp_func, time_emb)
+            time_emb = self.time_mlp_in(time_emb)
+            time_emb = F.silu(time_emb)  # swish == silu
+            time_emb = self.time_mlp_out(time_emb)
+            time_emb = F.silu(time_emb)
             action_time_emb = action_emb
             adarms_cond = time_emb
 
@@ -372,30 +353,19 @@ class PI0Pytorch(nn.Module):
         # Prepare attention masks
         att_2d_masks_4d = self._prepare_attention_masks_4d(att_2d_masks)
 
-        # Apply gradient checkpointing if enabled
-        def forward_func(prefix_embs, suffix_embs, att_2d_masks_4d, position_ids, adarms_cond):
-            (_, suffix_out), _ = self.paligemma_with_expert.forward(
-                attention_mask=att_2d_masks_4d,
-                position_ids=position_ids,
-                past_key_values=None,
-                inputs_embeds=[prefix_embs, suffix_embs],
-                use_cache=False,
-                adarms_cond=[None, adarms_cond],
-            )
-            return suffix_out
-
-        suffix_out = self._apply_checkpoint(
-            forward_func, prefix_embs, suffix_embs, att_2d_masks_4d, position_ids, adarms_cond
+        (_, suffix_out), _ = self.paligemma_with_expert.forward(
+            attention_mask=att_2d_masks_4d,
+            position_ids=position_ids,
+            past_key_values=None,
+            inputs_embeds=[prefix_embs, suffix_embs],
+            use_cache=False,
+            adarms_cond=[None, adarms_cond],
         )
 
         suffix_out = suffix_out[:, -self.config.action_horizon :]
         suffix_out = suffix_out.to(dtype=torch.float32)
 
-        # Apply gradient checkpointing to final action projection if enabled
-        def action_out_proj_func(suffix_out):
-            return self.action_out_proj(suffix_out)
-
-        v_t = self._apply_checkpoint(action_out_proj_func, suffix_out)
+        v_t = self.action_out_proj(suffix_out)
 
         squared_error = F.mse_loss(u_t, v_t, reduction="none")
         action_loss = casm_pytorch.reduce_action_loss(squared_error, observation.action_mask)
