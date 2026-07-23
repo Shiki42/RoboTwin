@@ -101,7 +101,7 @@ if (( COMPUTE_MAJOR >= 10 )); then
     PYTHON_BIN="${CUDA128_OVERLAY}/bin/python"
 fi
 
-export PYTHONPATH="${SOURCE_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
+export PYTHONPATH="${SOURCE_ROOT}/src"
 export HF_LEROBOT_HOME
 export PARALLELVLA_DATASET_REPO="${DATASET_REPO}"
 export PI05_BASE_CHECKPOINT="${BASE_PARAMS}"
@@ -114,6 +114,22 @@ export WANDB_DISABLE_CODE=true
 export WANDB_SILENT=true
 export JAX_PLATFORMS=cuda
 export LD_LIBRARY_PATH="/usr/local/cuda/compat/lib:/usr/local/nvidia/lib:/usr/local/nvidia/lib64"
+
+"${PYTHON_BIN}" - <<'PY'
+import datasets
+import lerobot
+import pyarrow
+
+expected = {"datasets": "3.2.0", "lerobot": "0.1.0", "pyarrow": "18.1.0"}
+actual = {
+    "datasets": datasets.__version__,
+    "lerobot": lerobot.__version__,
+    "pyarrow": pyarrow.__version__,
+}
+if actual != expected:
+    raise RuntimeError(f"training dependency lock mismatch: expected {expected}, got {actual}")
+print(f"training dependency lock: {actual}")
+PY
 
 require_dir "${DATASET_DIR}"
 require_dir "${BASE_PARAMS}"
@@ -132,7 +148,7 @@ mkdir -p "${runtime_dirs[@]}"
 verify_manifest "${DATASET_DIR}" "${DATASET_MANIFEST}"
 verify_manifest "${BASE_PARAMS}" "${BASE_MANIFEST}"
 
-"${PYTHON_BIN}" "${SOURCE_ROOT}/scripts/audit_putcab_casm_dataset.py" "${DATASET_DIR}" --expected-repo "${DATASET_REPO}" --expected-episodes 50 --receipt "${AUDIT_RECEIPT}"
+"${PYTHON_BIN}" "${SOURCE_ROOT}/scripts/audit_putcab_casm_dataset.py" "${DATASET_DIR}" --expected-repo "${DATASET_REPO}" --expected-episodes 50 --receipt "${AUDIT_RECEIPT}" --reject-fixed-roles
 GATE_POSITIVE_WEIGHT="$("${PYTHON_BIN}" -c 'import json,sys; print(json.load(open(sys.argv[1]))["gate_positive_weight"])' "${AUDIT_RECEIPT}")"
 export WANDB_MODE=online
 

@@ -11,6 +11,7 @@ import numpy as np
 from openpi.policies import policy_config as _policy_config
 from openpi.training import config as _config
 from openpi.training.robotwin_routing import EpisodeStartSceneContextRouter
+from openpi.training.robotwin_routing import LearnedAsyncToSyncRouter
 from openpi.training.robotwin_routing import RolloutActivityMetrics
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -34,8 +35,9 @@ class PI0:
         *,
         async_scene_context_steps=0,
         sync_action_chunk_steps=10,
-        phase_prompt_conditioning=True,
         boundary_context_steps=20,
+        gate_sync_threshold=0.5,
+        gate_sync_confirmations=2,
     ):
         self.train_config_name = train_config_name
         self.model_name = model_name
@@ -63,11 +65,17 @@ class PI0:
         self.observation_window = None
         self.pi0_step = pi0_step
         self.sync_action_chunk_steps = sync_action_chunk_steps
-        self.phase_prompt_conditioning = phase_prompt_conditioning
-        self.main_camera_router = EpisodeStartSceneContextRouter(
-            async_scene_context_steps,
-            boundary_context_steps,
-        )
+        self.learned_phase_routing = config.model.casm_mode == "visual_phase_gate"
+        if self.learned_phase_routing:
+            self.main_camera_router = LearnedAsyncToSyncRouter(
+                sync_threshold=gate_sync_threshold,
+                sync_confirmations=gate_sync_confirmations,
+            )
+        else:
+            self.main_camera_router = EpisodeStartSceneContextRouter(
+                async_scene_context_steps,
+                boundary_context_steps,
+            )
         self.base_instruction = None
         self.activity_metrics = RolloutActivityMetrics()
 
@@ -78,15 +86,7 @@ class PI0:
     # set language randomly
     def set_language(self, instruction):
         self.base_instruction = instruction
-        print(f"successfully set instruction:{self.phase_conditioned_instruction}")
-
-    @property
-    def phase_conditioned_instruction(self):
-        if self.base_instruction is None:
-            return None
-        if not self.phase_prompt_conditioning:
-            return self.base_instruction
-        return self.main_camera_router.phase_conditioned_prompt(self.base_instruction)
+        print(f"successfully set instruction:{self.base_instruction}")
 
     def execution_steps(self):
         return self.main_camera_router.execution_steps(self.pi0_step, self.sync_action_chunk_steps)
@@ -94,7 +94,7 @@ class PI0:
     # Update the observation window buffer
     def update_observation_window(self, img_arr, state, *, action_executed=False):
         img_front, img_right, img_left = img_arr
-        if action_executed:
+        if action_executed and not self.learned_phase_routing:
             self.main_camera_router.advance()
         img_front = self.main_camera_router.route(img_front)
         img_front = np.transpose(img_front, (2, 0, 1))
@@ -112,7 +112,7 @@ class PI0:
                 "cam_left_wrist": img_left,
                 "cam_right_wrist": img_right,
             },
-            "prompt": self.phase_conditioned_instruction,
+            "prompt": self.base_instruction,
         }
 
     def record_chunk(self, length):
@@ -129,11 +129,19 @@ class PI0:
         )
 
     def rollout_metrics(self):
-        return self.activity_metrics.summary()
+        metrics = self.activity_metrics.summary()
+        if self.learned_phase_routing:
+            metrics["phase_router"] = self.main_camera_router.summary()
+        return metrics
 
     def get_action(self):
         assert self.observation_window is not None, "update observation_window first!"
-        return self.policy.infer(self.observation_window)["actions"]
+        outputs = self.policy.infer(self.observation_window)
+        if self.learned_phase_routing:
+            if "async_probability" not in outputs:
+                raise ValueError("visual phase gate inference must return async_probability")
+            self.main_camera_router.update(outputs["async_probability"])
+        return outputs["actions"]
 
     def reset_obsrvationwindows(self):
         self.base_instruction = None

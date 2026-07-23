@@ -98,13 +98,22 @@ def audit_dataset(
         if expected_shape is not None and _feature_shape(features[name]) != expected_shape:
             raise ValueError(f"{name} has shape {_feature_shape(features[name])}, expected {expected_shape}")
 
-    episode_lines = [line for line in episodes_path.read_text().splitlines() if line.strip()]
+    episode_records = [json.loads(line) for line in episodes_path.read_text().splitlines() if line.strip()]
     metadata_episodes = int(info["total_episodes"])
-    if metadata_episodes != expected_episodes or len(episode_lines) != expected_episodes:
+    if metadata_episodes != expected_episodes or len(episode_records) != expected_episodes:
         raise ValueError(
             f"expected {expected_episodes} episodes, info has {metadata_episodes}, "
-            f"episodes.jsonl has {len(episode_lines)}"
+            f"episodes.jsonl has {len(episode_records)}"
         )
+
+    tagged_prompts = [
+        {"episode_index": record["episode_index"], "task": task}
+        for record in episode_records
+        for task in record.get("tasks", [])
+        if "[PHASE=" in task
+    ]
+    if tagged_prompts:
+        raise ValueError(f"ground-truth phase tags leak through task prompts: {tagged_prompts[:3]}")
 
     parquet_files = sorted((dataset_dir / "data").glob("**/*.parquet"))
     if len(parquet_files) != expected_episodes:
@@ -169,6 +178,7 @@ def audit_dataset(
             "masked_fraction": cross_boundary_targets / (phase_consistent_targets + cross_boundary_targets),
         },
         "readme_fixed_role_matches": fixed_role_matches,
+        "phase_prompt_tag_matches": 0,
         "metadata_sha256": {
             "meta/info.json": _sha256(info_path),
             "meta/episodes.jsonl": _sha256(episodes_path),

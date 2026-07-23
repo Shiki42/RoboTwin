@@ -9,6 +9,14 @@ ASYNC_PHASE_TAG = "[PHASE=ASYNC]"
 PHASE_TAGS = (SYNC_PHASE_TAG, ASYNC_PHASE_TAG)
 
 
+def phase_neutral_prompt(instruction: str) -> str:
+    prompt = instruction.strip()
+    for tag in PHASE_TAGS:
+        if prompt.endswith(tag):
+            return prompt[: -len(tag)].rstrip()
+    return prompt
+
+
 def scene_context_indices(
     action_phase_ids: np.ndarray,
     boundary_context_steps: int = 0,
@@ -51,11 +59,7 @@ def route_main_camera(
 
 
 def phase_conditioned_prompt(instruction: str, *, async_phase: bool) -> str:
-    prompt = instruction.strip()
-    for tag in PHASE_TAGS:
-        if prompt.endswith(tag):
-            prompt = prompt[: -len(tag)].rstrip()
-            break
+    prompt = phase_neutral_prompt(instruction)
     phase_tag = ASYNC_PHASE_TAG if async_phase else SYNC_PHASE_TAG
     return f"{prompt} {phase_tag}"
 
@@ -114,6 +118,73 @@ class EpisodeStartSceneContextRouter:
     def reset(self) -> None:
         self._step = 0
         self._scene_context: np.ndarray | None = None
+
+
+class LearnedAsyncToSyncRouter:
+    """Monotonic deployment router for tasks with one async-to-sync boundary."""
+
+    def __init__(self, sync_threshold: float = 0.5, sync_confirmations: int = 2) -> None:
+        if not 0.0 < sync_threshold < 1.0:
+            raise ValueError("sync threshold must be in (0, 1)")
+        if sync_confirmations <= 0:
+            raise ValueError("sync confirmations must be positive")
+        self.sync_threshold = sync_threshold
+        self.sync_confirmations = sync_confirmations
+        self.reset()
+
+    @property
+    def async_phase(self) -> bool:
+        return self._async_phase
+
+    @property
+    def latest_async_probability(self) -> float | None:
+        return self._latest_async_probability
+
+    def update(self, async_probability: float | np.ndarray) -> None:
+        probability = float(np.asarray(async_probability).reshape(()))
+        if not np.isfinite(probability) or not 0.0 <= probability <= 1.0:
+            raise ValueError(f"async probability must be finite and in [0, 1], got {probability}")
+        self._latest_async_probability = probability
+        self._probability_history.append(probability)
+        if not self._async_phase:
+            return
+        if probability >= self.sync_threshold:
+            self._sync_evidence = 0
+            return
+        self._sync_evidence += 1
+        if self._sync_evidence >= self.sync_confirmations:
+            self._async_phase = False
+            self._transition_observation = len(self._probability_history)
+
+    def execution_steps(self, requested_steps: int, sync_steps: int) -> int:
+        if requested_steps <= 0 or sync_steps <= 0:
+            raise ValueError("execution steps must be positive")
+        return requested_steps if self._async_phase else min(requested_steps, sync_steps)
+
+    def route(self, main_frame: np.ndarray) -> np.ndarray:
+        frame = np.asarray(main_frame)
+        if self._scene_context is None:
+            self._scene_context = frame.copy()
+        return self._scene_context.copy() if self._async_phase else frame
+
+    def summary(self) -> dict:
+        return {
+            "router": "learned_async_to_sync",
+            "sync_threshold": self.sync_threshold,
+            "sync_confirmations": self.sync_confirmations,
+            "async_phase": self._async_phase,
+            "latest_async_probability": self._latest_async_probability,
+            "transition_observation": self._transition_observation,
+            "probability_history": self._probability_history.copy(),
+        }
+
+    def reset(self) -> None:
+        self._async_phase = True
+        self._sync_evidence = 0
+        self._scene_context: np.ndarray | None = None
+        self._latest_async_probability: float | None = None
+        self._transition_observation: int | None = None
+        self._probability_history: list[float] = []
 
 
 class RolloutActivityMetrics:

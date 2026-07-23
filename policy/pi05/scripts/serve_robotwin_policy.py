@@ -59,8 +59,9 @@ class Args:
     port: int = 8000
     pi0_step: int = 50
     sync_action_chunk_steps: int = 10
-    phase_prompt_conditioning: bool = True
     boundary_context_steps: int = 20
+    gate_sync_threshold: float = 0.5
+    gate_sync_confirmations: int = 2
 
 
 def main(args: Args):
@@ -71,8 +72,9 @@ def main(args: Args):
         args.pi0_step,
         async_scene_context_steps=args.async_scene_context_steps,
         sync_action_chunk_steps=args.sync_action_chunk_steps,
-        phase_prompt_conditioning=args.phase_prompt_conditioning,
         boundary_context_steps=args.boundary_context_steps,
+        gate_sync_threshold=args.gate_sync_threshold,
+        gate_sync_confirmations=args.gate_sync_confirmations,
     )
     server = websocket_policy_server.WebsocketPolicyServer(
         policy=RobotwinPolicyService(model),

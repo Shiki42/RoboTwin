@@ -13,7 +13,8 @@ checkpoint_id: 30000
 pi0_step: 50
 async_scene_context_steps: 0
 sync_action_chunk_steps: 10
-phase_prompt_conditioning: 1
 boundary_context_steps: 20
+gate_sync_threshold: 0.5
+gate_sync_confirmations: 2
 remote_policy_host: 127.0.0.1
 remote_policy_port: 0

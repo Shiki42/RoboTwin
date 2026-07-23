@@ -1,7 +1,10 @@
 from pathlib import Path
 
+import numpy as np
 import pytest
 
+from openpi.training.robotwin_routing import LearnedAsyncToSyncRouter
+from pi_model import PI0
 from pi_model import checkpoint_asset_id
 
 
@@ -30,3 +33,39 @@ def test_checkpoint_asset_id_requires_exactly_one_norm_stats(
 
     with pytest.raises(ValueError, match="exactly one"):
         checkpoint_asset_id(assets_dir)
+
+
+class FakePolicy:
+    def __init__(self, outputs):
+        self.outputs = outputs
+
+    def infer(self, observation):
+        assert observation["prompt"] == "put the object away"
+        return self.outputs
+
+
+def learned_model(outputs):
+    model = object.__new__(PI0)
+    model.observation_window = {"prompt": "put the object away"}
+    model.learned_phase_routing = True
+    model.main_camera_router = LearnedAsyncToSyncRouter(sync_confirmations=1)
+    model.policy = FakePolicy(outputs)
+    model.pi0_step = 50
+    model.sync_action_chunk_steps = 10
+    return model
+
+
+def test_visual_gate_probability_drives_deployment_router():
+    actions = np.ones((50, 14), dtype=np.float32)
+    model = learned_model({"actions": actions, "async_probability": np.array(0.2)})
+
+    assert model.get_action() is actions
+    assert not model.main_camera_router.async_phase
+    assert model.execution_steps() == 10
+
+
+def test_visual_gate_deployment_requires_probability_output():
+    model = learned_model({"actions": np.ones((50, 14), dtype=np.float32)})
+
+    with pytest.raises(ValueError, match="async_probability"):
+        model.get_action()

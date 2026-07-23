@@ -8,7 +8,7 @@ import pytest
 from scripts.audit_putcab_casm_dataset import audit_dataset
 
 
-def _write_fixture(root, *, include_markers=True, readme=""):
+def _write_fixture(root, *, include_markers=True, readme="", task="put the object away"):
     # Synthetic data is used only as a unit-test fixture.
     (root / "meta").mkdir()
     (root / "data/chunk-000").mkdir(parents=True)
@@ -28,7 +28,8 @@ def _write_fixture(root, *, include_markers=True, readme=""):
         )
     info = {"total_episodes": 1, "total_frames": 2, "features": features}
     (root / "meta/info.json").write_text(json.dumps(info))
-    (root / "meta/episodes.jsonl").write_text('{"episode_index": 0, "length": 2}\n')
+    episode = {"episode_index": 0, "length": 2, "tasks": [task]}
+    (root / "meta/episodes.jsonl").write_text(json.dumps(episode) + "\n")
     (root / "README.md").write_text(readme)
     arrays = {
         "action": pa.array([np.zeros(14).tolist(), np.ones(14).tolist()]),
@@ -72,6 +73,18 @@ def test_audit_rejects_missing_markers(tmp_path):
 def test_audit_can_reject_fixed_role_dataset(tmp_path):
     _write_fixture(tmp_path, readme="Fixed arm assignment: left arm carries the object; right arm opens the drawer.")
     with pytest.raises(ValueError, match="fixed arm roles"):
+        audit_dataset(
+            tmp_path,
+            expected_episodes=1,
+            expected_repo="Shiki42/test",
+            reject_fixed_roles=True,
+        )
+
+
+def test_audit_rejects_ground_truth_phase_prompt_leakage(tmp_path):
+    _write_fixture(tmp_path, task="put the object away [PHASE=ASYNC]")
+
+    with pytest.raises(ValueError, match="phase tags leak"):
         audit_dataset(
             tmp_path,
             expected_episodes=1,

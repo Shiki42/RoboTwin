@@ -12,6 +12,7 @@ from pathlib import Path
 import shutil
 from typing import Literal
 
+import cv2
 import h5py
 from lerobot.common.datasets.lerobot_dataset import HF_LEROBOT_HOME
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
@@ -22,7 +23,7 @@ import torch
 import tqdm
 import tyro
 
-from openpi.training.robotwin_routing import phase_conditioned_prompt
+from openpi.training.robotwin_routing import phase_neutral_prompt
 
 
 @dataclasses.dataclass(frozen=True)
@@ -183,8 +184,6 @@ def load_raw_images_per_camera(ep: h5py.File, cameras: list[str]) -> dict[str, n
             # load all images in RAM
             imgs_array = ep[f"/observations/images/{camera}"][:]
         else:
-            import cv2
-
             # load one compressed image after the other in RAM and uncompress
             imgs_array = []
             for encoded_image in ep[f"/observations/images/{camera}"]:
@@ -269,12 +268,7 @@ def populate_dataset(
                 raise ValueError(f"episode has no instructions: {instructions_path}")
             instruction = instructions[0]
         for i in range(num_frames):
-            task_prompt = instruction
-            if phase_type_id is not None:
-                task_prompt = phase_conditioned_prompt(
-                    instruction,
-                    async_phase=int(phase_type_id[i].item()) != 0,
-                )
+            task_prompt = phase_neutral_prompt(instruction)
             frame = {
                 "observation.state": state[i],
                 "action": action[i],

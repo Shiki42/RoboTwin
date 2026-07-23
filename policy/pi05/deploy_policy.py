@@ -18,14 +18,14 @@ def encode_obs(observation):
 def get_model(usr_args):
     remote_port = int(usr_args.get("remote_policy_port", 0))
     if remote_port:
-        from robotwin_remote_model import RobotwinRemoteModel
+        from robotwin_remote_model import RobotwinRemoteModel  # noqa: PLC0415
 
         return RobotwinRemoteModel(
             host=usr_args.get("remote_policy_host", "127.0.0.1"),
             port=remote_port,
         )
 
-    from pi_model import PI0
+    from pi_model import PI0  # noqa: PLC0415
 
     return PI0(
         usr_args["train_config_name"],
@@ -34,8 +34,9 @@ def get_model(usr_args):
         usr_args["pi0_step"],
         async_scene_context_steps=int(usr_args.get("async_scene_context_steps", 0)),
         sync_action_chunk_steps=int(usr_args.get("sync_action_chunk_steps", 10)),
-        phase_prompt_conditioning=bool(int(usr_args.get("phase_prompt_conditioning", 1))),
         boundary_context_steps=int(usr_args.get("boundary_context_steps", 20)),
+        gate_sync_threshold=float(usr_args.get("gate_sync_threshold", 0.5)),
+        gate_sync_confirmations=int(usr_args.get("gate_sync_confirmations", 2)),
     )
 
 

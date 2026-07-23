@@ -96,6 +96,12 @@ def test_phase_prompt_switches_without_accumulating_tags():
     assert router.phase_conditioned_prompt(async_prompt) == "put the object away [PHASE=SYNC]"
 
 
+def test_phase_neutral_prompt_removes_ground_truth_phase_tag():
+    assert robotwin_routing.phase_neutral_prompt("put the object away [PHASE=ASYNC]") == "put the object away"
+    assert robotwin_routing.phase_neutral_prompt("put the object away [PHASE=SYNC]") == "put the object away"
+    assert robotwin_routing.phase_neutral_prompt("  put the object away  ") == "put the object away"
+
+
 def test_scene_context_restores_dynamic_frames_near_boundaries():
     phase_ids = np.array([0, 0, 1, 1, 2, 0, 1, 1], dtype=np.int8)
 
@@ -130,6 +136,37 @@ def test_scene_context_rejects_negative_boundary_window():
             np.zeros(2, dtype=np.int8),
             boundary_context_steps=-1,
         )
+
+
+def test_learned_router_uses_confirmed_monotonic_async_to_sync_transition():
+    router = robotwin_routing.LearnedAsyncToSyncRouter(sync_threshold=0.5, sync_confirmations=2)
+    initial = np.zeros((2, 2, 3), dtype=np.uint8)
+    later = np.ones((2, 2, 3), dtype=np.uint8)
+
+    assert router.async_phase
+    assert np.array_equal(router.route(initial), initial)
+    assert np.array_equal(router.route(later), initial)
+    assert router.execution_steps(requested_steps=50, sync_steps=10) == 50
+
+    router.update(0.8)
+    router.update(np.array(0.4))
+    assert router.async_phase
+    router.update(0.3)
+    assert not router.async_phase
+    assert np.array_equal(router.route(later), later)
+    assert router.execution_steps(requested_steps=50, sync_steps=10) == 10
+
+    router.update(0.9)
+    assert not router.async_phase
+    assert router.summary()["transition_observation"] == 3
+
+
+@pytest.mark.parametrize("probability", [-0.1, 1.1, np.nan])
+def test_learned_router_rejects_invalid_probability(probability):
+    router = robotwin_routing.LearnedAsyncToSyncRouter()
+
+    with pytest.raises(ValueError, match="probability"):
+        router.update(probability)
 
 
 def test_rollout_activity_metrics_reports_concurrency_and_obi():
