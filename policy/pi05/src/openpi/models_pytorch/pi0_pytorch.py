@@ -7,6 +7,7 @@ from torch import nn
 import torch.nn.functional as F  # noqa: N812
 
 import openpi.models.gemma as _gemma
+from openpi.models_pytorch import casm_pytorch
 from openpi.models_pytorch.gemma_pytorch import PaliGemmaWithExpertModel
 import openpi.models_pytorch.preprocessing_pytorch as _preprocessing
 
@@ -86,6 +87,12 @@ class PI0Pytorch(nn.Module):
         super().__init__()
         self.config = config
         self.pi05 = config.pi05
+        self.casm_mode = config.casm_mode
+        if self.casm_mode not in {"none", "visual_phase_gate"}:
+            raise ValueError(
+                f"PyTorch PI0 does not implement CASM mode {self.casm_mode!r}; "
+                "supported modes are 'none' and 'visual_phase_gate'"
+            )
 
         paligemma_config = _gemma.get_config(config.paligemma_variant)
         action_expert_config = _gemma.get_config(config.action_expert_variant)
@@ -107,6 +114,15 @@ class PI0Pytorch(nn.Module):
             self.state_proj = nn.Linear(32, action_expert_config.width)
             self.action_time_mlp_in = nn.Linear(2 * action_expert_config.width, action_expert_config.width)
             self.action_time_mlp_out = nn.Linear(action_expert_config.width, action_expert_config.width)
+
+        if self.casm_mode == "visual_phase_gate":
+            self.phase_gate = casm_pytorch.VisualProprioceptionGate(
+                paligemma_config.width,
+                config.action_dim,
+                config.coordination_gate_hidden_dim,
+            )
+            self.gate_loss_weight = config.gate_loss_weight
+            self.gate_positive_weight = config.gate_positive_weight
 
         torch.set_float32_matmul_precision("high")
         self.sample_actions = torch.compile(self.sample_actions, mode="max-autotune")
@@ -185,13 +201,15 @@ class PI0Pytorch(nn.Module):
 
     def embed_prefix(
         self, images, img_masks, lang_tokens, lang_masks
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Embed images with SigLIP and language tokens with embedding layer to prepare
         for PaliGemma transformer processing.
         """
         embs = []
         pad_masks = []
         att_masks = []
+        visual_summaries = []
+        visual_presence = []
 
         # Process images
         for img, img_mask in zip(images, img_masks, strict=True):
@@ -205,6 +223,8 @@ class PI0Pytorch(nn.Module):
 
             embs.append(img_emb)
             pad_masks.append(img_mask[:, None].expand(bsize, num_img_embs))
+            visual_summaries.append(img_emb.mean(dim=1))
+            visual_presence.append(img_mask.to(dtype=img_emb.dtype))
 
             # Create attention masks so that image tokens attend to each other
             att_masks += [0] * num_img_embs
@@ -232,7 +252,12 @@ class PI0Pytorch(nn.Module):
         bsize = pad_masks.shape[0]
         att_masks = att_masks[None, :].expand(bsize, len(att_masks))
 
-        return embs, pad_masks, att_masks
+        presence = torch.stack(visual_presence, dim=1)
+        summaries = torch.stack(visual_summaries, dim=1)
+        visual_summary = (summaries * presence[..., None]).sum(dim=1)
+        visual_summary = visual_summary / presence.sum(dim=1, keepdim=True).clamp_min(1)
+
+        return embs, pad_masks, att_masks, visual_summary
 
     def embed_suffix(self, state, noisy_actions, timestep):
         """Embed state, noisy_actions, timestep to prepare for Expert Gemma processing."""
@@ -313,8 +338,8 @@ class PI0Pytorch(nn.Module):
 
         return embs, pad_masks, att_masks, adarms_cond
 
-    def forward(self, observation, actions, noise=None, time=None) -> Tensor:
-        """Do a full training forward pass and compute the loss (batch_size x num_steps x num_motors)"""
+    def forward(self, observation, actions, noise=None, time=None, *, return_aux=False):
+        """Run a training forward pass and return per-action-step loss."""
         images, img_masks, lang_tokens, lang_masks, state = self._preprocess_observation(observation, train=True)
 
         if noise is None:
@@ -327,7 +352,9 @@ class PI0Pytorch(nn.Module):
         x_t = time_expanded * noise + (1 - time_expanded) * actions
         u_t = noise - actions
 
-        prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(images, img_masks, lang_tokens, lang_masks)
+        prefix_embs, prefix_pad_masks, prefix_att_masks, visual_summary = self.embed_prefix(
+            images, img_masks, lang_tokens, lang_masks
+        )
         suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix(state, x_t, time)
         if (
             self.paligemma_with_expert.paligemma.language_model.layers[0].self_attn.q_proj.weight.dtype
@@ -370,7 +397,32 @@ class PI0Pytorch(nn.Module):
 
         v_t = self._apply_checkpoint(action_out_proj_func, suffix_out)
 
-        return F.mse_loss(u_t, v_t, reduction="none")
+        squared_error = F.mse_loss(u_t, v_t, reduction="none")
+        action_loss = casm_pytorch.reduce_action_loss(squared_error, observation.action_mask)
+        if self.casm_mode == "none":
+            return action_loss
+        if observation.phase_id is None:
+            raise ValueError("visual-phase-gate CASM requires phase_id during training")
+        gate_logits = self.phase_gate(visual_summary, state)
+        loss = casm_pytorch.visual_phase_gate_loss(
+            action_loss,
+            gate_logits,
+            observation.phase_id,
+            gate_loss_weight=self.gate_loss_weight,
+            gate_positive_weight=self.gate_positive_weight,
+        )
+        return (loss.total, loss.metrics) if return_aux else loss.total
+
+    @torch.no_grad()
+    def predict_async_probability(self, observation) -> Tensor:
+        if self.casm_mode != "visual_phase_gate":
+            raise ValueError("async probability is available only for visual-phase-gate CASM")
+        images, img_masks, lang_tokens, lang_masks, state = self._preprocess_observation(
+            observation,
+            train=False,
+        )
+        _, _, _, visual_summary = self.embed_prefix(images, img_masks, lang_tokens, lang_masks)
+        return torch.sigmoid(self.phase_gate(visual_summary, state))
 
     @torch.no_grad()
     def sample_actions(self, device, observation, noise=None, num_steps=10) -> Tensor:
@@ -382,7 +434,9 @@ class PI0Pytorch(nn.Module):
 
         images, img_masks, lang_tokens, lang_masks, state = self._preprocess_observation(observation, train=False)
 
-        prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(images, img_masks, lang_tokens, lang_masks)
+        prefix_embs, prefix_pad_masks, prefix_att_masks, _ = self.embed_prefix(
+            images, img_masks, lang_tokens, lang_masks
+        )
         prefix_att_2d_masks = make_att_2d_masks(prefix_pad_masks, prefix_att_masks)
         prefix_position_ids = torch.cumsum(prefix_pad_masks, dim=1) - 1
 

@@ -1,0 +1,86 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import torch
+from torch import Tensor
+from torch import nn
+import torch.nn.functional as F  # noqa: N812
+
+
+def reduce_action_loss(squared_error: Tensor, action_mask: Tensor | None) -> Tensor:
+    """Reduce action-dimension error while excluding unsupervised dimensions."""
+    if action_mask is None:
+        return squared_error.mean(dim=-1)
+    mask = action_mask.to(device=squared_error.device, dtype=squared_error.dtype)
+    if mask.shape != squared_error.shape:
+        raise ValueError(f"action mask shape mismatch: {mask.shape} != {squared_error.shape}")
+    denominator = mask.sum(dim=-1).clamp_min(1.0)
+    return (squared_error * mask).sum(dim=-1) / denominator
+
+
+def async_target(phase_id: Tensor) -> Tensor:
+    if phase_id.ndim < 2 or phase_id.shape[-1] < 1:
+        raise ValueError(f"phase id must end in a non-empty phase dimension, got {phase_id.shape}")
+    return (phase_id[..., 0] != 0).to(dtype=torch.float32)
+
+
+def binary_cross_entropy_with_logits(logits: Tensor, target: Tensor, positive_weight: float) -> Tensor:
+    if positive_weight <= 0:
+        raise ValueError("positive weight must be positive")
+    positive = torch.as_tensor(positive_weight, dtype=logits.dtype, device=logits.device)
+    return F.binary_cross_entropy_with_logits(logits, target.to(logits.dtype), pos_weight=positive, reduction="none")
+
+
+class VisualProprioceptionGate(nn.Module):
+    """Predict async/sync from pooled visual tokens and continuous robot state."""
+
+    def __init__(self, visual_dim: int, state_dim: int, hidden_dim: int):
+        super().__init__()
+        if min(visual_dim, state_dim, hidden_dim) < 1:
+            raise ValueError("gate dimensions must be positive")
+        self.visual_norm = nn.LayerNorm(visual_dim)
+        self.state_norm = nn.LayerNorm(state_dim)
+        self.visual_proj = nn.Linear(visual_dim, hidden_dim)
+        self.state_proj = nn.Linear(state_dim, hidden_dim)
+        self.fusion = nn.Linear(2 * hidden_dim, hidden_dim)
+        self.output = nn.Linear(hidden_dim, 1)
+        nn.init.zeros_(self.output.weight)
+        nn.init.zeros_(self.output.bias)
+
+    def forward(self, visual_features: Tensor, state: Tensor) -> Tensor:
+        visual = F.gelu(self.visual_proj(self.visual_norm(visual_features.detach())))
+        proprioception = F.gelu(self.state_proj(self.state_norm(state.detach())))
+        fused = torch.cat([visual, proprioception], dim=-1)
+        return self.output(F.gelu(self.fusion(fused)))[..., 0]
+
+
+@dataclass(frozen=True)
+class VisualPhaseGateLoss:
+    total: Tensor
+    metrics: dict[str, Tensor]
+
+
+def visual_phase_gate_loss(
+    action_loss: Tensor,
+    gate_logits: Tensor,
+    phase_id: Tensor,
+    *,
+    gate_loss_weight: float,
+    gate_positive_weight: float,
+) -> VisualPhaseGateLoss:
+    target = async_target(phase_id).to(device=gate_logits.device)
+    gate_loss = binary_cross_entropy_with_logits(gate_logits, target, gate_positive_weight)
+    probability = torch.sigmoid(gate_logits)
+    metrics = {
+        "action_loss": action_loss.mean(),
+        "gate_loss": gate_loss.mean(),
+        "gate_accuracy": ((probability >= 0.5) == (target >= 0.5)).to(torch.float32).mean(),
+        "gate_async_probability": probability.mean(),
+        "gate_predicted_async_rate": (probability >= 0.5).to(torch.float32).mean(),
+        "gate_target_async_rate": target.mean(),
+    }
+    return VisualPhaseGateLoss(
+        total=action_loss + gate_loss_weight * gate_loss[..., None],
+        metrics=metrics,
+    )
