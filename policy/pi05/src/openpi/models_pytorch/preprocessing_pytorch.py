@@ -17,6 +17,49 @@ IMAGE_KEYS = (
 IMAGE_RESOLUTION = (224, 224)
 
 
+def _crop_by_tensor_offsets(
+    image: torch.Tensor,
+    start_h: torch.Tensor,
+    start_w: torch.Tensor,
+    crop_height: int,
+    crop_width: int,
+) -> torch.Tensor:
+    height_indices = torch.arange(crop_height, device=image.device) + start_h
+    width_indices = torch.arange(crop_width, device=image.device) + start_w
+    return image.index_select(1, height_indices).index_select(2, width_indices)
+
+
+def _rotate_if_above_threshold(
+    image: torch.Tensor,
+    angle: torch.Tensor,
+    height: int,
+    width: int,
+) -> torch.Tensor:
+    angle_rad = angle * torch.pi / 180.0
+    cos_a = torch.cos(angle_rad)
+    sin_a = torch.sin(angle_rad)
+
+    grid_x = torch.linspace(-1, 1, width, device=image.device)
+    grid_y = torch.linspace(-1, 1, height, device=image.device)
+    grid_y, grid_x = torch.meshgrid(grid_y, grid_x, indexing="ij")
+
+    grid_x = grid_x.unsqueeze(0).expand(image.shape[0], -1, -1)
+    grid_y = grid_y.unsqueeze(0).expand(image.shape[0], -1, -1)
+    grid_x_rot = grid_x * cos_a - grid_y * sin_a
+    grid_y_rot = grid_x * sin_a + grid_y * cos_a
+    grid = torch.stack([grid_x_rot, grid_y_rot], dim=-1)
+
+    rotated_image = torch.nn.functional.grid_sample(
+        image.permute(0, 3, 1, 2),
+        grid,
+        mode="bilinear",
+        padding_mode="zeros",
+        align_corners=False,
+    ).permute(0, 2, 3, 1)
+    should_rotate = (torch.abs(angle) > 0.1).reshape(1, 1, 1, 1)
+    return torch.where(should_rotate, rotated_image, image)
+
+
 def preprocess_observation_pytorch(
     observation,
     *,
@@ -28,7 +71,8 @@ def preprocess_observation_pytorch(
 
     This function avoids complex type annotations that can cause torch.compile issues.
     """
-    if not set(image_keys).issubset(observation.images):
+    missing_image_keys = [key for key in image_keys if key not in observation.images]
+    if missing_image_keys:
         raise ValueError(f"images dict missing keys: expected {image_keys}, got {list(observation.images)}")
 
     batch_shape = observation.state.shape[:-1]
@@ -69,7 +113,7 @@ def preprocess_observation_pytorch(
                     # Use tensor operations instead of .item() for torch.compile compatibility
                     start_h = torch.randint(0, max_h + 1, (1,), device=image.device)
                     start_w = torch.randint(0, max_w + 1, (1,), device=image.device)
-                    image = image[:, start_h : start_h + crop_height, start_w : start_w + crop_width, :]
+                    image = _crop_by_tensor_offsets(image, start_h, start_w, crop_height, crop_width)
 
                 # Resize back to original size
                 image = torch.nn.functional.interpolate(
@@ -82,39 +126,7 @@ def preprocess_observation_pytorch(
                 # Random rotation (small angles)
                 # Use tensor operations instead of .item() for torch.compile compatibility
                 angle = torch.rand(1, device=image.device) * 10 - 5  # Random angle between -5 and 5 degrees
-                if torch.abs(angle) > 0.1:  # Only rotate if angle is significant
-                    # Convert to radians
-                    angle_rad = angle * torch.pi / 180.0
-
-                    # Create rotation matrix
-                    cos_a = torch.cos(angle_rad)
-                    sin_a = torch.sin(angle_rad)
-
-                    # Apply rotation using grid_sample
-                    grid_x = torch.linspace(-1, 1, width, device=image.device)
-                    grid_y = torch.linspace(-1, 1, height, device=image.device)
-
-                    # Create meshgrid
-                    grid_y, grid_x = torch.meshgrid(grid_y, grid_x, indexing="ij")
-
-                    # Expand to batch dimension
-                    grid_x = grid_x.unsqueeze(0).expand(image.shape[0], -1, -1)
-                    grid_y = grid_y.unsqueeze(0).expand(image.shape[0], -1, -1)
-
-                    # Apply rotation transformation
-                    grid_x_rot = grid_x * cos_a - grid_y * sin_a
-                    grid_y_rot = grid_x * sin_a + grid_y * cos_a
-
-                    # Stack and reshape for grid_sample
-                    grid = torch.stack([grid_x_rot, grid_y_rot], dim=-1)
-
-                    image = torch.nn.functional.grid_sample(
-                        image.permute(0, 3, 1, 2),  # [b, h, w, c] -> [b, c, h, w]
-                        grid,
-                        mode="bilinear",
-                        padding_mode="zeros",
-                        align_corners=False,
-                    ).permute(0, 2, 3, 1)  # [b, c, h, w] -> [b, h, w, c]
+                image = _rotate_if_above_threshold(image, angle, height, width)
 
             # Color augmentations for all cameras
             # Random brightness
