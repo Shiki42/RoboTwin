@@ -1,5 +1,6 @@
 import logging
 import math
+from typing import Literal
 
 import torch
 from torch import Tensor
@@ -139,14 +140,17 @@ class PI0Pytorch(nn.Module):
         except ImportError:
             raise ValueError(msg) from None
 
-    def gradient_checkpointing_enable(self):
-        """Enable gradient checkpointing for memory optimization."""
+    def gradient_checkpointing_enable(self, scope: Literal["full", "vision"] = "full"):
+        """Enable an explicit checkpointing scope for memory optimization."""
+        if scope not in {"full", "vision"}:
+            raise ValueError(f"Unsupported gradient checkpointing scope: {scope}")
         self.gradient_checkpointing_enabled = True
-        self.paligemma_with_expert.paligemma.language_model.gradient_checkpointing = True
-        self.paligemma_with_expert.paligemma.vision_tower.gradient_checkpointing = True
-        self.paligemma_with_expert.gemma_expert.model.gradient_checkpointing = True
+        checkpoint_transformer = scope == "full"
+        self.paligemma_with_expert.paligemma.language_model.gradient_checkpointing = checkpoint_transformer
+        self.paligemma_with_expert.paligemma.vision_tower.gradient_checkpointing = checkpoint_transformer
+        self.paligemma_with_expert.gemma_expert.model.gradient_checkpointing = checkpoint_transformer
 
-        logging.info("Enabled gradient checkpointing for PI0Pytorch model")
+        logging.info("Enabled %s gradient checkpointing for PI0Pytorch model", scope)
 
     def gradient_checkpointing_disable(self):
         """Disable gradient checkpointing."""

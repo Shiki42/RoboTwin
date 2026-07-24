@@ -489,9 +489,8 @@ class TrainConfig:
     # Precision for PyTorch training.
     pytorch_training_precision: Literal["bfloat16", "float32"] = "bfloat16"
     pytorch_attention_implementation: Literal["eager", "sdpa"] = "sdpa"
-    # Trade recomputation for memory during PyTorch backward.
     pytorch_gradient_checkpointing: bool = True
-    # Use the CUDA fused AdamW implementation.
+    pytorch_gradient_checkpointing_scope: Literal["full", "vision"] = "full"
     pytorch_fused_optimizer: bool = False
     # Compile the PyTorch module in place while preserving state-dict keys.
     pytorch_compile_mode: Literal["none", "default", "reduce-overhead", "max-autotune"] = "none"
@@ -672,6 +671,7 @@ def _putcab_pytorch_config(name: str, mode: Literal["none", "visual_phase_gate"]
         params_only_checkpoint=False,
         ema_decay=None,
         wandb_enabled=True,
+        pytorch_gradient_checkpointing_scope="vision",
         fsdp_devices=1,
     )
 

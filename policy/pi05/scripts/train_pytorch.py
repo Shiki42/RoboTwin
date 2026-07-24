@@ -49,6 +49,7 @@ def config_signature(config: _config.TrainConfig) -> dict[str, Any]:
         "pytorch_attention_implementation": config.pytorch_attention_implementation,
         "pytorch_fused_optimizer": config.pytorch_fused_optimizer,
         "pytorch_gradient_checkpointing": config.pytorch_gradient_checkpointing,
+        "pytorch_gradient_checkpointing_scope": config.pytorch_gradient_checkpointing_scope,
         "seed": config.seed,
         "model": {
             "pi05": getattr(model, "pi05", False),
@@ -88,7 +89,7 @@ def build_model(config: _config.TrainConfig, device: torch.device) -> pi0_pytorc
     model = pi0_pytorch.PI0Pytorch(model_config).to(device)
     model.set_attention_implementation(config.pytorch_attention_implementation)
     if config.pytorch_gradient_checkpointing:
-        model.gradient_checkpointing_enable()
+        model.gradient_checkpointing_enable(scope=config.pytorch_gradient_checkpointing_scope)
     else:
         model.gradient_checkpointing_disable()
     return model

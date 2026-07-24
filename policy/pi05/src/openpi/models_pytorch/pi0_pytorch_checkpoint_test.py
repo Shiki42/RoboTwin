@@ -8,6 +8,14 @@ from openpi.models_pytorch import pi0_pytorch
 
 
 class _ImageEmbedder(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.paligemma = SimpleNamespace(
+            language_model=SimpleNamespace(gradient_checkpointing=False),
+            vision_tower=SimpleNamespace(gradient_checkpointing=False),
+        )
+        self.gemma_expert = SimpleNamespace(model=SimpleNamespace(gradient_checkpointing=False))
+
     def embed_image(self, image):
         return image.square() + 1
 
@@ -45,3 +53,24 @@ def test_attention_implementation_is_explicit_and_validated():
 
     with pytest.raises(ValueError, match="Unsupported attention implementation"):
         model.set_attention_implementation("flash_attention_2")
+
+
+def test_gradient_checkpointing_scope_controls_transformer_recomputation():
+    model = _make_model(gradient_checkpointing_enabled=False)
+    model.gradient_checkpointing_enable(scope="vision")
+
+    assert model.gradient_checkpointing_enabled is True
+    assert model.paligemma_with_expert.paligemma.language_model.gradient_checkpointing is False
+    assert model.paligemma_with_expert.paligemma.vision_tower.gradient_checkpointing is False
+    assert model.paligemma_with_expert.gemma_expert.model.gradient_checkpointing is False
+
+    model.gradient_checkpointing_enable(scope="full")
+    assert model.paligemma_with_expert.paligemma.language_model.gradient_checkpointing is True
+    assert model.paligemma_with_expert.paligemma.vision_tower.gradient_checkpointing is True
+    assert model.paligemma_with_expert.gemma_expert.model.gradient_checkpointing is True
+
+
+def test_gradient_checkpointing_rejects_unknown_scope():
+    model = _make_model(gradient_checkpointing_enabled=False)
+    with pytest.raises(ValueError, match="Unsupported gradient checkpointing scope"):
+        model.gradient_checkpointing_enable(scope="unknown")  # type: ignore[arg-type]
