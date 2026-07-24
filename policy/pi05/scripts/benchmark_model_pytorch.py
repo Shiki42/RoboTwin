@@ -53,7 +53,7 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _attention_implementations(model: torch.nn.Module) -> dict[str, int]:
+def attention_implementations(model: torch.nn.Module) -> dict[str, int]:
     implementations: dict[str, int] = {}
     for module in model.modules():
         config = getattr(module, "config", None)
@@ -64,7 +64,7 @@ def _attention_implementations(model: torch.nn.Module) -> dict[str, int]:
     return implementations
 
 
-def _dynamo_counters() -> dict[str, dict[str, int]]:
+def dynamo_counters() -> dict[str, dict[str, int]]:
     counters = torch._dynamo.utils.counters  # noqa: SLF001
     return {
         group: {str(name): int(value) for name, value in values.items()} for group, values in counters.items() if values
@@ -132,7 +132,7 @@ def main() -> None:
     if args.channels_last:
         model.to(memory_format=torch.channels_last)
     initialization_s = time.perf_counter() - initialization_started
-    attention_implementations = _attention_implementations(model)
+    attention_backends = attention_implementations(model)
 
     compile_registration_started = time.perf_counter()
     if config.pytorch_compile_mode != "none":
@@ -191,7 +191,7 @@ def main() -> None:
             "compile_registration_s": compile_registration_s,
             "first_compiled_step_s": first_step_s,
             "batch_sha256": batch_hash,
-            "attention_implementations": attention_implementations,
+            "attention_implementations": attention_backends,
             "sdpa_flags": {
                 "flash": torch.backends.cuda.flash_sdp_enabled(),
                 "memory_efficient": torch.backends.cuda.mem_efficient_sdp_enabled(),
@@ -200,7 +200,7 @@ def main() -> None:
             },
             "peak_vram_allocated_bytes": torch.cuda.max_memory_allocated(device),
             "peak_vram_reserved_bytes": torch.cuda.max_memory_reserved(device),
-            "dynamo_counters": _dynamo_counters(),
+            "dynamo_counters": dynamo_counters(),
         }
     )
     summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
