@@ -664,14 +664,14 @@ def _putcab_pytorch_config(name: str, mode: Literal["none", "visual_phase_gate"]
         data=_putcab_casm_data(dataset_repo),
         pytorch_weight_path=os.environ.get("PI05_PYTORCH_BASE"),
         batch_size=16,
-        num_workers=0,
+        num_workers=2, prefetch_factor=2, persistent_workers=True, pin_memory=True,
         num_train_steps=20_000,
         save_interval=2_000,
         keep_period=20_000,
         params_only_checkpoint=False,
         ema_decay=None,
         wandb_enabled=True,
-        pytorch_gradient_checkpointing_scope="vision",
+        pytorch_compile_mode="default", pytorch_gradient_checkpointing_scope="vision",
         fsdp_devices=1,
     )
 
