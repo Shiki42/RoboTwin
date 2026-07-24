@@ -607,8 +607,9 @@ class Robot:
         entity.set_qf(qf)
 
     def set_arm_joints(self, target_position, target_velocity, arm_tag):
-        self._entity_qf(self.left_entity)
-        self._entity_qf(self.right_entity)
+        if not getattr(self, "hoist_passive_force", False):
+            self._entity_qf(self.left_entity)
+            self._entity_qf(self.right_entity)
 
         joint_lst = self.left_arm_joints if arm_tag == "left" else self.right_arm_joints
         for j in range(len(joint_lst)):
@@ -626,8 +627,9 @@ class Robot:
         return [normal_left_gripper_val, normal_right_gripper_val]
 
     def set_gripper(self, gripper_val, arm_tag, gripper_eps=0.1):  # gripper_val in [0,1]
-        self._entity_qf(self.left_entity)
-        self._entity_qf(self.right_entity)
+        if not getattr(self, "hoist_passive_force", False):
+            self._entity_qf(self.left_entity)
+            self._entity_qf(self.right_entity)
         gripper_val = np.clip(gripper_val, 0, 1)
 
         if arm_tag == "left":

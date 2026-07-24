@@ -15,8 +15,14 @@ from typing_extensions import override
 
 from openpi import transforms as _transforms
 from openpi.models import model as _model
+from openpi.policies.episode_rng import EPISODE_SEED_KEY
+from openpi.policies.episode_rng import INFERENCE_INDEX_KEY
+from openpi.policies.episode_rng import episode_addressable_noise
+from openpi.policies.episode_rng import episode_addressable_rng
 from openpi.shared import array_typing as at
 from openpi.shared import nnx_utils
+
+logger = logging.getLogger(__name__)
 
 BasePolicy: TypeAlias = _base_policy.BasePolicy
 
@@ -54,29 +60,49 @@ class Policy(BasePolicy):
         self._metadata = metadata or {}
         self._is_pytorch_model = is_pytorch
         self._pytorch_device = pytorch_device
+        self._predict_async_probability = None
 
         if self._is_pytorch_model:
             self._model = self._model.to(pytorch_device)
             self._model.eval()
             self._sample_actions = model.sample_actions
+            if getattr(model, "casm_mode", "none") == "visual_phase_gate":
+                self._predict_async_probability = model.predict_async_probability
         else:
             # JAX model setup
             self._sample_actions = nnx_utils.module_jit(model.sample_actions)
             self._rng = rng or jax.random.key(0)
+            if getattr(model, "casm_mode", "none") == "visual_phase_gate":
+                self._predict_async_probability = nnx_utils.module_jit(model.predict_async_probability)
 
     @override
     def infer(self, obs: dict, *, noise: np.ndarray | None = None) -> dict:  # type: ignore[misc]
+        raw_inputs = dict(obs)
+        episode_seed = raw_inputs.pop(EPISODE_SEED_KEY, None)
+        inference_index = raw_inputs.pop(INFERENCE_INDEX_KEY, None)
+        if (episode_seed is None) != (inference_index is None):
+            raise ValueError("episode-addressable inference requires both seed and index")
+
         # Make a copy since transformations may modify the inputs in place.
-        inputs = jax.tree.map(lambda x: x, obs)
+        inputs = jax.tree.map(lambda x: x, raw_inputs)
         inputs = self._input_transform(inputs)
         if not self._is_pytorch_model:
             # Make a batch and convert to jax.Array.
             inputs = jax.tree.map(lambda x: jnp.asarray(x)[np.newaxis, ...], inputs)
-            self._rng, sample_rng_or_pytorch_device = jax.random.split(self._rng)
+            if episode_seed is None:
+                self._rng, sample_rng_or_pytorch_device = jax.random.split(self._rng)
+            else:
+                sample_rng_or_pytorch_device = episode_addressable_rng(episode_seed, inference_index)
         else:
             # Convert inputs to PyTorch tensors and move to correct device
             inputs = jax.tree.map(lambda x: torch.from_numpy(np.array(x)).to(self._pytorch_device)[None, ...], inputs)
             sample_rng_or_pytorch_device = self._pytorch_device
+            if episode_seed is not None and noise is None:
+                noise = episode_addressable_noise(
+                    episode_seed,
+                    inference_index,
+                    (self._model.config.action_horizon, self._model.config.action_dim),
+                )
 
         # Prepare kwargs for sample_actions
         sample_kwargs = dict(self._sample_kwargs)
@@ -93,6 +119,8 @@ class Policy(BasePolicy):
             "state": inputs["state"],
             "actions": self._sample_actions(sample_rng_or_pytorch_device, observation, **sample_kwargs),
         }
+        if self._predict_async_probability is not None:
+            outputs["async_probability"] = self._predict_async_probability(observation)
         model_time = time.monotonic() - start_time
         if self._is_pytorch_model:
             outputs = jax.tree.map(lambda x: np.asarray(x[0, ...].detach().cpu()), outputs)
@@ -116,7 +144,7 @@ class PolicyRecorder(_base_policy.BasePolicy):
     def __init__(self, policy: _base_policy.BasePolicy, record_dir: str):
         self._policy = policy
 
-        logging.info(f"Dumping policy records to: {record_dir}")
+        logger.info("Dumping policy records to: %s", record_dir)
         self._record_dir = pathlib.Path(record_dir)
         self._record_dir.mkdir(parents=True, exist_ok=True)
         self._record_step = 0

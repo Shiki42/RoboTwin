@@ -1,5 +1,5 @@
+import dataclasses
 import logging
-import os
 import pathlib
 from typing import Any
 
@@ -11,6 +11,12 @@ import openpi.shared.download as download
 from openpi.training import checkpoints as _checkpoints
 from openpi.training import config as _config
 import openpi.transforms as transforms
+
+
+def _with_asset_id(data_config: _config.DataConfig, asset_id: str | None) -> _config.DataConfig:
+    if asset_id is None:
+        return data_config
+    return dataclasses.replace(data_config, asset_id=asset_id)
 
 
 def create_trained_policy(
@@ -44,11 +50,11 @@ def create_trained_policy(
         presence of "model.safensors" in the checkpoint directory.
     """
     repack_transforms = repack_transforms or transforms.Group()
-    checkpoint_dir = download.maybe_download(str(checkpoint_dir))
+    checkpoint_dir = pathlib.Path(download.maybe_download(str(checkpoint_dir)))
 
     # Check if this is a PyTorch model by looking for model.safetensors
-    weight_path = os.path.join(checkpoint_dir, "model.safetensors")
-    is_pytorch = os.path.exists(weight_path)
+    weight_path = checkpoint_dir / "model.safetensors"
+    is_pytorch = weight_path.exists()
 
     logging.info("Loading model...")
     if is_pytorch:
@@ -57,9 +63,8 @@ def create_trained_policy(
     else:
         model = train_config.model.load(_model.restore_params(checkpoint_dir / "params", dtype=jnp.bfloat16))
     data_config = train_config.data.create(train_config.assets_dirs, train_config.model)
+    data_config = _with_asset_id(data_config, robotwin_repo_id)
     if norm_stats is None:
-        if robotwin_repo_id is not None:
-            data_config.asset_id = robotwin_repo_id
         # We are loading the norm stats from the checkpoint instead of the config assets dir to make sure
         # that the policy is using the same normalization stats as the original training process.
         if data_config.asset_id is None:

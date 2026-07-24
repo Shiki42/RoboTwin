@@ -11,3 +11,10 @@ train_config_name: null
 model_name: null
 checkpoint_id: 30000
 pi0_step: 50
+async_scene_context_steps: 0
+policy_server_host: 127.0.0.1
+policy_server_port: 8000
+visual_phase_gate: true
+sync_action_chunk_steps: 10
+gate_sync_threshold: 0.5
+gate_sync_confirmations: 2

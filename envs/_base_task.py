@@ -1487,7 +1487,9 @@ class Base_Task(gym.Env):
         self.take_action_cnt += 1
         print(f"step: \033[92m{self.take_action_cnt} / {self.step_lim}\033[0m", end="\r")
 
-        self._update_render()
+        defer_policy_render = bool(getattr(self, "defer_policy_render", False))
+        if not defer_policy_render:
+            self._update_render()
         if self.render_freq:
             self.viewer.render()
 
@@ -1651,17 +1653,26 @@ class Base_Task(gym.Env):
 
                 now_right_id += 1
 
+            if getattr(self.robot, "hoist_passive_force", False):
+                self.robot._entity_qf(self.robot.left_entity)
+                self.robot._entity_qf(self.robot.right_entity)
             self.scene.step()
-            self._update_render()
+            collision_monitor = getattr(self, "eval_collision_monitor", None)
+            if collision_monitor is not None:
+                collision_monitor.observe()
+            if not defer_policy_render:
+                self._update_render()
                 
             if self.check_success():
                 self.eval_success = True
-                self.get_obs() # update obs
+                if not defer_policy_render:
+                    self.get_obs() # update obs
                 if (self.eval_video_path is not None):
                     self.eval_video_ffmpeg.stdin.write(self.now_obs["observation"]["head_camera"]["rgb"].tobytes())
                 return
 
-        self._update_render()
+        if not defer_policy_render:
+            self._update_render()
         if self.render_freq:  # UI
             self.viewer.render()
 

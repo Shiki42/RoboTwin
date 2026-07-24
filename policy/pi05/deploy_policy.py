@@ -1,13 +1,6 @@
-import numpy as np
-import torch
-import dill
-import os, sys
+import time
 
-current_file_path = os.path.abspath(__file__)
-parent_directory = os.path.dirname(current_file_path)
-sys.path.append(parent_directory)
-
-from pi_model import *
+from .pi_model import PI0
 
 
 # Encode observation for the model
@@ -23,15 +16,28 @@ def encode_obs(observation):
 
 
 def get_model(usr_args):
-    train_config_name, model_name, checkpoint_id, pi0_step = (usr_args["train_config_name"], usr_args["model_name"],
-                                                              usr_args["checkpoint_id"], usr_args["pi0_step"])
-    return PI0(train_config_name, model_name, checkpoint_id, pi0_step)
+    pi0_step = int(usr_args["pi0_step"])
+    async_steps = int(usr_args.get("async_scene_context_steps", 0))
+    server_host = str(usr_args["policy_server_host"])
+    server_port = int(usr_args["policy_server_port"])
+    boundary_observation = bool(usr_args.get("pi05_boundary_observation", False))
+    return PI0(
+        server_host,
+        server_port,
+        pi0_step,
+        async_steps,
+        boundary_observation,
+        visual_phase_gate=bool(usr_args.get("visual_phase_gate", False)),
+        sync_action_chunk_steps=int(usr_args.get("sync_action_chunk_steps", 10)),
+        gate_sync_threshold=float(usr_args.get("gate_sync_threshold", 0.5)),
+        gate_sync_confirmations=int(usr_args.get("gate_sync_confirmations", 2)),
+    )
 
 
-def eval(TASK_ENV, model, observation):
+def eval(task_env, model, observation):
 
     if model.observation_window is None:
-        instruction = TASK_ENV.get_instruction()
+        instruction = task_env.get_instruction()
         model.set_language(instruction)
 
     input_rgb_arr, input_state = encode_obs(observation)
@@ -39,11 +45,24 @@ def eval(TASK_ENV, model, observation):
 
     # ======== Get Action ========
 
-    actions = model.get_action()[:model.pi0_step]
+    actions = model.get_action()[: model.execution_steps()]
+    model.record_chunk(len(actions))
 
     for action in actions:
-        TASK_ENV.take_action(action)
-        observation = TASK_ENV.get_obs()
+        previous_step = task_env.take_action_cnt
+        action_started = time.perf_counter()
+        task_env.take_action(action)
+        model.profile_action_s += time.perf_counter() - action_started
+        model.profile_action_calls += 1
+        if task_env.take_action_cnt == previous_step:
+            break
+        model.record_action(action, input_state)
+        model.advance_after_action()
+        if model.boundary_observation:
+            if task_env.eval_success or task_env.take_action_cnt >= task_env.step_lim:
+                break
+            continue
+        observation = task_env.get_obs()
         input_rgb_arr, input_state = encode_obs(observation)
         model.update_observation_window(input_rgb_arr, input_state)
 
