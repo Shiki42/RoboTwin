@@ -35,7 +35,6 @@ def get_model(usr_args):
 
 
 def eval(task_env, model, observation):
-
     if model.observation_window is None:
         instruction = task_env.get_instruction()
         model.set_language(instruction)
@@ -57,6 +56,16 @@ def eval(task_env, model, observation):
         if task_env.take_action_cnt == previous_step:
             break
         model.record_action(action, input_state)
+        recorder = getattr(task_env, "rollout_episode_recorder", None)
+        if recorder is not None:
+            capture_observation = task_env.get_obs()
+            recorder.record(
+                capture_observation,
+                action,
+                async_phase=model.main_camera_router.async_phase,
+                async_probability=getattr(model.main_camera_router, "latest_async_probability", None),
+                inference_index=model.inference_index - 1,
+            )
         model.advance_after_action()
         if model.boundary_observation:
             if task_env.eval_success or task_env.take_action_cnt >= task_env.step_lim:

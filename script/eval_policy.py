@@ -188,6 +188,7 @@ def main(usr_args):
         "pi05_defer_policy_render",
         "pi05_hoist_passive_force",
         "gripper_only_planner",
+        "rollout_episode_capture_root",
     ):
         if runtime_key in usr_args:
             args[runtime_key] = usr_args[runtime_key]
@@ -477,6 +478,19 @@ def eval_policy(task_name,
         if set_episode_seed is not None:
             set_episode_seed(policy_seed)
         reset_func(model)
+        episode_recorder = None
+        capture_root = args.get("rollout_episode_capture_root")
+        if capture_root:
+            from pi05.episode_capture import RolloutEpisodeRecorder
+
+            episode_recorder = RolloutEpisodeRecorder(
+                capture_root,
+                episode_index=int(TASK_ENV.test_num),
+                seed=int(now_seed),
+                policy_seed=policy_seed,
+                instruction=instruction,
+            )
+        TASK_ENV.rollout_episode_recorder = episode_recorder
         profile_observation_s = 0.0
         profile_eval_s = 0.0
         while TASK_ENV.take_action_cnt < TASK_ENV.step_lim:
@@ -498,6 +512,12 @@ def eval_policy(task_name,
         setup_elapsed_sec = episode_start_time - episode_total_start_time
         total_episode_elapsed_sec = time.time() - episode_total_start_time
         collision = collision_monitor.summary()
+        episode_capture_receipt = None
+        if episode_recorder is not None:
+            episode_capture_receipt = episode_recorder.close(
+                success=succ,
+                collision=collision["collision"],
+            )
         action_digest = getattr(model, "episode_action_sha256", lambda: None)()
         inference_requests = int(getattr(model, "inference_index", 0))
         rollout_activity_metrics = getattr(model, "rollout_metrics", lambda: {})()
@@ -538,6 +558,7 @@ def eval_policy(task_name,
                     "collision_summary": collision,
                     "instruction": instruction,
                     "instruction_seed": instruction_seed,
+                    "episode_capture": episode_capture_receipt,
                 }) + "\n")
 
         print(
