@@ -4,7 +4,7 @@ import h5py
 import numpy as np
 import pytest
 
-from scripts.process_data import load_hdf5
+from scripts.process_data import load_hdf5, native_dynamic_camera_indices
 
 
 def write_source(path: Path, frames: int = 4, *, internal_metadata: bool = False):
@@ -47,3 +47,14 @@ def test_load_hdf5_rejects_ambiguous_internal_and_external_metadata(tmp_path: Pa
 
     with pytest.raises(ValueError, match="both internally and externally"):
         load_hdf5(source, metadata)
+
+
+def test_native_dynamic_camera_indices_preserve_every_frame():
+    indices = native_dynamic_camera_indices(4)
+
+    assert indices.tolist() == [0, 1, 2, 3]
+
+
+def test_native_dynamic_camera_indices_reject_empty_episode():
+    with pytest.raises(ValueError, match="positive"):
+        native_dynamic_camera_indices(0)

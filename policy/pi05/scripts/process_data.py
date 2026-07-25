@@ -8,7 +8,11 @@ import h5py
 import numpy as np
 import yaml
 
-from openpi.training.robotwin_routing import scene_context_indices
+
+def native_dynamic_camera_indices(sample_count):
+    if sample_count < 1:
+        raise ValueError("sample_count must be positive")
+    return np.arange(sample_count, dtype=np.int64)
 
 
 def load_hdf5(dataset_path, phase_metadata_path=None):
@@ -76,13 +80,7 @@ def get_task_config(task_name):
         return yaml.load(f.read(), Loader=yaml.FullLoader)
 
 
-def data_transform(
-    path,
-    episode_num,
-    save_path,
-    phase_metadata_dir=None,
-    boundary_context_steps=20,
-):
+def data_transform(path, episode_num, save_path, phase_metadata_dir=None):
     begin = 0
     os.listdir(path)
     # assert episode_num <= len(floders), "data num not enough"
@@ -124,12 +122,7 @@ def data_transform(
             ),
         )
         sample_count = left_gripper_all.shape[0] - 1
-        main_camera_indices = np.arange(sample_count, dtype=np.int64)
-        if phase_type_id is not None:
-            main_camera_indices = scene_context_indices(
-                phase_type_id[1:],
-                boundary_context_steps,
-            )
+        main_camera_indices = native_dynamic_camera_indices(sample_count)
 
         qpos = []
         actions = []
@@ -186,8 +179,7 @@ def data_transform(
             if phase_type_id is not None:
                 obs.create_dataset("phase_type_id", data=phase_type_id[1:])
                 obs.create_dataset("arm_active_mask", data=arm_active_mask[1:])
-                obs.attrs["main_camera_routing"] = "async_frozen_with_dynamic_boundary_context"
-                obs.attrs["boundary_context_steps"] = boundary_context_steps
+                obs.attrs["main_camera_routing"] = "native_dynamic"
                 obs.attrs["wrist_camera_routing"] = "native_dynamic_per_arm"
             image = obs.create_group("images")
             cam_high_enc, len_high = images_encoding(cam_high)
@@ -220,7 +212,6 @@ if __name__ == "__main__":
     )
     parser.add_argument("--phase-metadata-dir")
     parser.add_argument("--target-dir")
-    parser.add_argument("--boundary-context-steps", type=int, default=20)
     args = parser.parse_args()
 
     task_name = args.task_name
@@ -238,5 +229,4 @@ if __name__ == "__main__":
         expert_data_num,
         target_dir,
         phase_metadata_dir=args.phase_metadata_dir,
-        boundary_context_steps=args.boundary_context_steps,
     )

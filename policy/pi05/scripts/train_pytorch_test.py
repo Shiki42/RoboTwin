@@ -65,6 +65,17 @@ def test_resume_signature_allows_only_training_budget_extension(monkeypatch):
     full_checkpointing = dataclasses.replace(config, pytorch_gradient_checkpointing_scope="full")
     assert train_pytorch.config_signature(full_checkpointing)["pytorch_gradient_checkpointing_scope"] == "full"
     assert train_pytorch.config_signature(config) != train_pytorch.config_signature(full_checkpointing)
+    all_actions = dataclasses.replace(
+        config,
+        data=dataclasses.replace(config.data, inactive_action_weight=1.0),
+    )
+    assert train_pytorch.config_signature(all_actions)["inactive_action_weight"] == 1.0
+    assert train_pytorch.config_signature(config) != train_pytorch.config_signature(all_actions)
+    short_schedule = dataclasses.replace(
+        config,
+        lr_schedule=dataclasses.replace(config.lr_schedule, decay_steps=4_000),
+    )
+    assert train_pytorch.config_signature(config) != train_pytorch.config_signature(short_schedule)
 
 
 @pytest.mark.parametrize("code_commit", ["", "abc123", "A" * 40, "g" * 40])

@@ -51,6 +51,9 @@ def config_signature(config: _config.TrainConfig) -> dict[str, Any]:
         "pytorch_gradient_checkpointing": config.pytorch_gradient_checkpointing,
         "pytorch_gradient_checkpointing_scope": config.pytorch_gradient_checkpointing_scope,
         "seed": config.seed,
+        "inactive_action_weight": config.data.inactive_action_weight,
+        "lr_schedule": dataclasses.asdict(config.lr_schedule),
+        "optimizer": dataclasses.asdict(config.optimizer),
         "model": {
             "pi05": getattr(model, "pi05", False),
             "casm_mode": getattr(model, "casm_mode", "none"),
