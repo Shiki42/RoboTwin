@@ -96,9 +96,9 @@ class AlohaInputs(transforms.DataTransformFn):
                 phase_sequence = np.asarray(data["action_phase"])
                 if phase_sequence.shape != (*arm_mask.shape[:-1], 2):
                     raise ValueError(f"action phase/mask shape mismatch: {phase_sequence.shape} and {arm_mask.shape}")
+                # Phase controls the next replanning cadence; it does not invalidate
+                # expert actions later in the current prediction horizon.
                 canonical_phase = phase_sequence[..., 1:2] > 0.5
-                phase_consistent = canonical_phase == canonical_phase[:1]
-                arm_mask = arm_mask * phase_consistent.astype(np.float32)
                 inputs["phase_id"] = canonical_phase[:1].astype(np.int32).reshape(1)
             inputs["action_mask"] = np.concatenate(
                 [

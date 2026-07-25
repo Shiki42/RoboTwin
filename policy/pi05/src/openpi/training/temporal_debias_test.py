@@ -39,7 +39,7 @@ def test_aloha_outputs_preserves_async_probability():
     assert output["async_probability"] == pytest.approx(0.75)
 
 
-def test_soft_arm_mask_keeps_boundary_labels_zero():
+def test_soft_arm_mask_supervises_cross_phase_labels():
     image = np.zeros((3, 8, 8), dtype=np.uint8)
     output = AlohaInputs(adapt_to_pi=False, inactive_action_weight=0.1)(
         {
@@ -52,7 +52,7 @@ def test_soft_arm_mask_keeps_boundary_labels_zero():
     )
 
     assert np.allclose(output["action_mask"][0], [1] * 7 + [0.1] * 7)
-    assert np.all(output["action_mask"][1] == 0)
+    assert np.allclose(output["action_mask"][1], [0.1] * 7 + [1] * 7)
 
 
 def test_soft_arm_mask_rejects_invalid_weight():
@@ -103,7 +103,7 @@ def test_observation_round_trip_preserves_action_mask():
     assert np.array_equal(observation.to_dict()["action_mask"], action_mask)
 
 
-def test_action_mask_stops_supervision_at_phase_boundary():
+def test_action_mask_supervises_complete_horizon_across_phase_boundary():
     image = np.zeros((3, 8, 8), dtype=np.uint8)
     output = AlohaInputs(adapt_to_pi=False)(
         {
@@ -116,8 +116,7 @@ def test_action_mask_stops_supervision_at_phase_boundary():
     )
 
     assert output["phase_id"].tolist() == [1]
-    assert np.all(output["action_mask"][:2] == 1)
-    assert np.all(output["action_mask"][2:] == 0)
+    assert np.all(output["action_mask"] == 1)
 
 
 def test_action_phase_sequence_accepts_one_hot_feature_chunks():
@@ -133,8 +132,7 @@ def test_action_phase_sequence_accepts_one_hot_feature_chunks():
     )
 
     assert output["phase_id"].tolist() == [1]
-    assert np.all(output["action_mask"][:2] == 1)
-    assert np.all(output["action_mask"][2:] == 0)
+    assert np.all(output["action_mask"] == 1)
 
 
 def test_wait_and_async_are_one_canonical_phase():
@@ -149,8 +147,7 @@ def test_wait_and_async_are_one_canonical_phase():
         }
     )
 
-    assert np.all(output["action_mask"][:2] == 1)
-    assert np.all(output["action_mask"][2:] == 0)
+    assert np.all(output["action_mask"] == 1)
 
 
 def test_isolate_arm_observation_masks_only_opposite_wrist():
@@ -251,7 +248,10 @@ def test_putcab_pytorch_configs_are_matched_full_finetunes(name, mode):
     assert config.model.paligemma_variant == "gemma_2b"
     assert config.model.action_expert_variant == "gemma_300m"
     assert config.batch_size == 16
-    assert config.num_workers == 0
+    assert config.num_workers == 2
+    assert config.prefetch_factor == 2
+    assert config.persistent_workers is True
+    assert config.pin_memory is True
     assert config.num_train_steps == 20_000
     assert config.save_interval == 2_000
     assert config.params_only_checkpoint is False
