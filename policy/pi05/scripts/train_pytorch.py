@@ -10,7 +10,7 @@ import pathlib
 import re
 import shutil
 import time
-from typing import Any
+from typing import Any, Literal
 
 os.environ.setdefault("JAX_PLATFORMS", "cpu")
 os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
@@ -50,6 +50,7 @@ def config_signature(config: _config.TrainConfig) -> dict[str, Any]:
         "pytorch_fused_optimizer": config.pytorch_fused_optimizer,
         "pytorch_gradient_checkpointing": config.pytorch_gradient_checkpointing,
         "pytorch_gradient_checkpointing_scope": config.pytorch_gradient_checkpointing_scope,
+        "pytorch_trainable_scope": config.pytorch_trainable_scope,
         "seed": config.seed,
         "inactive_action_weight": config.data.inactive_action_weight,
         "lr_schedule": dataclasses.asdict(config.lr_schedule),
@@ -98,9 +99,51 @@ def build_model(config: _config.TrainConfig, device: torch.device) -> pi0_pytorc
     return model
 
 
+def configure_trainable_parameters(
+    model: torch.nn.Module,
+    scope: Literal["all", "action_expert_and_gate"],
+) -> tuple[str, ...]:
+    if scope == "all":
+        prefixes: tuple[str, ...] | None = None
+    elif scope == "action_expert_and_gate":
+        prefixes = (
+            "paligemma_with_expert.gemma_expert.",
+            "action_in_proj.",
+            "action_out_proj.",
+            "time_mlp_in.",
+            "time_mlp_out.",
+            "phase_gate.",
+        )
+    else:
+        raise ValueError(f"unsupported PyTorch trainable scope: {scope}")
+    trainable_names = []
+    for name, parameter in model.named_parameters():
+        trainable = prefixes is None or name.startswith(prefixes)
+        parameter.requires_grad_(trainable)
+        if trainable:
+            trainable_names.append(name)
+    if not trainable_names:
+        raise ValueError(f"PyTorch trainable scope selected no parameters: {scope}")
+    return tuple(trainable_names)
+
+
 def build_optimizer(config: _config.TrainConfig, model: torch.nn.Module) -> torch.optim.AdamW:
+    trainable_names = configure_trainable_parameters(
+        model,
+        config.pytorch_trainable_scope,
+    )
+    parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
+    trainable_count = sum(parameter.numel() for parameter in parameters)
+    total_count = sum(parameter.numel() for parameter in model.parameters())
+    logger.info(
+        "PyTorch trainable scope=%s parameters=%d/%d tensors=%d",
+        config.pytorch_trainable_scope,
+        trainable_count,
+        total_count,
+        len(trainable_names),
+    )
     return torch.optim.AdamW(
-        model.parameters(),
+        parameters,
         lr=config.lr_schedule.peak_lr,
         betas=(config.optimizer.b1, config.optimizer.b2),
         eps=config.optimizer.eps,

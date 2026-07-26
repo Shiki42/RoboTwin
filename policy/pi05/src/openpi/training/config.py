@@ -494,7 +494,7 @@ class TrainConfig:
     pytorch_fused_optimizer: bool = False
     # Compile the PyTorch module in place while preserving state-dict keys.
     pytorch_compile_mode: Literal["none", "default", "reduce-overhead", "max-autotune"] = "none"
-
+    pytorch_trainable_scope: Literal["all", "action_expert_and_gate"] = "all"
     lr_schedule: _optimizer.LRScheduleConfig = dataclasses.field(default_factory=_optimizer.CosineDecaySchedule)
     optimizer: _optimizer.OptimizerConfig = dataclasses.field(default_factory=_optimizer.AdamW)
     ema_decay: float | None = 0.99

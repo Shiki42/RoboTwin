@@ -26,6 +26,19 @@ class TinyPolicy(nn.Module):
         return (self.weight - actions) ** 2
 
 
+class TinyScopedPolicy(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.paligemma_with_expert = nn.Module()
+        self.paligemma_with_expert.paligemma = nn.Linear(2, 2)
+        self.paligemma_with_expert.gemma_expert = nn.Linear(2, 2)
+        self.action_in_proj = nn.Linear(2, 2)
+        self.action_out_proj = nn.Linear(2, 2)
+        self.time_mlp_in = nn.Linear(2, 2)
+        self.time_mlp_out = nn.Linear(2, 2)
+        self.phase_gate = nn.Linear(2, 1)
+
+
 def _tiny_config():
     return SimpleNamespace(
         lr_schedule=SimpleNamespace(warmup_steps=0, peak_lr=0.1, decay_steps=10, decay_lr=0.01),
@@ -49,6 +62,34 @@ def test_train_step_updates_torch_model_and_reports_finite_metrics():
     assert model.weight.detach() > 0
     assert metrics["loss"] == pytest.approx(1.0)
     assert np.isfinite(metrics["gradient_norm"])
+
+
+def test_action_expert_scope_freezes_only_pretrained_paligemma():
+    model = TinyScopedPolicy()
+
+    trainable_names = train_pytorch.configure_trainable_parameters(
+        model,
+        "action_expert_and_gate",
+    )
+
+    assert trainable_names
+    assert not any(
+        name.startswith("paligemma_with_expert.paligemma.")
+        for name in trainable_names
+    )
+    assert all(
+        parameter.requires_grad == (name in trainable_names)
+        for name, parameter in model.named_parameters()
+    )
+    for prefix in (
+        "paligemma_with_expert.gemma_expert.",
+        "action_in_proj.",
+        "action_out_proj.",
+        "time_mlp_in.",
+        "time_mlp_out.",
+        "phase_gate.",
+    ):
+        assert any(name.startswith(prefix) for name in trainable_names)
 
 
 def test_resume_signature_allows_only_training_budget_extension(monkeypatch):
@@ -76,6 +117,11 @@ def test_resume_signature_allows_only_training_budget_extension(monkeypatch):
         lr_schedule=dataclasses.replace(config.lr_schedule, decay_steps=4_000),
     )
     assert train_pytorch.config_signature(config) != train_pytorch.config_signature(short_schedule)
+    expert_only = dataclasses.replace(
+        config,
+        pytorch_trainable_scope="action_expert_and_gate",
+    )
+    assert train_pytorch.config_signature(config) != train_pytorch.config_signature(expert_only)
 
 
 @pytest.mark.parametrize("code_commit", ["", "abc123", "A" * 40, "g" * 40])
