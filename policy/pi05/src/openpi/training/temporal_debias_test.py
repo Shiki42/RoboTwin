@@ -222,8 +222,8 @@ def test_casm_configs_use_public_pi05_base_weights(name):
     assert config.data.repo_id == ("Shiki42/parallelvla_putcab_official_clean50_native_path_retimed_paired_v2")
 
 
-def test_visual_phase_gate_config_anchors_actions_and_only_trains_gate():
-    config = _config.get_config("pi05_putcab_casm_visual_phase_gate_pi05_anchor_gate_only_lora")
+def test_visual_phase_gate_config_anchors_and_adapts_lora_actions():
+    config = _config.get_config("pi05_putcab_casm_visual_phase_gate_pi05_anchor_adapt_lora")
 
     assert config.model.casm_mode == "visual_phase_gate"
     assert config.model.paligemma_variant == "gemma_2b_lora"
@@ -231,18 +231,19 @@ def test_visual_phase_gate_config_anchors_actions_and_only_trains_gate():
     assert config.project_name == "parallelvla-casm"
     assert config.batch_size == 16
     assert config.num_train_steps == 2_000
-    assert config.save_interval == 1_000
+    assert config.save_interval == 500
     assert config.params_only_checkpoint is False
     assert config.ema_decay is None
     assert config.wandb_enabled is True
     assert config.data.repo_id == "Shiki42/robotwin_put_obj_cabinet_50_dynFcam_nFov"
-    assert repr(config.freeze_filter) == "Not(PathContains('phase_gate'))"
     assert config.weight_loader.missing_regex == ".*phase_gate.*"
     trainable = nnx.filterlib.to_predicate(config.trainable_filter)
     parameter = nnx.Param(0.0)
     assert trainable(("phase_gate", "kernel"), parameter)
-    assert not trainable(("PaliGemma", "llm", "lora_a"), parameter)
-    assert not trainable(("action_in_proj", "kernel"), parameter)
+    assert trainable(("PaliGemma", "llm", "lora_a"), parameter)
+    assert trainable(("PaliGemma", "img", "kernel"), parameter)
+    assert trainable(("action_in_proj", "kernel"), parameter)
+    assert not trainable(("PaliGemma", "llm", "kernel"), parameter)
 
 
 
