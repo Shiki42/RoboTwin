@@ -1,6 +1,7 @@
 import asyncio
 import http
 import logging
+import threading
 import time
 import traceback
 
@@ -29,7 +30,7 @@ class WebsocketPolicyServer:
         self._host = host
         self._port = port
         self._metadata = metadata or {}
-        self._inference_lock = asyncio.Lock()
+        self._inference_lock = threading.Lock()
         logging.getLogger("websockets.server").setLevel(logging.INFO)
 
     def serve_forever(self) -> None:
@@ -85,8 +86,13 @@ class WebsocketPolicyServer:
 
     async def _infer(self, obs):
         # Yield the event loop for keepalives while keeping the JAX policy single-threaded.
-        async with self._inference_lock:
-            return await asyncio.to_thread(self._policy.infer, obs)
+        return await asyncio.to_thread(self._infer_serialized, obs)
+
+    def _infer_serialized(self, obs):
+        # A cancelled coroutine cannot stop its worker thread. Keep serialization in that
+        # thread so the next request cannot overlap the still-running JAX inference.
+        with self._inference_lock:
+            return self._policy.infer(obs)
 
 
 def _health_check(connection: _server.ServerConnection, request: _server.Request) -> _server.Response | None:
