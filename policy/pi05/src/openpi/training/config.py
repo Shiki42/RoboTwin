@@ -23,6 +23,7 @@ import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
 import openpi.shared.download as _download
+import openpi.shared.nnx_utils as nnx_utils
 import openpi.shared.normalize as _normalize
 import openpi.training.droid_rlds_dataset as droid_rlds_dataset
 import openpi.training.misc.roboarena_config as roboarena_config
@@ -71,7 +72,6 @@ class DataConfig:
     asset_id: str | None = None
     # Contains precomputed normalization stats. If None, normalization will not be performed.
     norm_stats: dict[str, _transforms.NormStats] | None = None
-
     # Used to adopt the inputs from a dataset specific format to a common format
     # which is expected by the data transforms.
     repack_transforms: _transforms.Group = dataclasses.field(default_factory=_transforms.Group)
@@ -83,18 +83,14 @@ class DataConfig:
     model_transforms: _transforms.Group = dataclasses.field(default_factory=_transforms.Group)
     # If true, will use quantile normalization. Otherwise, normal z-score normalization will be used.
     use_quantile_norm: bool = False
-
     # Names of keys that will be used by the data loader to generate the action sequence. The length of the
     # sequence is defined by the `action_horizon` field in the model config. This should be adjusted if your
     # LeRobot dataset is using different keys to represent the action.
     action_sequence_keys: Sequence[str] = ("actions",)
-
     # If true, will use the LeRobot dataset task to define the prompt.
     prompt_from_task: bool = False
-
     # Explicit LeRobot video decoder. None uses the platform default.
     video_backend: Literal["torchcodec", "pyav"] | None = None
-
     # Only used for RLDS data loader (ie currently only used for DROID).
     rlds_data_dir: str | None = None
     # Action space for DROID dataset.
@@ -617,19 +613,23 @@ def _putcab_casm_config(
     gate_positive_weight: float = 1.0,
     base_checkpoint: str = "gs://openpi-assets/checkpoints/pi05_base/params",
     strict_checkpoint: bool = False,
+    freeze_vision: bool = False,
 ) -> TrainConfig:
     model = pi0_config.Pi0Config(
         pi05=True, casm_mode=mode,
         paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora",
         gate_positive_weight=gate_positive_weight,
     )
+    freeze_filter = model.get_freeze_filter()
+    if freeze_vision:
+        freeze_filter = nnx.Any(freeze_filter, nnx_utils.PathRegex(r".*PaliGemma.*img.*"))
     return TrainConfig(
         name=name,
         model=model,
         project_name=project_name,
         ema_decay=ema_decay,
         data=_putcab_casm_data(repo_id),
-        freeze_filter=model.get_freeze_filter(),
+        freeze_filter=freeze_filter,
         weight_loader=weight_loaders.CheckpointWeightLoader(
             base_checkpoint,
             missing_regex=(".*phase_gate.*" if mode == "visual_phase_gate" else r"(?!x)x")
@@ -647,13 +647,13 @@ def _putcab_casm_config(
     )
 
 
-def _putcab_anchor_adapt_config(name: str, mode: casm.CasmMode, project_name: str) -> TrainConfig:
+def _putcab_anchor_adapt_config(name: str, mode: casm.CasmMode, project_name: str, *, freeze_vision: bool = False) -> TrainConfig:
     return _putcab_casm_config(
         name, mode, repo_id=os.environ.get("PARALLELVLA_DATASET_REPO", "Shiki42/robotwin_put_obj_cabinet_50_dynFcam_nFov"),
         base_checkpoint=os.environ.get("PI05_ANCHOR_CHECKPOINT", "gs://openpi-assets/checkpoints/pi05_base/params"),
         train_steps=2_000, save_interval=500, batch_size=16, num_workers=4,
         wandb_enabled=True, project_name=project_name, params_only_checkpoint=False,
-        ema_decay=None, strict_checkpoint=True,
+        ema_decay=None, strict_checkpoint=True, freeze_vision=freeze_vision,
     )
 
 def _putcab_pytorch_config(name: str, mode: Literal["none", "visual_phase_gate"]) -> TrainConfig:
@@ -720,9 +720,7 @@ def _putcab_jax_config(name: str, mode: Literal["none", "visual_phase_gate"]) ->
 
 # Use `get_config` if you need to get a config by name in your code.
 _CONFIGS = [
-    ###
-    ### finetune config for robotwin
-    ###
+    # Finetune configs for RoboTwin.
     # pi05_base by full
     TrainConfig(
         name="pi05_aloha_full_base",
@@ -850,6 +848,10 @@ _CONFIGS = [
     ),
     _putcab_anchor_adapt_config("pi05_putcab_casm_visual_phase_gate_pi05_anchor_adapt_lora", "visual_phase_gate", "parallelvla-casm"),
     _putcab_anchor_adapt_config("pi05_putcab_pi05_anchor_adapt_matched_lora", "none", "parallelvla-pi05-matched"),
+    _putcab_anchor_adapt_config(
+        "pi05_putcab_pi05_anchor_adapt_vision_frozen_lora", "none",
+        "parallelvla-pi05-vision-frozen", freeze_vision=True,
+    ),
     _putcab_jax_config("pi05_putcab_casm_visual_phase_gate_jax_full", "visual_phase_gate"),
     _putcab_jax_config("pi05_putcab_jax_matched_full", "none"),
     _putcab_pytorch_config("pi05_putcab_pytorch_matched_full", "none"),
@@ -973,9 +975,7 @@ _CONFIGS = [
         num_train_steps=30000,
         fsdp_devices=1,  # refer line 359
     ),
-    #
     # RoboArena configs.
-    #
     *roboarena_config.get_roboarena_configs(),
 ]
 

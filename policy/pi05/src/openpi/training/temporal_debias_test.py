@@ -268,6 +268,21 @@ def test_matched_pi05_config_uses_same_anchor_adaptation_budget_without_gate():
     assert not trainable(("PaliGemma", "llm", "kernel"), parameter)
 
 
+def test_vision_frozen_pi05_config_only_trains_lora_and_action_heads():
+    config = _config.get_config("pi05_putcab_pi05_anchor_adapt_vision_frozen_lora")
+
+    assert config.model.casm_mode == "none"
+    assert config.project_name == "parallelvla-pi05-vision-frozen"
+    assert config.weight_loader.missing_regex == r"(?!x)x"
+    trainable = nnx.filterlib.to_predicate(config.trainable_filter)
+    parameter = nnx.Param(0.0)
+    assert trainable(("PaliGemma", "llm", "lora_a"), parameter)
+    assert trainable(("PaliGemma", "llm_1", "lora_a"), parameter)
+    assert not trainable(("PaliGemma", "img", "kernel"), parameter)
+    assert trainable(("action_in_proj", "kernel"), parameter)
+    assert trainable(("action_out_proj", "kernel"), parameter)
+    assert not trainable(("PaliGemma", "llm", "kernel"), parameter)
+
 
 @pytest.mark.parametrize(
     ("name", "mode"),
