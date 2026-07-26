@@ -718,10 +718,7 @@ def _putcab_jax_config(name: str, mode: Literal["none", "visual_phase_gate"]) ->
     )
 
 
-# Use `get_config` if you need to get a config by name in your code.
 _CONFIGS = [
-    # Finetune configs for RoboTwin.
-    # pi05_base by full
     TrainConfig(
         name="pi05_aloha_full_base",
         model=pi0_config.Pi0Config(pi05=True),
@@ -851,6 +848,10 @@ _CONFIGS = [
     _putcab_anchor_adapt_config(
         "pi05_putcab_pi05_anchor_adapt_vision_frozen_lora", "none",
         "parallelvla-pi05-vision-frozen", freeze_vision=True,
+    ),
+    dataclasses.replace(
+        _putcab_anchor_adapt_config("pi05_putcab_casm_visual_phase_gate_pi05_anchor_gate_only", "visual_phase_gate", "parallelvla-casm-gate-only"),
+        freeze_filter=nnx.Not(nnx_utils.PathRegex(r".*phase_gate.*")),
     ),
     _putcab_jax_config("pi05_putcab_casm_visual_phase_gate_jax_full", "visual_phase_gate"),
     _putcab_jax_config("pi05_putcab_jax_matched_full", "none"),

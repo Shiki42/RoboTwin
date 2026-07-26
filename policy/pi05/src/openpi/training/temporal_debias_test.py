@@ -284,6 +284,20 @@ def test_vision_frozen_pi05_config_only_trains_lora_and_action_heads():
     assert not trainable(("PaliGemma", "llm", "kernel"), parameter)
 
 
+def test_gate_only_casm_config_freezes_everything_except_phase_gate():
+    config = _config.get_config("pi05_putcab_casm_visual_phase_gate_pi05_anchor_gate_only")
+
+    assert config.model.casm_mode == "visual_phase_gate"
+    assert config.project_name == "parallelvla-casm-gate-only"
+    assert config.weight_loader.missing_regex == ".*phase_gate.*"
+    trainable = nnx.filterlib.to_predicate(config.trainable_filter)
+    parameter = nnx.Param(0.0)
+    assert trainable(("phase_gate", "kernel"), parameter)
+    assert not trainable(("PaliGemma", "llm", "lora_a"), parameter)
+    assert not trainable(("PaliGemma", "img", "kernel"), parameter)
+    assert not trainable(("action_in_proj", "kernel"), parameter)
+
+
 @pytest.mark.parametrize(
     ("name", "mode"),
     [
