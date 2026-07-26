@@ -112,6 +112,10 @@ class AlohaInputs(transforms.DataTransformFn):
             phase_id = np.asarray(data["phase_id"], dtype=np.int32).reshape(1)
             inputs["phase_id"] = phase_id
 
+        if "semantic_subtask_id" in data:
+            semantic_id = np.asarray(data["semantic_subtask_id"], dtype=np.int32).reshape(1)
+            inputs["semantic_subtask_id"] = semantic_id
+
         if "prompt" in data:
             inputs["prompt"] = data["prompt"]
 

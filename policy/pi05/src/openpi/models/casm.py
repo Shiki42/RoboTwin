@@ -154,9 +154,20 @@ class CooperationGate(nnx.Module):
 
 
 class VisualProprioceptionGate(nnx.Module):
-    """Predicts async/sync from pooled visual tokens and continuous robot state."""
+    """Predicts labels from pooled visual tokens and continuous robot state."""
 
-    def __init__(self, visual_dim: int, state_dim: int, hidden_dim: int, *, rngs: nnx.Rngs):
+    def __init__(
+        self,
+        visual_dim: int,
+        state_dim: int,
+        hidden_dim: int,
+        *,
+        output_dim: int = 1,
+        rngs: nnx.Rngs,
+    ):
+        if output_dim < 1:
+            raise ValueError("visual-proprioception output dimension must be positive")
+        self.output_dim = output_dim
         self.visual_norm = nnx.LayerNorm(visual_dim, rngs=rngs)
         self.state_norm = nnx.LayerNorm(state_dim, rngs=rngs)
         self.visual_proj = nnx.Linear(visual_dim, hidden_dim, rngs=rngs)
@@ -164,7 +175,7 @@ class VisualProprioceptionGate(nnx.Module):
         self.fusion = nnx.Linear(2 * hidden_dim, hidden_dim, rngs=rngs)
         self.output = nnx.Linear(
             hidden_dim,
-            1,
+            output_dim,
             kernel_init=jax.nn.initializers.zeros,
             bias_init=jax.nn.initializers.zeros,
             rngs=rngs,
@@ -175,14 +186,17 @@ class VisualProprioceptionGate(nnx.Module):
         visual_features: at.Float[at.Array, "*b v"],
         state: at.Float[at.Array, "*b d"],
     ) -> at.Float[at.Array, "*b"]:
-        # The phase objective trains only the compact head. This keeps 50-demo
+        # Semantic objectives train only compact heads. This keeps 50-demo
         # supervision from perturbing the pretrained visual representation.
         visual_features = jax.lax.stop_gradient(visual_features)
         state = jax.lax.stop_gradient(state)
         visual = jax.nn.gelu(self.visual_proj(self.visual_norm(visual_features)))
         proprioception = jax.nn.gelu(self.state_proj(self.state_norm(state)))
         fused = jnp.concatenate([visual, proprioception], axis=-1)
-        return self.output(jax.nn.gelu(self.fusion(fused)))[..., 0]
+        logits = self.output(jax.nn.gelu(self.fusion(fused)))
+        if self.output_dim == 1:
+            return logits[..., 0]
+        return logits
 
 
 class BiasFreeLinear(nnx.Module):

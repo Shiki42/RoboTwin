@@ -7,6 +7,7 @@ import jax.numpy as jnp
 from typing_extensions import override
 
 from openpi.models import casm
+from openpi.models import casm_language
 from openpi.models import model as _model
 import openpi.models.gemma as _gemma
 from openpi.shared import array_typing as at
@@ -38,6 +39,10 @@ class Pi0Config(_model.BaseModelConfig):
     usefulness_loss_weight: float = 0.2
     phase_prior_loss_weight: float = 0.1
     usefulness_temperature: float = 0.1
+    semantic_subtask_prediction: bool = False
+    semantic_role_loss_weight: float = 0.2
+    semantic_stage_loss_weight: float = 0.2
+    semantic_stage_class_weights: tuple[float, ...] = (13.81, 1.13, 0.93, 13.81, 3.78, 0.78)
     # This config option is not used directly by the model, but it is read by the ModelTransformFactory.
     discrete_state_input: bool = None  # type: ignore
 
@@ -52,6 +57,16 @@ class Pi0Config(_model.BaseModelConfig):
             raise ValueError("gate positive weight must be positive")
         if self.usefulness_temperature <= 0:
             raise ValueError("usefulness temperature must be positive")
+        if self.semantic_role_loss_weight < 0:
+            raise ValueError("semantic role loss weight must be non-negative")
+        if self.semantic_stage_loss_weight < 0:
+            raise ValueError("semantic stage loss weight must be non-negative")
+        if len(self.semantic_stage_class_weights) != casm_language.SEMANTIC_STAGE_COUNT:
+            raise ValueError("semantic stage class weights must cover every stage")
+        if any(weight <= 0 for weight in self.semantic_stage_class_weights):
+            raise ValueError("semantic stage class weights must be positive")
+        if self.semantic_subtask_prediction and self.casm_mode != "visual_phase_gate":
+            raise ValueError("semantic subtask prediction requires visual-phase-gate CASM")
         if self.max_token_len is None:
             object.__setattr__(self, "max_token_len", 200 if self.pi05 else 48)
         if self.discrete_state_input is None:

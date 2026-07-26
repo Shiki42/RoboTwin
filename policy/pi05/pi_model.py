@@ -66,6 +66,7 @@ class PI0:
         self.pi0_step = pi0_step
         self.sync_action_chunk_steps = sync_action_chunk_steps
         self.learned_phase_routing = config.model.casm_mode == "visual_phase_gate"
+        self.semantic_subtask_prediction = config.model.semantic_subtask_prediction
         if self.learned_phase_routing:
             self.main_camera_router = LearnedAsyncToSyncRouter(
                 sync_threshold=gate_sync_threshold,
@@ -78,6 +79,7 @@ class PI0:
             )
         self.base_instruction = None
         self.activity_metrics = RolloutActivityMetrics()
+        self.semantic_subtask_history = []
 
     # set img_size
     def set_img_size(self, img_size):
@@ -132,11 +134,25 @@ class PI0:
         metrics = self.activity_metrics.summary()
         if self.learned_phase_routing:
             metrics["phase_router"] = self.main_camera_router.summary()
+        if self.semantic_subtask_prediction:
+            metrics["semantic_subtask_history"] = self.semantic_subtask_history.copy()
         return metrics
 
     def get_action(self):
         assert self.observation_window is not None, "update observation_window first!"
         outputs = self.policy.infer(self.observation_window)
+        if self.semantic_subtask_prediction:
+            self.semantic_subtask_history.append(
+                {
+                    "semantic_subtask_id": int(outputs["semantic_subtask_id"]),
+                    "semantic_subtask_prompt": outputs["semantic_subtask_prompt"],
+                    "object_arm_right_probability": float(
+                        outputs["semantic_object_arm_right_probability"]
+                    ),
+                    "stage_probabilities": outputs["semantic_stage_probabilities"],
+                    "confirmed_phase_id": int(self.observation_window["phase_id"][0]),
+                }
+            )
         if self.learned_phase_routing:
             if "async_probability" not in outputs:
                 raise ValueError("visual phase gate inference must return async_probability")
@@ -148,4 +164,5 @@ class PI0:
         self.observation_window = None
         self.main_camera_router.reset()
         self.activity_metrics.reset()
+        self.semantic_subtask_history = []
         print("successfully unset obs and language intruction")

@@ -17,47 +17,6 @@ def phase_neutral_prompt(instruction: str) -> str:
     return prompt
 
 
-def scene_context_indices(
-    action_phase_ids: np.ndarray,
-    boundary_context_steps: int = 0,
-) -> np.ndarray:
-    phase_ids = np.asarray(action_phase_ids)
-    if phase_ids.ndim != 1:
-        raise ValueError(f"expected one-dimensional phase ids, got {phase_ids.shape}")
-    if boundary_context_steps < 0:
-        raise ValueError("boundary context steps must be non-negative")
-    indices = np.arange(phase_ids.shape[0], dtype=np.int64)
-    segment_start = None
-    for index, phase_id in enumerate(phase_ids):
-        if int(phase_id) == SYNC_PHASE_ID:
-            if segment_start is not None and boundary_context_steps:
-                boundary_start = max(segment_start, index - boundary_context_steps)
-                indices[boundary_start:index] = np.arange(boundary_start, index)
-            segment_start = None
-            continue
-        if segment_start is None:
-            segment_start = index
-        indices[index] = segment_start
-    if segment_start is not None and boundary_context_steps:
-        boundary_start = max(segment_start, len(phase_ids) - boundary_context_steps)
-        indices[boundary_start:] = np.arange(boundary_start, len(phase_ids))
-    return indices
-
-
-def route_main_camera(
-    frames: np.ndarray,
-    action_phase_ids: np.ndarray,
-    boundary_context_steps: int = 0,
-) -> np.ndarray:
-    if frames.shape[0] != len(action_phase_ids):
-        raise ValueError(
-            f"camera/phase length mismatch: {frames.shape[0]} != {len(action_phase_ids)}"
-        )
-    return frames[
-        scene_context_indices(action_phase_ids, boundary_context_steps)
-    ].copy()
-
-
 def phase_conditioned_prompt(instruction: str, *, async_phase: bool) -> str:
     prompt = phase_neutral_prompt(instruction)
     phase_tag = ASYNC_PHASE_TAG if async_phase else SYNC_PHASE_TAG
@@ -104,10 +63,6 @@ class EpisodeStartSceneContextRouter:
         return min(requested_steps, sync_steps)
 
     def route(self, main_frame: np.ndarray) -> np.ndarray:
-        if self._scene_context is None:
-            self._scene_context = np.asarray(main_frame).copy()
-        if self.async_phase and not self.boundary_context:
-            return self._scene_context.copy()
         return np.asarray(main_frame)
 
     def advance(self, steps: int = 1) -> None:
@@ -117,7 +72,6 @@ class EpisodeStartSceneContextRouter:
 
     def reset(self) -> None:
         self._step = 0
-        self._scene_context: np.ndarray | None = None
 
 
 class LearnedAsyncToSyncRouter:
@@ -162,10 +116,7 @@ class LearnedAsyncToSyncRouter:
         return requested_steps if self._async_phase else min(requested_steps, sync_steps)
 
     def route(self, main_frame: np.ndarray) -> np.ndarray:
-        frame = np.asarray(main_frame)
-        if self._scene_context is None:
-            self._scene_context = frame.copy()
-        return self._scene_context.copy() if self._async_phase else frame
+        return np.asarray(main_frame)
 
     def summary(self) -> dict:
         return {
@@ -181,7 +132,6 @@ class LearnedAsyncToSyncRouter:
     def reset(self) -> None:
         self._async_phase = True
         self._sync_evidence = 0
-        self._scene_context: np.ndarray | None = None
         self._latest_async_probability: float | None = None
         self._transition_observation: int | None = None
         self._probability_history: list[float] = []

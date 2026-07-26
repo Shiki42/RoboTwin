@@ -48,6 +48,7 @@ def learned_model(outputs):
     model = object.__new__(PI0)
     model.observation_window = {"prompt": "put the object away"}
     model.learned_phase_routing = True
+    model.semantic_subtask_prediction = False
     model.main_camera_router = LearnedAsyncToSyncRouter(sync_confirmations=1)
     model.policy = FakePolicy(outputs)
     model.pi0_step = 50
@@ -69,3 +70,30 @@ def test_visual_gate_deployment_requires_probability_output():
 
     with pytest.raises(ValueError, match="async_probability"):
         model.get_action()
+
+
+def test_casm_lan_records_exact_semantic_prompt():
+    actions = np.ones((50, 14), dtype=np.float32)
+    outputs = {
+        "actions": actions,
+        "async_probability": np.array(0.8),
+        "semantic_subtask_id": 0,
+        "semantic_subtask_prompt": "Left arm: grasp. Right arm: open drawer.",
+        "semantic_object_arm_right_probability": 0.1,
+        "semantic_stage_probabilities": [0.01, 0.02, 0.9, 0.02, 0.02, 0.03],
+    }
+    model = learned_model(outputs)
+    model.semantic_subtask_prediction = True
+    model.semantic_subtask_history = []
+    model.observation_window["phase_id"] = np.array([1], dtype=np.int32)
+
+    assert model.get_action() is actions
+    assert model.semantic_subtask_history == [
+        {
+            "semantic_subtask_id": 0,
+            "semantic_subtask_prompt": "Left arm: grasp. Right arm: open drawer.",
+            "object_arm_right_probability": 0.1,
+            "stage_probabilities": [0.01, 0.02, 0.9, 0.02, 0.02, 0.03],
+            "confirmed_phase_id": 1,
+        }
+    ]

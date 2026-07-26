@@ -14,6 +14,7 @@ import torch
 from typing_extensions import override
 
 from openpi import transforms as _transforms
+from openpi.models import casm_language
 from openpi.models import model as _model
 from openpi.shared import array_typing as at
 from openpi.shared import nnx_utils
@@ -55,6 +56,7 @@ class Policy(BasePolicy):
         self._is_pytorch_model = is_pytorch
         self._pytorch_device = pytorch_device
         self._predict_async_probability = None
+        self._predict_casm_language = None
 
         if self._is_pytorch_model:
             self._model = self._model.to(pytorch_device)
@@ -64,22 +66,54 @@ class Policy(BasePolicy):
             # JAX model setup
             self._sample_actions = nnx_utils.module_jit(model.sample_actions)
             self._rng = rng or jax.random.key(0)
-            if getattr(model, "casm_mode", "none") == "visual_phase_gate":
+            if getattr(model, "semantic_subtask_prediction", False):
+                self._predict_casm_language = nnx_utils.module_jit(model.predict_casm_language)
+            elif getattr(model, "casm_mode", "none") == "visual_phase_gate":
                 self._predict_async_probability = nnx_utils.module_jit(model.predict_async_probability)
+
+    def _transform_inputs(self, obs: dict):
+        inputs = self._input_transform(jax.tree.map(lambda value: value, obs))
+        if not self._is_pytorch_model:
+            return jax.tree.map(lambda x: jnp.asarray(x)[np.newaxis, ...], inputs)
+        return jax.tree.map(
+            lambda x: torch.from_numpy(np.array(x)).to(self._pytorch_device)[None, ...],
+            inputs,
+        )
+
+    def _semantic_action_observation(self, obs: dict):
+        high_level_inputs = self._transform_inputs(obs)
+        high_level_observation = _model.Observation.from_dict(high_level_inputs)
+        prediction = self._predict_casm_language(high_level_observation)
+        async_probability, role_probability = np.asarray(prediction[0, :2])
+        stage_probabilities = np.asarray(prediction[0, 2:])
+        semantic_id = casm_language.semantic_id_from_prediction(
+            role_probability,
+            async_probability,
+            stage_probabilities,
+        )
+        action_obs = jax.tree.map(lambda value: value, obs)
+        action_obs["prompt"] = casm_language.format_action_prompt(obs["prompt"], semantic_id)
+        metadata = {
+            "semantic_subtask_id": semantic_id,
+            "semantic_subtask_prompt": action_obs["prompt"],
+            "semantic_object_arm_right_probability": float(role_probability),
+            "semantic_stage_probabilities": stage_probabilities.tolist(),
+        }
+        return action_obs, prediction[:, 0], metadata
 
     @override
     def infer(self, obs: dict, *, noise: np.ndarray | None = None) -> dict:  # type: ignore[misc]
-        # Make a copy since transformations may modify the inputs in place.
-        inputs = jax.tree.map(lambda x: x, obs)
-        inputs = self._input_transform(inputs)
-        if not self._is_pytorch_model:
-            # Make a batch and convert to jax.Array.
-            inputs = jax.tree.map(lambda x: jnp.asarray(x)[np.newaxis, ...], inputs)
-            self._rng, sample_rng_or_pytorch_device = jax.random.split(self._rng)
-        else:
-            # Convert inputs to PyTorch tensors and move to correct device
-            inputs = jax.tree.map(lambda x: torch.from_numpy(np.array(x)).to(self._pytorch_device)[None, ...], inputs)
+        start_time = time.monotonic()
+        semantic_metadata = {}
+        semantic_async_probability = None
+        action_obs = obs
+        if self._predict_casm_language is not None:
+            action_obs, semantic_async_probability, semantic_metadata = self._semantic_action_observation(obs)
+        inputs = self._transform_inputs(action_obs)
+        if self._is_pytorch_model:
             sample_rng_or_pytorch_device = self._pytorch_device
+        else:
+            self._rng, sample_rng_or_pytorch_device = jax.random.split(self._rng)
 
         # Prepare kwargs for sample_actions
         sample_kwargs = dict(self._sample_kwargs)
@@ -91,12 +125,13 @@ class Policy(BasePolicy):
             sample_kwargs["noise"] = noise
 
         observation = _model.Observation.from_dict(inputs)
-        start_time = time.monotonic()
         outputs = {
             "state": inputs["state"],
             "actions": self._sample_actions(sample_rng_or_pytorch_device, observation, **sample_kwargs),
         }
-        if self._predict_async_probability is not None:
+        if semantic_async_probability is not None:
+            outputs["async_probability"] = semantic_async_probability
+        elif self._predict_async_probability is not None:
             outputs["async_probability"] = self._predict_async_probability(observation)
         model_time = time.monotonic() - start_time
         if self._is_pytorch_model:
@@ -105,6 +140,7 @@ class Policy(BasePolicy):
             outputs = jax.tree.map(lambda x: np.asarray(x[0, ...]), outputs)
 
         outputs = self._output_transform(outputs)
+        outputs.update(semantic_metadata)
         outputs["policy_timing"] = {
             "infer_ms": model_time * 1000,
         }

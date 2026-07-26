@@ -1,5 +1,4 @@
 """See _CONFIGS for the list of available configs."""
-
 import abc
 from collections.abc import Sequence
 import dataclasses
@@ -25,6 +24,7 @@ import openpi.policies.libero_policy as libero_policy
 import openpi.shared.download as _download
 import openpi.shared.nnx_utils as nnx_utils
 import openpi.shared.normalize as _normalize
+import openpi.training.casm_lan_config as casm_lan_config
 import openpi.training.droid_rlds_dataset as droid_rlds_dataset
 import openpi.training.misc.roboarena_config as roboarena_config
 import openpi.training.optimizer as _optimizer
@@ -846,13 +846,14 @@ _CONFIGS = [
     _putcab_anchor_adapt_config("pi05_putcab_casm_visual_phase_gate_pi05_anchor_adapt_lora", "visual_phase_gate", "parallelvla-casm"),
     _putcab_anchor_adapt_config("pi05_putcab_pi05_anchor_adapt_matched_lora", "none", "parallelvla-pi05-matched"),
     _putcab_anchor_adapt_config(
-        "pi05_putcab_pi05_anchor_adapt_vision_frozen_lora", "none",
-        "parallelvla-pi05-vision-frozen", freeze_vision=True,
+        "pi05_putcab_pi05_anchor_adapt_vision_frozen_lora", "none", "parallelvla-pi05-vision-frozen", freeze_vision=True,
     ),
     dataclasses.replace(
         _putcab_anchor_adapt_config("pi05_putcab_casm_visual_phase_gate_pi05_anchor_gate_only", "visual_phase_gate", "parallelvla-casm-gate-only"),
         freeze_filter=nnx.Not(nnx_utils.PathRegex(r".*phase_gate.*")),
     ),
+    casm_lan_config.create(_putcab_anchor_adapt_config("pi05_putcab_casm_lan_anchor_adapt_lora", "visual_phase_gate", "parallelvla-casm-lan"),
+        name="pi05_putcab_casm_lan_anchor_adapt_lora", project_name="parallelvla-casm-lan"),
     _putcab_jax_config("pi05_putcab_casm_visual_phase_gate_jax_full", "visual_phase_gate"),
     _putcab_jax_config("pi05_putcab_jax_matched_full", "none"),
     _putcab_pytorch_config("pi05_putcab_pytorch_matched_full", "none"),

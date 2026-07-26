@@ -119,3 +119,45 @@ def test_visual_phase_gate_prediction_shape():
     observation = config.fake_obs(3)
     probability = nnx.eval_shape(model.predict_async_probability, observation)
     assert probability.shape == (3,)
+
+
+def _casm_lan_aux_shape():
+    config = _pi0_config.Pi0Config(
+        pi05=True,
+        casm_mode="visual_phase_gate",
+        semantic_subtask_prediction=True,
+    )
+    model = config.create(jax.random.key(0))
+    observation = config.fake_obs(2).replace(
+        phase_id=jnp.array([[1], [0]], dtype=jnp.int32),
+        semantic_subtask_id=jnp.array([[1], [11]], dtype=jnp.int32),
+        action_mask=jnp.ones((2, config.action_horizon, config.action_dim)),
+    )
+    return model.compute_loss(
+        jax.random.key(1),
+        observation,
+        config.fake_act(2),
+        train=True,
+        return_aux=True,
+    )
+
+
+def test_casm_lan_returns_semantic_metrics_and_prediction_shape():
+    loss, aux = nnx.eval_shape(_casm_lan_aux_shape)
+    assert loss.shape == (2, 50)
+    assert {
+        "semantic_role_loss",
+        "semantic_role_accuracy",
+        "semantic_stage_loss",
+        "semantic_stage_accuracy",
+        "semantic_subtask_accuracy",
+        "semantic_object_arm_right_probability",
+    }.issubset(aux)
+    config = _pi0_config.Pi0Config(
+        pi05=True,
+        casm_mode="visual_phase_gate",
+        semantic_subtask_prediction=True,
+    )
+    model = config.create(jax.random.key(0))
+    prediction = nnx.eval_shape(model.predict_casm_language, config.fake_obs(3))
+    assert prediction.shape == (3, 8)

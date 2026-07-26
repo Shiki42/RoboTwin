@@ -8,6 +8,7 @@ import jax.numpy as jnp
 from typing_extensions import override
 
 from openpi.models import casm
+from openpi.models import casm_language
 from openpi.models import model as _model
 from openpi.models import pi0_config
 import openpi.models.gemma as _gemma
@@ -87,6 +88,10 @@ class Pi0(_model.BaseModel):
         self.usefulness_loss_weight = config.usefulness_loss_weight
         self.phase_prior_loss_weight = config.phase_prior_loss_weight
         self.usefulness_temperature = config.usefulness_temperature
+        self.semantic_subtask_prediction = config.semantic_subtask_prediction
+        self.semantic_role_loss_weight = config.semantic_role_loss_weight
+        self.semantic_stage_loss_weight = config.semantic_stage_loss_weight
+        self.semantic_stage_class_weights = config.semantic_stage_class_weights
         paligemma_config = _gemma.get_config(config.paligemma_variant)
         action_expert_config = _gemma.get_config(config.action_expert_variant)
         # TODO: rewrite gemma in NNX. For now, use bridge.
@@ -123,6 +128,20 @@ class Pi0(_model.BaseModel):
                 paligemma_config.width,
                 config.action_dim,
                 config.coordination_gate_hidden_dim,
+                rngs=rngs,
+            )
+        if self.semantic_subtask_prediction:
+            self.semantic_role_head = casm.VisualProprioceptionGate(
+                paligemma_config.width,
+                config.action_dim,
+                config.coordination_gate_hidden_dim,
+                rngs=rngs,
+            )
+            self.semantic_stage_head = casm.VisualProprioceptionGate(
+                paligemma_config.width,
+                config.action_dim,
+                config.coordination_gate_hidden_dim,
+                output_dim=casm_language.SEMANTIC_STAGE_COUNT,
                 rngs=rngs,
             )
         if self.casm_mode in casm.LEARNED_GATE_MODES - {"visual_phase_gate"}:
@@ -360,10 +379,10 @@ class Pi0(_model.BaseModel):
             hidden, visual_summary = self._hidden_field_with_visual(observation, noisy_actions, time)
             gate_logits = self.phase_gate(visual_summary, observation.state)
             predicted = self.action_out_proj(hidden)
-            return predicted, gate_logits, None
+            return predicted, gate_logits, None, visual_summary
 
         if self.casm_mode == "none":
-            return self._vector_field(observation, noisy_actions, time), None, None
+            return self._vector_field(observation, noisy_actions, time), None, None, None
         if self.casm_mode == "hard_mask":
             factorized = self._factorized_vector_field(
                 observation,
@@ -371,7 +390,7 @@ class Pi0(_model.BaseModel):
                 time,
                 hard_mask=True,
             )
-            return factorized, None, None
+            return factorized, None, None, None
 
         gate = self._cooperation_probability(observation)
         if self.casm_mode == "hard_gate":
@@ -391,7 +410,7 @@ class Pi0(_model.BaseModel):
                 ),
                 operand=None,
             )
-            return predicted, gate, None
+            return predicted, gate, None, None
 
         left_hidden, right_hidden = self._stream_hidden_fields(
             observation,
@@ -411,7 +430,7 @@ class Pi0(_model.BaseModel):
             noisy_actions.shape[0],
         )
         if self.casm_mode == "gated_cross_attention":
-            return predicted, gate, None
+            return predicted, gate, None, None
         if self.casm_mode == "usefulness_gate":
             zeros = jnp.zeros_like(gate)
             ones = jnp.ones_like(gate)
@@ -427,7 +446,7 @@ class Pi0(_model.BaseModel):
                 ones,
                 noisy_actions.shape[0],
             )
-            return predicted, gate, (communication_off, communication_on)
+            return predicted, gate, (communication_off, communication_on), None
         raise ValueError(f"unknown CASM mode: {self.casm_mode}")
 
     @override
@@ -449,7 +468,7 @@ class Pi0(_model.BaseModel):
         time_expanded = time[..., None, None]
         x_t = time_expanded * noise + (1 - time_expanded) * actions
         u_t = noise - actions
-        v_t, gate, alternatives = self._routed_vector_fields(observation, x_t, time)
+        v_t, gate, alternatives, visual_summary = self._routed_vector_fields(observation, x_t, time)
         action_loss = reduce_action_loss(jnp.square(v_t - u_t), observation.action_mask)
         if gate is None:
             return action_loss
@@ -472,6 +491,40 @@ class Pi0(_model.BaseModel):
                 "gate_predicted_async_rate": jnp.mean(probability >= 0.5),
                 "gate_target_async_rate": jnp.mean(target),
             }
+            if self.semantic_subtask_prediction:
+                if observation.semantic_subtask_id is None:
+                    raise ValueError("CASM-LAN requires semantic_subtask_id during training")
+                semantic_id = observation.semantic_subtask_id[..., 0]
+                role_target = (semantic_id >= casm_language.SEMANTIC_STAGE_COUNT).astype(jnp.float32)
+                stage_target = semantic_id % casm_language.SEMANTIC_STAGE_COUNT
+                role_logits = self.semantic_role_head(visual_summary, observation.state)
+                role_loss = casm.binary_cross_entropy_with_logits(role_logits, role_target, 1.0)
+                stage_logits = self.semantic_stage_head(visual_summary, observation.state)
+                stage_weights = jnp.asarray(self.semantic_stage_class_weights)
+                stage_loss = -jax.nn.log_softmax(stage_logits)[
+                    jnp.arange(stage_target.shape[0]),
+                    stage_target,
+                ] * stage_weights[stage_target]
+                total_loss += (
+                    self.semantic_role_loss_weight * role_loss[..., None]
+                    + self.semantic_stage_loss_weight * stage_loss[..., None]
+                )
+                role_probability = jax.nn.sigmoid(role_logits)
+                async_stage = jnp.argmax(stage_logits[..., :4], axis=-1)
+                sync_stage = 4 + jnp.argmax(stage_logits[..., 4:], axis=-1)
+                predicted_stage_id = jnp.where(probability >= 0.5, async_stage, sync_stage)
+                predicted_semantic_id = (
+                    casm_language.SEMANTIC_STAGE_COUNT * (role_probability >= 0.5)
+                    + predicted_stage_id
+                )
+                aux.update(
+                    semantic_role_loss=jnp.mean(role_loss),
+                    semantic_role_accuracy=jnp.mean((role_probability >= 0.5) == (role_target >= 0.5)),
+                    semantic_stage_loss=jnp.mean(stage_loss),
+                    semantic_stage_accuracy=jnp.mean(predicted_stage_id == stage_target),
+                    semantic_subtask_accuracy=jnp.mean(predicted_semantic_id == semantic_id),
+                    semantic_object_arm_right_probability=jnp.mean(role_probability),
+                )
             return (total_loss, aux) if return_aux else total_loss
 
         phase_target = casm.coordination_target(observation.phase_id)
@@ -627,6 +680,19 @@ class Pi0(_model.BaseModel):
         _, _, _, visual_summary = self._embed_prefix_with_visual(observation)
         logits = self.phase_gate(visual_summary, observation.state)
         return jax.nn.sigmoid(logits)
+
+    def predict_casm_language(self, observation: _model.Observation):
+        if not self.semantic_subtask_prediction:
+            raise ValueError("CASM language prediction is disabled")
+        observation = _model.preprocess_observation(None, observation, train=False)
+        _, _, _, visual_summary = self._embed_prefix_with_visual(observation)
+        async_probability = jax.nn.sigmoid(self.phase_gate(visual_summary, observation.state))
+        role_probability = jax.nn.sigmoid(self.semantic_role_head(visual_summary, observation.state))
+        stage_probabilities = jax.nn.softmax(self.semantic_stage_head(visual_summary, observation.state), axis=-1)
+        return jnp.concatenate(
+            [async_probability[..., None], role_probability[..., None], stage_probabilities],
+            axis=-1,
+        )
 
     @override
     def sample_actions(

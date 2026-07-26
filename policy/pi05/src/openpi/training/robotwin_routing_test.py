@@ -4,32 +4,7 @@ import pytest
 from openpi.training import robotwin_routing
 
 
-def test_scene_context_is_frozen_per_async_segment():
-    phase_ids = np.array([0, 0, 1, 1, 2, 0, 1, 1], dtype=np.int8)
-
-    indices = robotwin_routing.scene_context_indices(phase_ids)
-
-    assert indices.tolist() == [0, 1, 2, 2, 2, 5, 6, 6]
-
-
-def test_route_main_camera_preserves_sync_and_freezes_async():
-    frames = np.arange(8 * 2).reshape(8, 2)
-    phase_ids = np.array([0, 0, 1, 1, 2, 0, 1, 1], dtype=np.int8)
-
-    routed = robotwin_routing.route_main_camera(frames, phase_ids)
-
-    assert routed.tolist() == frames[[0, 1, 2, 2, 2, 5, 6, 6]].tolist()
-
-
-def test_route_main_camera_rejects_length_mismatch():
-    with pytest.raises(ValueError, match="length mismatch"):
-        robotwin_routing.route_main_camera(
-            np.zeros((3, 2)),
-            np.zeros(2, dtype=np.int8),
-        )
-
-
-def test_online_router_freezes_episode_start_then_switches_to_dynamic():
+def test_online_router_keeps_native_main_camera_dynamic():
     router = robotwin_routing.EpisodeStartSceneContextRouter(async_steps=2)
     first = np.full((2, 2), 1)
     second = np.full((2, 2), 2)
@@ -37,7 +12,7 @@ def test_online_router_freezes_episode_start_then_switches_to_dynamic():
 
     assert np.array_equal(router.route(first), first)
     router.advance()
-    assert np.array_equal(router.route(second), first)
+    assert np.array_equal(router.route(second), second)
     router.advance()
     assert np.array_equal(router.route(third), third)
     assert not router.async_phase
@@ -102,40 +77,20 @@ def test_phase_neutral_prompt_removes_ground_truth_phase_tag():
     assert robotwin_routing.phase_neutral_prompt("  put the object away  ") == "put the object away"
 
 
-def test_scene_context_restores_dynamic_frames_near_boundaries():
-    phase_ids = np.array([0, 0, 1, 1, 2, 0, 1, 1], dtype=np.int8)
-
-    indices = robotwin_routing.scene_context_indices(
-        phase_ids,
-        boundary_context_steps=1,
-    )
-
-    assert indices.tolist() == [0, 1, 2, 2, 4, 5, 6, 7]
-
-
 def test_online_router_uses_short_dynamic_chunks_in_boundary_context():
     router = robotwin_routing.EpisodeStartSceneContextRouter(
         async_steps=110,
         boundary_context_steps=20,
     )
-    first = np.array([1])
-    router.route(first)
+    router.route(np.array([1]))
     router.advance(89)
 
     assert not router.boundary_context
-    assert np.array_equal(router.route(np.array([2])), first)
+    assert np.array_equal(router.route(np.array([2])), np.array([2]))
     router.advance()
     assert router.boundary_context
     assert np.array_equal(router.route(np.array([3])), np.array([3]))
     assert router.execution_steps(requested_steps=50, sync_steps=10) == 10
-
-
-def test_scene_context_rejects_negative_boundary_window():
-    with pytest.raises(ValueError, match="non-negative"):
-        robotwin_routing.scene_context_indices(
-            np.zeros(2, dtype=np.int8),
-            boundary_context_steps=-1,
-        )
 
 
 def test_learned_router_uses_confirmed_monotonic_async_to_sync_transition():
@@ -145,7 +100,7 @@ def test_learned_router_uses_confirmed_monotonic_async_to_sync_transition():
 
     assert router.async_phase
     assert np.array_equal(router.route(initial), initial)
-    assert np.array_equal(router.route(later), initial)
+    assert np.array_equal(router.route(later), later)
     assert router.execution_steps(requested_steps=50, sync_steps=10) == 50
 
     router.update(0.8)
