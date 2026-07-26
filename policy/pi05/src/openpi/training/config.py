@@ -632,7 +632,9 @@ def _putcab_casm_config(
         freeze_filter=model.get_freeze_filter(),
         weight_loader=weight_loaders.CheckpointWeightLoader(
             base_checkpoint,
-            missing_regex=".*phase_gate.*" if strict_checkpoint else ".*(lora|cooperation_gate|cross_attention|phase_gate).*",
+            missing_regex=(".*phase_gate.*" if mode == "visual_phase_gate" else r"(?!x)x")
+            if strict_checkpoint
+            else ".*(lora|cooperation_gate|cross_attention|phase_gate).*",
         ),
         batch_size=batch_size,
         num_workers=num_workers,
@@ -644,6 +646,15 @@ def _putcab_casm_config(
         fsdp_devices=1,
     )
 
+
+def _putcab_anchor_adapt_config(name: str, mode: casm.CasmMode, project_name: str) -> TrainConfig:
+    return _putcab_casm_config(
+        name, mode, repo_id=os.environ.get("PARALLELVLA_DATASET_REPO", "Shiki42/robotwin_put_obj_cabinet_50_dynFcam_nFov"),
+        base_checkpoint=os.environ.get("PI05_ANCHOR_CHECKPOINT", "gs://openpi-assets/checkpoints/pi05_base/params"),
+        train_steps=2_000, save_interval=500, batch_size=16, num_workers=4,
+        wandb_enabled=True, project_name=project_name, params_only_checkpoint=False,
+        ema_decay=None, strict_checkpoint=True,
+    )
 
 def _putcab_pytorch_config(name: str, mode: Literal["none", "visual_phase_gate"]) -> TrainConfig:
     model = pi0_config.Pi0Config(
@@ -837,21 +848,8 @@ _CONFIGS = [
         "pi05_putcab_casm_usefulness_gate_lora",
         "usefulness_gate",
     ),
-    _putcab_casm_config(
-        "pi05_putcab_casm_visual_phase_gate_pi05_anchor_adapt_lora",
-        "visual_phase_gate",
-        repo_id=os.environ.get("PARALLELVLA_DATASET_REPO", "Shiki42/robotwin_put_obj_cabinet_50_dynFcam_nFov"),
-        base_checkpoint=os.environ.get("PI05_ANCHOR_CHECKPOINT", "gs://openpi-assets/checkpoints/pi05_base/params"),
-        train_steps=2_000,
-        save_interval=500,
-        batch_size=16,
-        num_workers=4,
-        wandb_enabled=True,
-        project_name="parallelvla-casm",
-        params_only_checkpoint=False,
-        ema_decay=None,
-        strict_checkpoint=True,
-    ),
+    _putcab_anchor_adapt_config("pi05_putcab_casm_visual_phase_gate_pi05_anchor_adapt_lora", "visual_phase_gate", "parallelvla-casm"),
+    _putcab_anchor_adapt_config("pi05_putcab_pi05_anchor_adapt_matched_lora", "none", "parallelvla-pi05-matched"),
     _putcab_jax_config("pi05_putcab_casm_visual_phase_gate_jax_full", "visual_phase_gate"),
     _putcab_jax_config("pi05_putcab_jax_matched_full", "none"),
     _putcab_pytorch_config("pi05_putcab_pytorch_matched_full", "none"),

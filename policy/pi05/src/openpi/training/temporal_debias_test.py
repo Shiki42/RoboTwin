@@ -246,6 +246,28 @@ def test_visual_phase_gate_config_anchors_and_adapts_lora_actions():
     assert not trainable(("PaliGemma", "llm", "kernel"), parameter)
 
 
+def test_matched_pi05_config_uses_same_anchor_adaptation_budget_without_gate():
+    config = _config.get_config("pi05_putcab_pi05_anchor_adapt_matched_lora")
+
+    assert config.model.casm_mode == "none"
+    assert config.model.paligemma_variant == "gemma_2b_lora"
+    assert config.model.action_expert_variant == "gemma_300m_lora"
+    assert config.project_name == "parallelvla-pi05-matched"
+    assert config.batch_size == 16
+    assert config.num_train_steps == 2_000
+    assert config.save_interval == 500
+    assert config.params_only_checkpoint is False
+    assert config.ema_decay is None
+    assert config.wandb_enabled is True
+    assert config.data.repo_id == "Shiki42/robotwin_put_obj_cabinet_50_dynFcam_nFov"
+    assert config.weight_loader.missing_regex == r"(?!x)x"
+    trainable = nnx.filterlib.to_predicate(config.trainable_filter)
+    parameter = nnx.Param(0.0)
+    assert trainable(("PaliGemma", "llm", "lora_a"), parameter)
+    assert trainable(("action_in_proj", "kernel"), parameter)
+    assert not trainable(("PaliGemma", "llm", "kernel"), parameter)
+
+
 
 @pytest.mark.parametrize(
     ("name", "mode"),
