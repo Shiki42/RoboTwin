@@ -160,4 +160,4 @@ def test_casm_lan_returns_semantic_metrics_and_prediction_shape():
     )
     model = config.create(jax.random.key(0))
     prediction = nnx.eval_shape(model.predict_casm_language, config.fake_obs(3))
-    assert prediction.shape == (3, 8)
+    assert prediction.shape == (3, 9)

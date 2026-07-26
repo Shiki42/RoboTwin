@@ -686,11 +686,17 @@ class Pi0(_model.BaseModel):
             raise ValueError("CASM language prediction is disabled")
         observation = _model.preprocess_observation(None, observation, train=False)
         _, _, _, visual_summary = self._embed_prefix_with_visual(observation)
-        async_probability = jax.nn.sigmoid(self.phase_gate(visual_summary, observation.state))
         role_probability = jax.nn.sigmoid(self.semantic_role_head(visual_summary, observation.state))
         stage_probabilities = jax.nn.softmax(self.semantic_stage_head(visual_summary, observation.state), axis=-1)
+        semantic_async_probability = jnp.sum(stage_probabilities[..., :4], axis=-1)
+        phase_gate_async_probability = jax.nn.sigmoid(self.phase_gate(visual_summary, observation.state))
         return jnp.concatenate(
-            [async_probability[..., None], role_probability[..., None], stage_probabilities],
+            [
+                semantic_async_probability[..., None],
+                role_probability[..., None],
+                stage_probabilities,
+                phase_gate_async_probability[..., None],
+            ],
             axis=-1,
         )
 
