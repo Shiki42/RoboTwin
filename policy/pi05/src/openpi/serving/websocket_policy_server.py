@@ -29,6 +29,7 @@ class WebsocketPolicyServer:
         self._host = host
         self._port = port
         self._metadata = metadata or {}
+        self._inference_lock = asyncio.Lock()
         logging.getLogger("websockets.server").setLevel(logging.INFO)
 
     def serve_forever(self) -> None:
@@ -58,7 +59,7 @@ class WebsocketPolicyServer:
                 obs = msgpack_numpy.unpackb(await websocket.recv())
 
                 infer_time = time.monotonic()
-                action = self._policy.infer(obs)
+                action = await self._infer(obs)
                 infer_time = time.monotonic() - infer_time
 
                 action["server_timing"] = {
@@ -81,6 +82,11 @@ class WebsocketPolicyServer:
                     reason="Internal server error. Traceback included in previous frame.",
                 )
                 raise
+
+    async def _infer(self, obs):
+        # Yield the event loop for keepalives while keeping the JAX policy single-threaded.
+        async with self._inference_lock:
+            return await asyncio.to_thread(self._policy.infer, obs)
 
 
 def _health_check(connection: _server.ServerConnection, request: _server.Request) -> _server.Response | None:
