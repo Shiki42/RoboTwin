@@ -86,7 +86,7 @@ class Policy(BasePolicy):
         prediction = self._predict_casm_language(high_level_observation)
         async_probability, role_probability = np.asarray(prediction[0, :2])
         stage_probabilities = np.asarray(prediction[0, 2:8])
-        phase_gate_async_probability = float(prediction[0, 8])
+        semantic_stage_async_probability = float(prediction[0, 8])
         semantic_id = casm_language.semantic_id_from_prediction(
             role_probability,
             async_probability,
@@ -99,7 +99,8 @@ class Policy(BasePolicy):
             "semantic_subtask_prompt": action_obs["prompt"],
             "semantic_object_arm_right_probability": float(role_probability),
             "semantic_stage_probabilities": stage_probabilities.tolist(),
-            "phase_gate_async_probability": phase_gate_async_probability,
+            "phase_gate_async_probability": float(async_probability),
+            "semantic_stage_async_probability": semantic_stage_async_probability,
         }
         return action_obs, prediction[:, 0], metadata
 

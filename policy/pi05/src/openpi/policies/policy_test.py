@@ -58,7 +58,7 @@ class _FakeCasmLanModel:
 
     def predict_casm_language(self, observation):
         assert int(observation.tokenized_prompt[0, 0]) == 0
-        return jnp.array([[0.95, 0.2, 0.01, 0.90, 0.02, 0.02, 0.02, 0.03, 0.8]], dtype=jnp.float32)
+        return jnp.array([[0.2, 0.2, 0.01, 0.90, 0.02, 0.02, 0.02, 0.03, 0.95]], dtype=jnp.float32)
 
     def sample_actions(self, rng, observation, **kwargs):
         del rng, kwargs
@@ -82,9 +82,10 @@ def test_casm_lan_predicts_semantics_before_action_prompt(monkeypatch):
             "prompt": "put the target object in the drawer",
         }
     )
-    assert outputs["semantic_subtask_id"] == 1
-    assert "Left arm: wait without moving while the drawer is opened" in outputs["semantic_subtask_prompt"]
-    assert "Right arm: reach for the drawer handle" in outputs["semantic_subtask_prompt"]
+    assert outputs["semantic_subtask_id"] == 5
+    assert "Left arm: carry and place the target object" in outputs["semantic_subtask_prompt"]
+    assert "Right arm: hold the drawer open and wait" in outputs["semantic_subtask_prompt"]
     assert outputs["semantic_stage_probabilities"] == pytest.approx([0.01, 0.90, 0.02, 0.02, 0.02, 0.03])
-    assert outputs["async_probability"] == pytest.approx(0.95)
-    assert outputs["phase_gate_async_probability"] == pytest.approx(0.8)
+    assert outputs["async_probability"] == pytest.approx(0.2)
+    assert outputs["phase_gate_async_probability"] == pytest.approx(0.2)
+    assert outputs["semantic_stage_async_probability"] == pytest.approx(0.95)
