@@ -72,11 +72,13 @@ def format_action_prompt(overall_task: str, subtask_id: int) -> str:
 
 def semantic_id_from_prediction(
     object_arm_right_probability: float | np.ndarray,
-    async_probability: float | np.ndarray,
     stage_probabilities: np.ndarray,
+    *,
+    phase_is_async: bool,
 ) -> int:
     role_probability = _validated_probability(object_arm_right_probability, name="role")
-    phase_probability = _validated_probability(async_probability, name="async phase")
+    if not isinstance(phase_is_async, bool | np.bool_):
+        raise TypeError(f"phase_is_async must be a boolean, got {type(phase_is_async)}")
     probabilities = np.asarray(stage_probabilities, dtype=np.float32)
     if probabilities.shape != (SEMANTIC_STAGE_COUNT,):
         raise ValueError(f"stage probabilities must have shape (6,), got {probabilities.shape}")
@@ -84,11 +86,7 @@ def semantic_id_from_prediction(
         raise ValueError("stage probabilities must be finite and non-negative")
     if not np.isclose(probabilities.sum(), 1.0, atol=1e-4):
         raise ValueError(f"stage probabilities must sum to one, got {probabilities.sum()}")
-    stage_id = (
-        int(np.argmax(probabilities[:4]))
-        if phase_probability >= 0.5
-        else 4 + int(np.argmax(probabilities[4:]))
-    )
+    stage_id = int(np.argmax(probabilities[:4])) if phase_is_async else 4 + int(np.argmax(probabilities[4:]))
     object_arm = "right" if role_probability >= 0.5 else "left"
     return semantic_subtask_id(object_arm, stage_id=stage_id)
 

@@ -88,4 +88,30 @@ def test_casm_lan_predicts_semantics_before_action_prompt(monkeypatch):
     assert outputs["semantic_stage_probabilities"] == pytest.approx([0.01, 0.90, 0.02, 0.02, 0.02, 0.03])
     assert outputs["async_probability"] == pytest.approx(0.2)
     assert outputs["phase_gate_async_probability"] == pytest.approx(0.2)
+    assert outputs["semantic_phase_is_async"] is False
     assert outputs["semantic_stage_async_probability"] == pytest.approx(0.95)
+
+
+def test_casm_lan_latched_sync_phase_cannot_revert_prompt(monkeypatch):
+    monkeypatch.setattr(policy_module.nnx_utils, "module_jit", lambda function: function)
+    model = _FakeCasmLanModel()
+    model.predict_casm_language = lambda observation: jnp.array(
+        [[0.8, 0.2, 0.01, 0.90, 0.02, 0.02, 0.02, 0.03, 0.95]],
+        dtype=jnp.float32,
+    )
+    policy = policy_module.Policy(model, transforms=(_SemanticTransform(),))
+    image = np.zeros((2, 2, 3), dtype=np.uint8)
+
+    outputs = policy.infer(
+        {
+            "image": {"base_0_rgb": image},
+            "image_mask": {"base_0_rgb": np.True_},
+            "state": np.zeros(14, dtype=np.float32),
+            "phase_id": np.array([0], dtype=np.int32),
+            "prompt": "put the target object in the drawer",
+        }
+    )
+
+    assert outputs["semantic_phase_is_async"] is False
+    assert outputs["semantic_subtask_id"] == 5
+    assert "Left arm: carry and place the target object" in outputs["semantic_subtask_prompt"]

@@ -116,8 +116,8 @@ def test_semantic_mapping_and_prompts_are_explicit_for_both_arms():
     assert "Right arm: hold the drawer open and wait" in prompt
     predicted = casm_language.semantic_id_from_prediction(
         0.9,
-        0.8,
         np.array([0.01, 0.04, 0.90, 0.02, 0.01, 0.02]),
+        phase_is_async=True,
     )
     assert predicted == 8
 

@@ -87,10 +87,14 @@ class Policy(BasePolicy):
         async_probability, role_probability = np.asarray(prediction[0, :2])
         stage_probabilities = np.asarray(prediction[0, 2:8])
         semantic_stage_async_probability = float(prediction[0, 8])
+        phase_id = int(np.asarray(obs["phase_id"]).reshape(()))
+        if phase_id not in {0, 1}:
+            raise ValueError(f"phase_id must be 0 or 1, got {phase_id}")
+        phase_is_async = phase_id == 1 and float(async_probability) >= 0.5
         semantic_id = casm_language.semantic_id_from_prediction(
             role_probability,
-            async_probability,
             stage_probabilities,
+            phase_is_async=phase_is_async,
         )
         action_obs = jax.tree.map(lambda value: value, obs)
         action_obs["prompt"] = casm_language.format_action_prompt(obs["prompt"], semantic_id)
@@ -100,6 +104,7 @@ class Policy(BasePolicy):
             "semantic_object_arm_right_probability": float(role_probability),
             "semantic_stage_probabilities": stage_probabilities.tolist(),
             "phase_gate_async_probability": float(async_probability),
+            "semantic_phase_is_async": phase_is_async,
             "semantic_stage_async_probability": semantic_stage_async_probability,
         }
         return action_obs, prediction[:, 0], metadata
