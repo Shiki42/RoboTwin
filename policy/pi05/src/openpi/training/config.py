@@ -852,8 +852,8 @@ _CONFIGS = [
         _putcab_anchor_adapt_config("pi05_putcab_casm_visual_phase_gate_pi05_anchor_gate_only", "visual_phase_gate", "parallelvla-casm-gate-only"),
         freeze_filter=nnx.Not(nnx_utils.PathRegex(r".*phase_gate.*")),
     ),
-    casm_lan_config.create(_putcab_anchor_adapt_config("pi05_putcab_casm_lan_anchor_adapt_lora", "visual_phase_gate", "parallelvla-casm-lan"),
-        name="pi05_putcab_casm_lan_anchor_adapt_lora", project_name="parallelvla-casm-lan"),
+    *casm_lan_config.create_variants(_putcab_anchor_adapt_config(
+        "casm_lan_base", "visual_phase_gate", "parallelvla-casm-lan")),
     _putcab_jax_config("pi05_putcab_casm_visual_phase_gate_jax_full", "visual_phase_gate"),
     _putcab_jax_config("pi05_putcab_jax_matched_full", "none"),
     _putcab_pytorch_config("pi05_putcab_pytorch_matched_full", "none"),
