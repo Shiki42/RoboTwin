@@ -3,6 +3,7 @@ import functools
 import flax.nnx as nnx
 import jax
 import jax.numpy as jnp
+import pytest
 
 import openpi.models.pi0_config as _pi0_config
 
@@ -73,7 +74,14 @@ def _casm_sampling_shape(config: _pi0_config.Pi0Config):
 
 
 def test_casm_modes_support_training_and_sampling_shapes():
-    modes = ("hard_mask", "hard_gate", "gated_cross_attention", "usefulness_gate", "visual_phase_gate")
+    modes = (
+        "hard_mask",
+        "hard_gate",
+        "gated_cross_attention",
+        "usefulness_gate",
+        "visual_phase_gate",
+        "cross_output_shared_head",
+    )
     for mode in modes:
         config = _pi0_config.Pi0Config(pi05=True, casm_mode=mode)
         training = nnx.eval_shape(functools.partial(_casm_training_shape, config))
@@ -81,6 +89,11 @@ def test_casm_modes_support_training_and_sampling_shapes():
         expected_batch_size = 1 if mode == "hard_gate" else 2
         assert training.shape == (expected_batch_size, config.action_horizon)
         assert sampling.shape == (1, config.action_horizon, config.action_dim)
+
+
+def test_cross_output_rank_must_be_positive():
+    with pytest.raises(ValueError, match="cross-output rank must be positive"):
+        _pi0_config.Pi0Config(pi05=True, casm_mode="cross_output_shared_head", cross_output_rank=0)
 
 
 def _visual_phase_gate_aux_shape():

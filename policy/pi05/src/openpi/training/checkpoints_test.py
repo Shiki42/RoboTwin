@@ -13,6 +13,7 @@ def test_checkpoint_item_handlers_match_storage_mode():
         "assets",
         "params",
         "train_state",
+        "data_loader",
     }
 
 

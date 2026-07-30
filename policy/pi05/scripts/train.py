@@ -20,6 +20,7 @@ import optax
 import tqdm_loggable.auto as tqdm
 import wandb
 
+import openpi.models.casm as casm
 import openpi.models.model as _model
 import openpi.shared.array_typing as at
 import openpi.shared.nnx_utils as nnx_utils
@@ -110,7 +111,12 @@ def init_train_state(
     *,
     resume: bool,
 ) -> tuple[training_utils.TrainState, Any]:
-    tx = _optimizer.create_optimizer(config.optimizer, config.lr_schedule, weight_decay_mask=None)
+    tx = _optimizer.create_optimizer(
+        config.optimizer,
+        config.lr_schedule,
+        weight_decay_mask=None,
+        gradient_accumulation_steps=config.gradient_accumulation_steps,
+    )
 
     def init(rng: at.KeyArrayLike, partial_params: at.Params | None = None) -> training_utils.TrainState:
         rng, model_rng = jax.random.split(rng)
@@ -137,6 +143,7 @@ def init_train_state(
 
         return training_utils.TrainState(
             step=0,
+            microstep=0,
             params=params,
             model_def=nnx.graphdef(model),
             tx=tx,
@@ -182,13 +189,13 @@ def train_step(
         observation: _model.Observation,
         actions: _model.Actions,
     ):
-        if getattr(config.model, "casm_mode", "none") == "visual_phase_gate":
+        if getattr(config.model, "casm_mode", "none") in casm.VISUAL_PHASE_GATE_MODES:
             chunked_loss, aux = model.compute_loss(rng, observation, actions, train=True, return_aux=True)
         else:
             chunked_loss, aux = model.compute_loss(rng, observation, actions, train=True), {}
         return jnp.mean(chunked_loss), aux
 
-    train_rng = jax.random.fold_in(rng, state.step)
+    train_rng = jax.random.fold_in(rng, state.microstep)
     observation, actions = batch
 
     # Filter out frozen params.
@@ -205,12 +212,25 @@ def train_step(
     nnx.update(model, new_params)
     new_params = nnx.state(model)
 
-    new_state = dataclasses.replace(state, step=state.step + 1, params=new_params, opt_state=new_opt_state)
+    next_microstep = state.microstep + 1
+    optimizer_update = next_microstep % config.gradient_accumulation_steps == 0
+    step_increment = jnp.asarray(optimizer_update, dtype=jnp.asarray(state.step).dtype)
+    new_state = dataclasses.replace(
+        state,
+        step=state.step + step_increment,
+        microstep=next_microstep,
+        params=new_params,
+        opt_state=new_opt_state,
+    )
     if state.ema_decay is not None:
         new_state = dataclasses.replace(
             new_state,
             ema_params=jax.tree.map(
-                lambda old, new: state.ema_decay * old + (1 - state.ema_decay) * new,
+                lambda old, new: jnp.where(
+                    optimizer_update,
+                    state.ema_decay * old + (1 - state.ema_decay) * new,
+                    old,
+                ),
                 state.ema_params,
                 new_params,
             ),
@@ -229,6 +249,7 @@ def train_step(
         "loss": loss,
         "grad_norm": optax.global_norm(grads),
         "param_norm": optax.global_norm(kernel_params),
+        "learning_rate": config.lr_schedule.create()(state.step),
     }
     info.update(aux)
     return new_state, info
@@ -267,18 +288,17 @@ def main(config: _config.TrainConfig):
         sharding=data_sharding,
         shuffle=True,
     )
+    train_state, train_state_sharding = init_train_state(config, init_rng, mesh, resume=resuming)
+    if resuming:
+        train_state = _checkpoints.restore_state(checkpoint_manager, train_state, data_loader)
+    jax.block_until_ready(train_state)
+    logging.info(f"Initialized train state:\n{training_utils.array_tree_to_info(train_state.params)}")
+
     data_iter = iter(data_loader)
     data_wait_started = time.perf_counter()
     batch = next(data_iter)
     data_wait_ms = (time.perf_counter() - data_wait_started) * 1000
     logging.info(f"Initialized data loader:\n{training_utils.array_tree_to_info(batch)}")
-
-    train_state, train_state_sharding = init_train_state(config, init_rng, mesh, resume=resuming)
-    jax.block_until_ready(train_state)
-    logging.info(f"Initialized train state:\n{training_utils.array_tree_to_info(train_state.params)}")
-
-    if resuming:
-        train_state = _checkpoints.restore_state(checkpoint_manager, train_state, data_loader)
 
     ptrain_step = jax.jit(
         functools.partial(train_step, config),
@@ -288,12 +308,12 @@ def main(config: _config.TrainConfig):
     )
 
     start_step = int(train_state.step)
-    pbar = tqdm.tqdm(
-        range(start_step, config.num_train_steps),
-        initial=start_step,
-        total=config.num_train_steps,
-        dynamic_ncols=True,
-    )
+    start_microstep = int(train_state.microstep)
+    accumulation_steps = config.gradient_accumulation_steps
+    if start_microstep != start_step * accumulation_steps:
+        raise ValueError(f"checkpoint is not on an optimizer boundary: step={start_step}, microstep={start_microstep}")
+    total_microsteps = config.num_train_steps * accumulation_steps
+    pbar = tqdm.tqdm(total=config.num_train_steps, initial=start_step, dynamic_ncols=True)
 
     performance_receipt = None
     performance_path = os.environ.get("PARALLELVLA_PERFORMANCE_RECEIPT")
@@ -306,7 +326,9 @@ def main(config: _config.TrainConfig):
                 "framework": "jax",
                 "mode": "end-to-end",
                 "config_name": config.name,
-                "batch_size": config.batch_size,
+                "batch_size": config.batch_size * accumulation_steps,
+                "microbatch_size": config.batch_size,
+                "gradient_accumulation_steps": accumulation_steps,
                 "images_per_sample": 3,
                 "num_workers": config.num_workers,
                 "prefetch_factor": config.prefetch_factor,
@@ -327,8 +349,8 @@ def main(config: _config.TrainConfig):
     infos = []
     first_step_s = None
     try:
-        for step in pbar:
-            step_started = time.perf_counter()
+        for microstep in range(start_microstep, total_microsteps):
+            microstep_started = time.perf_counter()
             compute_started = time.perf_counter()
             with sharding.set_mesh(mesh):
                 train_state, info = ptrain_step(train_rng, train_state, batch)
@@ -336,32 +358,33 @@ def main(config: _config.TrainConfig):
                 jax.block_until_ready((train_state, info))
             compute_ms = (time.perf_counter() - compute_started) * 1000
 
+            completed_microsteps = microstep + 1
+            optimizer_update = completed_microsteps % accumulation_steps == 0
+            optimizer_step = completed_microsteps // accumulation_steps
+
             logging_started = time.perf_counter()
             infos.append(info)
-            if step % config.log_interval == 0:
+            if optimizer_update:
+                pbar.update(1)
+            if optimizer_update and optimizer_step % config.log_interval == 0:
                 stacked_infos = common_utils.stack_forest(infos)
                 reduced_info = jax.device_get(jax.tree.map(jnp.mean, stacked_infos))
                 info_str = ", ".join(f"{k}={v:.4f}" for k, v in reduced_info.items())
-                pbar.write(f"Step {step}: {info_str}")
-                wandb.log(reduced_info, step=step)
+                pbar.write(f"Step {optimizer_step}: {info_str}")
+                wandb.log(reduced_info, step=optimizer_step)
                 infos = []
             logging_ms = (time.perf_counter() - logging_started) * 1000
 
-            data_wait_started = time.perf_counter()
-            batch = next(data_iter)
-            next_data_wait_ms = (time.perf_counter() - data_wait_started) * 1000
-
             checkpoint_started = time.perf_counter()
-            checkpoint_saved = (
-                step % config.save_interval == 0 and step > start_step
-            ) or step == config.num_train_steps - 1
+            checkpoint_saved = optimizer_update and (
+                optimizer_step % config.save_interval == 0 or optimizer_step == config.num_train_steps
+            )
             if checkpoint_saved:
-                checkpoint_step = step + 1 if step == config.num_train_steps - 1 else step
                 _checkpoints.save_state(
                     checkpoint_manager,
                     train_state,
                     data_loader,
-                    checkpoint_step,
+                    optimizer_step,
                     params_only=config.params_only_checkpoint,
                 )
                 if performance_receipt is not None:
@@ -372,24 +395,33 @@ def main(config: _config.TrainConfig):
                 host_info = jax.device_get(info)
                 metrics = {name: float(value) for name, value in host_info.items()}
                 if not all(math.isfinite(value) for value in metrics.values()):
-                    raise FloatingPointError(f"non-finite benchmark metrics at step {step}: {metrics}")
-                step_total_ms = (time.perf_counter() - step_started) * 1000
+                    raise FloatingPointError(f"non-finite metrics at microstep {completed_microsteps}: {metrics}")
+                microstep_total_ms = (time.perf_counter() - microstep_started) * 1000
                 if first_step_s is None:
-                    first_step_s = step_total_ms / 1000
+                    first_step_s = microstep_total_ms / 1000
                 performance_receipt.append(
                     {
-                        "step": step + 1,
+                        "step": optimizer_step,
+                        "microstep": completed_microsteps,
+                        "optimizer_update": optimizer_update,
                         "data_wait_ms": data_wait_ms,
                         "compute_ms": compute_ms,
                         "logging_ms": logging_ms,
                         "checkpoint_ms": checkpoint_ms,
                         "checkpoint_saved": checkpoint_saved,
-                        "step_total_ms": step_total_ms,
+                        "step_total_ms": microstep_total_ms,
                         **metrics,
                     }
                 )
+
+            next_data_wait_ms = 0.0
+            if completed_microsteps < total_microsteps:
+                data_wait_started = time.perf_counter()
+                batch = next(data_iter)
+                next_data_wait_ms = (time.perf_counter() - data_wait_started) * 1000
             data_wait_ms = next_data_wait_ms
     finally:
+        pbar.close()
         if performance_receipt is not None:
             summary_path = performance_receipt.close()
             summary = json.loads(summary_path.read_text())

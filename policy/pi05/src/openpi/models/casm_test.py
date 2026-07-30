@@ -70,6 +70,70 @@ def test_stream_action_routing_and_merge():
     assert np.all(merged[..., 14:] == 0)
 
 
+def test_shared_single_arm_head_uses_canonical_columns_and_routes_both_arms():
+    hidden = jnp.arange(2 * 3 * 4, dtype=jnp.float32).reshape(2, 3, 4)
+    kernel = jnp.arange(4 * 32, dtype=jnp.float32).reshape(4, 32)
+    bias = jnp.arange(32, dtype=jnp.float32)
+    projected = casm.shared_single_arm_projection(hidden, kernel, bias)
+    expected = jnp.einsum("...d,df->...f", hidden, kernel[:, :7]) + bias[:7]
+    assert np.array_equal(projected, expected)
+
+    left = projected
+    right = projected + 1000
+    routed = casm.merge_shared_arm_vector_fields(left, right, action_dim=32)
+    assert np.array_equal(routed[..., :7], left)
+    assert np.array_equal(routed[..., 7:14], right)
+    assert np.all(np.asarray(routed[..., 14:]) == 0)
+
+
+def test_shared_head_accumulates_both_arm_gradients_into_canonical_channels():
+    left_hidden = jnp.ones((1, 1, 4), dtype=jnp.float32)
+    right_hidden = jnp.full((1, 1, 4), 2.0, dtype=jnp.float32)
+    kernel = jnp.zeros((4, 32), dtype=jnp.float32)
+    bias = jnp.zeros(32, dtype=jnp.float32)
+
+    def loss(candidate_kernel):
+        left = casm.shared_single_arm_projection(left_hidden, candidate_kernel, bias)
+        right = casm.shared_single_arm_projection(right_hidden, candidate_kernel, bias)
+        return jnp.sum(casm.merge_shared_arm_vector_fields(left, right, 32))
+
+    gradient = jax.grad(loss)(kernel)
+
+    assert np.all(np.asarray(gradient[:, :7]) == 3.0)
+    assert np.all(np.asarray(gradient[:, 7:]) == 0.0)
+
+
+def test_low_rank_cross_residual_gate_and_initialization_contract():
+    module = casm.LowRankBidirectionalCrossResidual(4, 2, rngs=nnx.Rngs(4))
+    left = jnp.ones((2, 3, 4))
+    right = jnp.full((2, 3, 4), 2.0)
+
+    initial_left, initial_right = module(left, right, jnp.ones(2))
+    assert np.array_equal(initial_left, left)
+    assert np.array_equal(initial_right, right)
+
+    module.down.kernel.value = jnp.ones_like(module.down.kernel.value)
+    module.up.kernel.value = jnp.ones_like(module.up.kernel.value)
+    module.up.bias.value = jnp.zeros_like(module.up.bias.value)
+    off_left, off_right = module(left, right, jnp.zeros(2))
+    assert np.array_equal(off_left, left)
+    assert np.array_equal(off_right, right)
+
+    on_left, on_right = module(left, right, jnp.ones(2))
+    assert np.all(np.asarray(on_left) > np.asarray(left))
+    assert np.all(np.asarray(on_right) > np.asarray(right))
+    assert np.all(np.asarray(on_left - left) > np.asarray(on_right - right))
+
+
+def test_shared_arm_head_rejects_invalid_shapes():
+    with np.testing.assert_raises(ValueError):
+        casm.shared_single_arm_projection(jnp.ones((1, 4)), jnp.ones((4, 6)), jnp.ones(6))
+    with np.testing.assert_raises(ValueError):
+        casm.merge_shared_arm_vector_fields(jnp.ones((1, 6)), jnp.ones((1, 6)), 32)
+    with np.testing.assert_raises(ValueError):
+        casm.merge_shared_arm_vector_fields(jnp.ones((1, 7)), jnp.ones((1, 7)), 13)
+
+
 def test_gate_and_cross_attention_shapes_and_zero_gate_identity():
     gate_model = casm.CooperationGate(32, 8, rngs=nnx.Rngs(0))
     probability = gate_model(jnp.zeros((2, 32)))

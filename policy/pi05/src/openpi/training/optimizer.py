@@ -103,7 +103,16 @@ class SGD(OptimizerConfig):
 
 
 def create_optimizer(
-    optimizer: OptimizerConfig, lr_schedule: LRScheduleConfig, weight_decay_mask: at.PyTree | None = None
+    optimizer: OptimizerConfig,
+    lr_schedule: LRScheduleConfig,
+    weight_decay_mask: at.PyTree | None = None,
+    *,
+    gradient_accumulation_steps: int = 1,
 ) -> optax.GradientTransformation:
+    if gradient_accumulation_steps < 1:
+        raise ValueError("gradient accumulation steps must be positive")
     lr = lr_schedule.create()
-    return optimizer.create(lr, weight_decay_mask=weight_decay_mask)
+    tx = optimizer.create(lr, weight_decay_mask=weight_decay_mask)
+    if gradient_accumulation_steps == 1:
+        return tx
+    return optax.MultiSteps(tx, every_k_schedule=gradient_accumulation_steps, use_grad_mean=True)

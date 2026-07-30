@@ -14,6 +14,7 @@ from openpi.shared import array_typing as at
 @struct.dataclass
 class TrainState:
     step: at.Int[at.ArrayLike, ""]
+    microstep: at.Int[at.ArrayLike, ""]
     params: nnx.State
     model_def: nnx.GraphDef[_model.BaseModel]
     opt_state: optax.OptState

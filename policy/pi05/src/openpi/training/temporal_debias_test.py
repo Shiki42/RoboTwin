@@ -22,12 +22,31 @@ def test_aloha_inputs_expands_arm_mask_to_action_dimensions():
             "state": np.zeros(14, dtype=np.float32),
             "actions": np.zeros((2, 14), dtype=np.float32),
             "action_mask": np.array([[1, 0], [0, 1]], dtype=np.float32),
+            "action_is_pad": np.zeros(2, dtype=np.bool_),
         }
     )
 
     assert output["action_mask"].shape == (2, 14)
     assert output["action_mask"][0].tolist() == [1] * 7 + [0] * 7
     assert output["action_mask"][1].tolist() == [0] * 7 + [1] * 7
+
+
+def test_aloha_inputs_masks_temporal_padding_and_requires_pad_receipt():
+    image = np.zeros((3, 8, 8), dtype=np.uint8)
+    data = {
+        "images": {"cam_high": image},
+        "state": np.zeros(14, dtype=np.float32),
+        "actions": np.zeros((3, 14), dtype=np.float32),
+        "action_mask": np.ones((3, 2), dtype=np.float32),
+        "action_is_pad": np.array([False, True, False]),
+    }
+    output = AlohaInputs(adapt_to_pi=False)(data)
+    assert np.all(output["action_mask"][[0, 2]] == 1)
+    assert np.all(output["action_mask"][1] == 0)
+
+    del data["action_is_pad"]
+    with pytest.raises(ValueError, match="requires action_is_pad"):
+        AlohaInputs(adapt_to_pi=False)(data)
 
 
 def test_aloha_outputs_preserves_async_probability():
@@ -48,6 +67,7 @@ def test_soft_arm_mask_supervises_cross_phase_labels():
             "state": np.zeros(14, dtype=np.float32),
             "actions": np.zeros((2, 14), dtype=np.float32),
             "action_mask": np.array([[1, 0], [0, 1]], dtype=np.float32),
+            "action_is_pad": np.zeros(2, dtype=np.bool_),
             "action_phase": np.array([[0, 1], [1, 0]], dtype=np.float32),
         }
     )
@@ -84,6 +104,15 @@ def test_reduce_action_loss_ignores_inactive_arm_dimensions():
     assert np.asarray(loss).tolist() == [[1.0, 16.0]]
 
 
+def test_reduce_action_loss_normalizes_only_over_valid_temporal_dimensions():
+    squared_error = jnp.array([[[1.0, 1.0], [100.0, 100.0]]])
+    action_mask = jnp.array([[[1.0, 1.0], [0.0, 0.0]]])
+
+    loss = reduce_action_loss(squared_error, action_mask)
+
+    assert np.isclose(np.mean(loss), 1.0)
+
+
 def test_reduce_action_loss_rejects_shape_mismatch():
     with pytest.raises(ValueError, match="shape mismatch"):
         reduce_action_loss(jnp.ones((1, 2, 3)), jnp.ones((1, 2, 2)))
@@ -112,6 +141,7 @@ def test_action_mask_supervises_complete_horizon_across_phase_boundary():
             "state": np.zeros(14, dtype=np.float32),
             "actions": np.zeros((4, 14), dtype=np.float32),
             "action_mask": np.ones((4, 2), dtype=np.float32),
+            "action_is_pad": np.zeros(4, dtype=np.bool_),
             "action_phase": np.array([[0, 1], [0, 1], [1, 0], [1, 0]], dtype=np.float32),
         }
     )
@@ -128,6 +158,7 @@ def test_action_phase_sequence_accepts_one_hot_feature_chunks():
             "state": np.zeros(14, dtype=np.float32),
             "actions": np.zeros((3, 14), dtype=np.float32),
             "action_mask": np.ones((3, 2), dtype=np.float32),
+            "action_is_pad": np.zeros(3, dtype=np.bool_),
             "action_phase": np.array([[0, 1], [0, 1], [1, 0]], dtype=np.float32),
         }
     )
@@ -144,6 +175,7 @@ def test_wait_and_async_are_one_canonical_phase():
             "state": np.zeros(14, dtype=np.float32),
             "actions": np.zeros((3, 14), dtype=np.float32),
             "action_mask": np.ones((3, 2), dtype=np.float32),
+            "action_is_pad": np.zeros(3, dtype=np.bool_),
             "action_phase": np.array([[0, 1], [0, 1], [1, 0]], dtype=np.float32),
         }
     )

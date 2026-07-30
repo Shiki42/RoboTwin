@@ -25,6 +25,7 @@ import openpi.shared.download as _download
 import openpi.shared.nnx_utils as nnx_utils
 import openpi.shared.normalize as _normalize
 import openpi.training.casm_lan_config as casm_lan_config
+import openpi.training.cross_output_config as cross_output_config
 import openpi.training.droid_rlds_dataset as droid_rlds_dataset
 import openpi.training.misc.roboarena_config as roboarena_config
 import openpi.training.optimizer as _optimizer
@@ -506,10 +507,10 @@ class TrainConfig:
     # Base directory for checkpoints.
     checkpoint_base_dir: str = "./checkpoints"
 
-    # Random seed that will be used by random generators during training.
     seed: int = 42
-    # Global batch size.
+    # Per-microstep batch size. Global batch is batch_size * gradient_accumulation_steps.
     batch_size: int = 32
+    gradient_accumulation_steps: int = 1
     # Number of workers to use for the data loader. Increasing this number will speed up data loading but
     # will increase memory and CPU usage.
     num_workers: int = 2
@@ -519,12 +520,9 @@ class TrainConfig:
     persistent_workers: bool = False
     # Stage PyTorch batches in page-locked host memory for asynchronous host-to-device copies.
     pin_memory: bool = False
-    # Number of train steps (batches) to run.
     num_train_steps: int = 30_000
 
-    # How often (in steps) to log training metrics.
     log_interval: int = 100
-    # How often (in steps) to save checkpoints.
     save_interval: int = 1000
     # If set, any existing checkpoints matching step % keep_period == 0 will not be deleted.
     keep_period: int | None = 5000
@@ -542,10 +540,6 @@ class TrainConfig:
     # Used to pass metadata to the policy server.
     policy_metadata: dict[str, Any] | None = None
 
-    # If the value is greater than 1, FSDP will be enabled and shard across number of specified devices; overall
-    # device memory will be reduced but training could potentially be slower.
-    # eg. if total device is 4 and fsdp devices is 2; then the model will shard to 2 devices and run
-    # data parallel between 2 groups of devices.
     fsdp_devices: int = 1
 
     @property
@@ -568,6 +562,8 @@ class TrainConfig:
     def __post_init__(self) -> None:
         if self.resume and self.overwrite:
             raise ValueError("Cannot resume and overwrite at the same time.")
+        if self.gradient_accumulation_steps < 1:
+            raise ValueError("gradient accumulation steps must be positive")
 
 
 def _putcab_casm_data(repo_id: str) -> LeRobotAlohaDataConfig:
@@ -584,6 +580,7 @@ def _putcab_casm_data(repo_id: str) -> LeRobotAlohaDataConfig:
                 "state": "observation.state",
                 "actions": "action",
                 "action_mask": "observation.arm_active_mask",
+                "action_is_pad": "action_is_pad",
                 "action_phase": "observation.phase_one_hot",
                 "prompt": "prompt",
             })
@@ -797,6 +794,7 @@ _CONFIGS = [
                     "state": "observation.state",
                     "actions": "action",
                     "action_mask": "observation.arm_active_mask",
+                    "action_is_pad": "action_is_pad",
                     "action_phase": "observation.phase_one_hot",
                     "prompt": "prompt",
                 })
@@ -854,6 +852,8 @@ _CONFIGS = [
     ),
     *casm_lan_config.create_variants(_putcab_anchor_adapt_config(
         "casm_lan_base", "visual_phase_gate", "parallelvla-casm-lan")),
+    *cross_output_config.create_variants(_putcab_anchor_adapt_config(
+        "cross_output_base", "none", "parallelvla-cross-output")),
     _putcab_jax_config("pi05_putcab_casm_visual_phase_gate_jax_full", "visual_phase_gate"),
     _putcab_jax_config("pi05_putcab_jax_matched_full", "none"),
     _putcab_pytorch_config("pi05_putcab_pytorch_matched_full", "none"),

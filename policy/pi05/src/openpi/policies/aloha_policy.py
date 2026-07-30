@@ -34,7 +34,7 @@ class AlohaInputs(transforms.DataTransformFn):
     # If true, this will convert the joint and gripper values from the standard Aloha space to
     # the space used by the pi internal runtime which was used to train the base model.
     adapt_to_pi: bool = True
-    # Weight assigned to inactive-arm targets; phase-boundary labels remain masked.
+    # Weight assigned to inactive-arm targets; temporal padding always remains masked.
     inactive_action_weight: float = 0.0
 
     # The expected cameras names. All input cameras must be in this set. Missing cameras will be
@@ -88,9 +88,14 @@ class AlohaInputs(transforms.DataTransformFn):
             inputs["actions"] = actions
 
         if "action_mask" in data:
+            if "action_is_pad" not in data:
+                raise ValueError("action supervision requires action_is_pad")
             arm_mask = np.asarray(data["action_mask"], dtype=np.float32)
             if arm_mask.shape[-1] != 2:
                 raise ValueError(f"expected left/right arm mask, got {arm_mask.shape}")
+            action_is_pad = np.asarray(data["action_is_pad"], dtype=np.bool_)
+            if action_is_pad.shape != arm_mask.shape[:-1]:
+                raise ValueError(f"action pad/mask shape mismatch: {action_is_pad.shape} and {arm_mask.shape}")
             arm_mask = self.inactive_action_weight + (1.0 - self.inactive_action_weight) * arm_mask
             if "action_phase" in data:
                 phase_sequence = np.asarray(data["action_phase"])
@@ -100,13 +105,14 @@ class AlohaInputs(transforms.DataTransformFn):
                 # expert actions later in the current prediction horizon.
                 canonical_phase = phase_sequence[..., 1:2] > 0.5
                 inputs["phase_id"] = canonical_phase[:1].astype(np.int32).reshape(1)
-            inputs["action_mask"] = np.concatenate(
+            dimensional_mask = np.concatenate(
                 [
                     np.repeat(arm_mask[..., :1], 7, axis=-1),
                     np.repeat(arm_mask[..., 1:], 7, axis=-1),
                 ],
                 axis=-1,
             )
+            inputs["action_mask"] = dimensional_mask * (~action_is_pad)[..., None]
 
         if "phase_id" in data and "phase_id" not in inputs:
             phase_id = np.asarray(data["phase_id"], dtype=np.int32).reshape(1)

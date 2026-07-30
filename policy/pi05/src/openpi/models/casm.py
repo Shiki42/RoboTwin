@@ -16,11 +16,14 @@ CasmMode = Literal[
     "gated_cross_attention",
     "usefulness_gate",
     "visual_phase_gate",
+    "cross_output_shared_head",
 ]
-LEARNED_GATE_MODES = frozenset({"hard_gate", "gated_cross_attention", "usefulness_gate", "visual_phase_gate"})
+VISUAL_PHASE_GATE_MODES = frozenset({"visual_phase_gate", "cross_output_shared_head"})
+LEARNED_GATE_MODES = frozenset({"hard_gate", "gated_cross_attention", "usefulness_gate", *VISUAL_PHASE_GATE_MODES})
 CROSS_ATTENTION_MODES = frozenset({"gated_cross_attention", "usefulness_gate"})
 VALID_CASM_MODES = frozenset({"none", "hard_mask", *LEARNED_GATE_MODES})
 CROSS_ATTENTION_OUTPUT_INIT = jax.nn.initializers.normal(1e-3)
+ROBOT_ARM_DIM = 7
 
 
 def coordination_target(phase_id: at.Int[at.Array, "*b p"]) -> at.Float[at.Array, "*b"]:
@@ -138,6 +141,35 @@ def merge_stream_vector_fields(
     )
 
 
+def shared_single_arm_projection(hidden, kernel, bias):
+    """Project either arm with the canonical first seven PI0.5 output channels."""
+    if kernel.ndim != 2 or kernel.shape[1] < ROBOT_ARM_DIM:
+        raise ValueError(f"invalid PI0.5 output kernel shape: {kernel.shape}")
+    if bias.ndim != 1 or bias.shape[0] < ROBOT_ARM_DIM:
+        raise ValueError(f"invalid PI0.5 output bias shape: {bias.shape}")
+    return (
+        jnp.einsum(
+            "...d,df->...f",
+            hidden,
+            kernel[:, :ROBOT_ARM_DIM],
+            precision=jax.lax.Precision.DEFAULT,
+        )
+        + bias[:ROBOT_ARM_DIM]
+    )
+
+
+def merge_shared_arm_vector_fields(left, right, action_dim: int):
+    """Route shared 7D head outputs into the fixed ALOHA left/right slots."""
+    expected = (*left.shape[:-1], ROBOT_ARM_DIM)
+    if left.shape != expected or right.shape != expected:
+        raise ValueError(f"shared arm output shape mismatch: {left.shape}, {right.shape}")
+    if action_dim < 2 * ROBOT_ARM_DIM:
+        raise ValueError(f"action dimension {action_dim} cannot hold two robot arms")
+    merged = jnp.zeros((*left.shape[:-1], action_dim), dtype=left.dtype)
+    merged = merged.at[..., :ROBOT_ARM_DIM].set(left)
+    return merged.at[..., ROBOT_ARM_DIM : 2 * ROBOT_ARM_DIM].set(right)
+
+
 class CooperationGate(nnx.Module):
     def __init__(self, state_dim: int, hidden_dim: int, *, rngs: nnx.Rngs):
         self.input = nnx.Linear(state_dim, hidden_dim, rngs=rngs)
@@ -218,6 +250,28 @@ class BiasFreeLinear(nnx.Module):
             self.kernel.value,
             precision=jax.lax.Precision.DEFAULT,
         )
+
+
+class LowRankBidirectionalCrossResidual(nnx.Module):
+    """A symmetric low-rank cross-arm residual applied at matching chunk steps."""
+
+    def __init__(self, width: int, rank: int, *, rngs: nnx.Rngs):
+        if rank < 1:
+            raise ValueError("cross-output rank must be positive")
+        self.down = BiasFreeLinear(width, rank, rngs=rngs)
+        self.up = nnx.Linear(
+            rank,
+            width,
+            kernel_init=jax.nn.initializers.zeros,
+            bias_init=jax.nn.initializers.zeros,
+            rngs=rngs,
+        )
+
+    def __call__(self, left, right, sync_probability):
+        weight = sync_probability[..., None, None].astype(left.dtype)
+        right_message = self.up(nnx.gelu(self.down(right)))
+        left_message = self.up(nnx.gelu(self.down(left)))
+        return left + weight * right_message, right + weight * left_message
 
 
 class GatedBidirectionalCrossAttention(nnx.Module):

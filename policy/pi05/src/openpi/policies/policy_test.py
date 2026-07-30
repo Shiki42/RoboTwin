@@ -52,6 +52,19 @@ class _SemanticTransform(transforms.DataTransformFn):
         }
 
 
+class _FakeCrossOutputModel:
+    casm_mode = "cross_output_shared_head"
+    semantic_subtask_prediction = False
+
+    def predict_async_probability(self, observation):
+        del observation
+        return jnp.array([0.25], dtype=jnp.float32)
+
+    def sample_actions(self, rng, observation, **kwargs):
+        del rng, observation, kwargs
+        return jnp.zeros((1, 2, 14), dtype=jnp.float32)
+
+
 class _FakeCasmLanModel:
     casm_mode = "visual_phase_gate"
     semantic_subtask_prediction = True
@@ -64,6 +77,24 @@ class _FakeCasmLanModel:
         del rng, kwargs
         assert int(observation.tokenized_prompt[0, 0]) == 1
         return jnp.zeros((1, 2, 14), dtype=jnp.float32)
+
+
+def test_cross_output_policy_emits_async_probability(monkeypatch):
+    monkeypatch.setattr(policy_module.nnx_utils, "module_jit", lambda function: function)
+    policy = policy_module.Policy(_FakeCrossOutputModel(), transforms=(_SemanticTransform(),))
+    image = np.zeros((2, 2, 3), dtype=np.uint8)
+
+    outputs = policy.infer(
+        {
+            "image": {"base_0_rgb": image},
+            "image_mask": {"base_0_rgb": np.True_},
+            "state": np.zeros(14, dtype=np.float32),
+            "phase_id": np.array([1], dtype=np.int32),
+            "prompt": "put the target object in the drawer",
+        }
+    )
+
+    assert outputs["async_probability"] == pytest.approx(0.25)
 
 
 def test_casm_lan_predicts_semantics_before_action_prompt(monkeypatch):

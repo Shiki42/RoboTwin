@@ -23,6 +23,7 @@ def _checkpoint_item_handlers(*, params_only: bool) -> dict:
     }
     if not params_only:
         handlers["train_state"] = ocp.PyTreeCheckpointHandler()
+        handlers["data_loader"] = ocp.PyTreeCheckpointHandler()
     return handlers
 
 
@@ -102,6 +103,7 @@ def save_state(
             "assets": save_assets,
             "train_state": train_state,
             "params": {"params": params},
+            "data_loader": data_loader.state_dict(),
         }
     checkpoint_manager.save(step, items)
 
@@ -112,8 +114,6 @@ def restore_state(
     data_loader: _data_loader.DataLoader,
     step: int | None = None,
 ) -> training_utils.TrainState:
-    del data_loader
-
     with at.disable_typechecking():
         # Split params that can be used for inference into a separate item.
         train_state, params = _split_params(state)
@@ -122,8 +122,10 @@ def restore_state(
             items={
                 "train_state": train_state,
                 "params": {"params": params},
+                "data_loader": data_loader.state_dict(),
             },
         )
+    data_loader.load_state_dict(restored["data_loader"])
     return _merge_params(restored["train_state"], restored["params"])
 
 

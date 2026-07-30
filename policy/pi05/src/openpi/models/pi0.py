@@ -27,8 +27,10 @@ def reduce_action_loss(
     mask = jnp.asarray(action_mask, dtype=squared_error.dtype)
     if mask.shape != squared_error.shape:
         raise ValueError(f"action mask shape mismatch: {mask.shape} != {squared_error.shape}")
-    denominator = jnp.maximum(jnp.sum(mask, axis=-1), 1.0)
-    return jnp.sum(squared_error * mask, axis=-1) / denominator
+    weighted_error = jnp.sum(squared_error * mask, axis=-1)
+    total_weight = jnp.maximum(jnp.sum(mask, axis=(-2, -1)), 1.0)
+    horizon = squared_error.shape[-2]
+    return weighted_error * horizon / total_weight[..., None]
 
 
 def make_attn_mask(input_mask, mask_ar):
@@ -123,7 +125,7 @@ class Pi0(_model.BaseModel):
             self.action_time_mlp_in = nnx.Linear(2 * action_expert_config.width, action_expert_config.width, rngs=rngs)
             self.action_time_mlp_out = nnx.Linear(action_expert_config.width, action_expert_config.width, rngs=rngs)
         self.action_out_proj = nnx.Linear(action_expert_config.width, config.action_dim, rngs=rngs)
-        if self.casm_mode == "visual_phase_gate":
+        if self.casm_mode in casm.VISUAL_PHASE_GATE_MODES:
             self.phase_gate = casm.VisualProprioceptionGate(
                 paligemma_config.width,
                 config.action_dim,
@@ -144,7 +146,7 @@ class Pi0(_model.BaseModel):
                 output_dim=casm_language.SEMANTIC_STAGE_COUNT,
                 rngs=rngs,
             )
-        if self.casm_mode in casm.LEARNED_GATE_MODES - {"visual_phase_gate"}:
+        if self.casm_mode in casm.LEARNED_GATE_MODES - casm.VISUAL_PHASE_GATE_MODES:
             self.cooperation_gate = casm.CooperationGate(
                 config.action_dim,
                 config.coordination_gate_hidden_dim,
@@ -154,6 +156,12 @@ class Pi0(_model.BaseModel):
             self.cross_attention = casm.GatedBidirectionalCrossAttention(
                 action_expert_config.width,
                 config.cross_attention_dim,
+                rngs=rngs,
+            )
+        if self.casm_mode == "cross_output_shared_head":
+            self.cross_output_adapter = casm.LowRankBidirectionalCrossResidual(
+                action_expert_config.width,
+                config.cross_output_rank,
                 rngs=rngs,
             )
 
@@ -365,6 +373,34 @@ class Pi0(_model.BaseModel):
         )
         return self._project_stream_hidden(left_hidden, right_hidden, noisy_actions.shape[0])
 
+    def _cross_output_hidden_fields(self, observation, noisy_actions, time):
+        stream_observation = casm.concatenate_observations(
+            casm.isolate_arm_observation(observation, "left"),
+            casm.isolate_arm_observation(observation, "right"),
+        )
+        stream_actions = casm.isolated_stream_action_inputs(noisy_actions)
+        stream_time = jnp.concatenate([time, time], axis=0)
+        stream_hidden, stream_visual = self._hidden_field_with_visual(
+            stream_observation,
+            stream_actions,
+            stream_time,
+        )
+        batch_size = noisy_actions.shape[0]
+        visual_summary = 0.5 * (stream_visual[:batch_size] + stream_visual[batch_size:])
+        return stream_hidden[:batch_size], stream_hidden[batch_size:], visual_summary
+
+    def _project_cross_output_hidden(self, left_hidden, right_hidden, sync_probability):
+        left_fused, right_fused = self.cross_output_adapter(
+            left_hidden,
+            right_hidden,
+            sync_probability,
+        )
+        kernel = self.action_out_proj.kernel.value
+        bias = self.action_out_proj.bias.value
+        left = casm.shared_single_arm_projection(left_fused, kernel, bias)
+        right = casm.shared_single_arm_projection(right_fused, kernel, bias)
+        return casm.merge_shared_arm_vector_fields(left, right, self.action_dim)
+
     def _cross_attention_fields(self, left_hidden, right_hidden, gate, batch_size: int):
         left_fused, right_fused = self.cross_attention(left_hidden, right_hidden, gate)
         return self._project_stream_hidden(left_fused, right_fused, batch_size)
@@ -379,6 +415,15 @@ class Pi0(_model.BaseModel):
             hidden, visual_summary = self._hidden_field_with_visual(observation, noisy_actions, time)
             gate_logits = self.phase_gate(visual_summary, observation.state)
             predicted = self.action_out_proj(hidden)
+            return predicted, gate_logits, None, visual_summary
+
+        if self.casm_mode == "cross_output_shared_head":
+            left_hidden, right_hidden, visual_summary = self._cross_output_hidden_fields(
+                observation, noisy_actions, time
+            )
+            gate_logits = self.phase_gate(visual_summary, observation.state)
+            sync_probability = 1.0 - jax.nn.sigmoid(gate_logits)
+            predicted = self._project_cross_output_hidden(left_hidden, right_hidden, sync_probability)
             return predicted, gate_logits, None, visual_summary
 
         if self.casm_mode == "none":
@@ -474,7 +519,7 @@ class Pi0(_model.BaseModel):
             return action_loss
         if observation.phase_id is None:
             raise ValueError("learned CASM gates require phase_id during training")
-        if self.casm_mode == "visual_phase_gate":
+        if self.casm_mode in casm.VISUAL_PHASE_GATE_MODES:
             target = casm.async_target(observation.phase_id)
             gate_loss = casm.binary_cross_entropy_with_logits(
                 gate,
@@ -501,10 +546,13 @@ class Pi0(_model.BaseModel):
                 role_loss = casm.binary_cross_entropy_with_logits(role_logits, role_target, 1.0)
                 stage_logits = self.semantic_stage_head(visual_summary, observation.state)
                 stage_weights = jnp.asarray(self.semantic_stage_class_weights)
-                stage_loss = -jax.nn.log_softmax(stage_logits)[
-                    jnp.arange(stage_target.shape[0]),
-                    stage_target,
-                ] * stage_weights[stage_target]
+                stage_loss = (
+                    -jax.nn.log_softmax(stage_logits)[
+                        jnp.arange(stage_target.shape[0]),
+                        stage_target,
+                    ]
+                    * stage_weights[stage_target]
+                )
                 total_loss += (
                     self.semantic_role_loss_weight * role_loss[..., None]
                     + self.semantic_stage_loss_weight * stage_loss[..., None]
@@ -514,8 +562,7 @@ class Pi0(_model.BaseModel):
                 sync_stage = 4 + jnp.argmax(stage_logits[..., 4:], axis=-1)
                 predicted_stage_id = jnp.where(probability >= 0.5, async_stage, sync_stage)
                 predicted_semantic_id = (
-                    casm_language.SEMANTIC_STAGE_COUNT * (role_probability >= 0.5)
-                    + predicted_stage_id
+                    casm_language.SEMANTIC_STAGE_COUNT * (role_probability >= 0.5) + predicted_stage_id
                 )
                 aux.update(
                     semantic_role_loss=jnp.mean(role_loss),
@@ -546,8 +593,8 @@ class Pi0(_model.BaseModel):
         usefulness_loss = casm.binary_cross_entropy(gate, target)[..., None]
         return action_loss + self.usefulness_loss_weight * usefulness_loss + self.phase_prior_loss_weight * phase_loss
 
-    def _prepare_prefix(self, observation: _model.Observation):
-        prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
+    def _prepare_prefix_with_visual(self, observation: _model.Observation):
+        prefix_tokens, prefix_mask, prefix_ar_mask, visual_summary = self._embed_prefix_with_visual(observation)
         prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
         positions = jnp.cumsum(prefix_mask, axis=1) - 1
         _, kv_cache = self.PaliGemma.llm(
@@ -555,7 +602,11 @@ class Pi0(_model.BaseModel):
             mask=prefix_attn_mask,
             positions=positions,
         )
-        return prefix_tokens, prefix_mask, kv_cache
+        return (prefix_tokens, prefix_mask, kv_cache), visual_summary
+
+    def _prepare_prefix(self, observation: _model.Observation):
+        prefix, _ = self._prepare_prefix_with_visual(observation)
+        return prefix
 
     def _cached_hidden_field(
         self,
@@ -674,10 +725,19 @@ class Pi0(_model.BaseModel):
         return jax.lax.cond(casm.select_joint_route(gate)[0], joint_route, factorized_route, operand=None)
 
     def predict_async_probability(self, observation: _model.Observation):
-        if self.casm_mode != "visual_phase_gate":
+        if self.casm_mode not in casm.VISUAL_PHASE_GATE_MODES:
             raise ValueError("async probability is only available for visual-phase-gate CASM")
         observation = _model.preprocess_observation(None, observation, train=False)
-        _, _, _, visual_summary = self._embed_prefix_with_visual(observation)
+        if self.casm_mode == "cross_output_shared_head":
+            stream_observation = casm.concatenate_observations(
+                casm.isolate_arm_observation(observation, "left"),
+                casm.isolate_arm_observation(observation, "right"),
+            )
+            _, _, _, stream_visual = self._embed_prefix_with_visual(stream_observation)
+            batch_size = observation.state.shape[0]
+            visual_summary = 0.5 * (stream_visual[:batch_size] + stream_visual[batch_size:])
+        else:
+            _, _, _, visual_summary = self._embed_prefix_with_visual(observation)
         logits = self.phase_gate(visual_summary, observation.state)
         return jax.nn.sigmoid(logits)
 
@@ -725,7 +785,8 @@ class Pi0(_model.BaseModel):
         gate = None
         if self.casm_mode in casm.CROSS_ATTENTION_MODES:
             gate = self._cooperation_probability(observation)
-        if self.casm_mode in {"hard_mask", *casm.CROSS_ATTENTION_MODES}:
+        stream_modes = {"hard_mask", "cross_output_shared_head", *casm.CROSS_ATTENTION_MODES}
+        if self.casm_mode in stream_modes:
             observation_fn = (
                 casm.hard_mask_arm_observation if self.casm_mode == "hard_mask" else casm.isolate_arm_observation
             )
@@ -733,7 +794,12 @@ class Pi0(_model.BaseModel):
                 observation_fn(observation, "left"),
                 observation_fn(observation, "right"),
             )
-            stream_prefix = self._prepare_prefix(stream_observation)
+            if self.casm_mode == "cross_output_shared_head":
+                stream_prefix, stream_visual = self._prepare_prefix_with_visual(stream_observation)
+                visual_summary = 0.5 * (stream_visual[:batch_size] + stream_visual[batch_size:])
+                gate = 1.0 - jax.nn.sigmoid(self.phase_gate(visual_summary, observation.state))
+            else:
+                stream_prefix = self._prepare_prefix(stream_observation)
         if self.casm_mode in {"none", "visual_phase_gate"}:
             joint_prefix = self._prepare_prefix(observation)
 
@@ -762,9 +828,10 @@ class Pi0(_model.BaseModel):
             )
             left_hidden = stream_hidden[:batch_size]
             right_hidden = stream_hidden[batch_size:]
-            factorized = self._project_stream_hidden(left_hidden, right_hidden, batch_size)
             if self.casm_mode == "hard_mask":
-                v_t = factorized
+                v_t = self._project_stream_hidden(left_hidden, right_hidden, batch_size)
+            elif self.casm_mode == "cross_output_shared_head":
+                v_t = self._project_cross_output_hidden(left_hidden, right_hidden, gate)
             else:
                 v_t = self._cross_attention_fields(
                     left_hidden,

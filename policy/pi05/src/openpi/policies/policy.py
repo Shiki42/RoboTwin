@@ -14,6 +14,7 @@ import torch
 from typing_extensions import override
 
 from openpi import transforms as _transforms
+from openpi.models import casm
 from openpi.models import casm_language
 from openpi.models import model as _model
 from openpi.shared import array_typing as at
@@ -68,7 +69,7 @@ class Policy(BasePolicy):
             self._rng = rng or jax.random.key(0)
             if getattr(model, "semantic_subtask_prediction", False):
                 self._predict_casm_language = nnx_utils.module_jit(model.predict_casm_language)
-            elif getattr(model, "casm_mode", "none") == "visual_phase_gate":
+            elif getattr(model, "casm_mode", "none") in casm.VISUAL_PHASE_GATE_MODES:
                 self._predict_async_probability = nnx_utils.module_jit(model.predict_async_probability)
 
     def _transform_inputs(self, obs: dict):

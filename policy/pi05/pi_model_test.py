@@ -6,6 +6,7 @@ import pytest
 from openpi.training.robotwin_routing import LearnedAsyncToSyncRouter
 from pi_model import PI0
 from pi_model import checkpoint_asset_id
+from pi_model import uses_learned_phase_router
 
 
 def write_norm_stats(assets_dir: Path, asset_id: str) -> None:
@@ -54,6 +55,15 @@ def learned_model(outputs):
     model.pi0_step = 50
     model.sync_action_chunk_steps = 10
     return model
+
+
+@pytest.mark.parametrize("mode", ["visual_phase_gate", "cross_output_shared_head"])
+def test_learned_phase_router_supports_visual_gate_modes(mode):
+    assert uses_learned_phase_router(mode)
+
+
+def test_learned_phase_router_rejects_non_visual_mode():
+    assert not uses_learned_phase_router("none")
 
 
 def test_visual_gate_probability_drives_deployment_router():

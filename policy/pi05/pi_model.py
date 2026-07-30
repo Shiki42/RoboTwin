@@ -8,6 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
+from openpi.models import casm
 from openpi.policies import policy_config as _policy_config
 from openpi.training import config as _config
 from openpi.training.robotwin_routing import EpisodeStartSceneContextRouter
@@ -23,6 +24,10 @@ def checkpoint_asset_id(assets_dir: str | Path) -> str:
     if len(norm_stats_paths) != 1:
         raise ValueError(f"expected exactly one norm_stats.json under {assets_path}, " f"found {len(norm_stats_paths)}")
     return norm_stats_paths[0].parent.relative_to(assets_path).as_posix()
+
+
+def uses_learned_phase_router(casm_mode: str) -> bool:
+    return casm_mode in casm.VISUAL_PHASE_GATE_MODES
 
 
 class PI0:
@@ -65,7 +70,7 @@ class PI0:
         self.observation_window = None
         self.pi0_step = pi0_step
         self.sync_action_chunk_steps = sync_action_chunk_steps
-        self.learned_phase_routing = config.model.casm_mode == "visual_phase_gate"
+        self.learned_phase_routing = uses_learned_phase_router(config.model.casm_mode)
         self.semantic_subtask_prediction = config.model.semantic_subtask_prediction
         if self.learned_phase_routing:
             self.main_camera_router = LearnedAsyncToSyncRouter(
@@ -146,9 +151,7 @@ class PI0:
                 {
                     "semantic_subtask_id": int(outputs["semantic_subtask_id"]),
                     "semantic_subtask_prompt": outputs["semantic_subtask_prompt"],
-                    "object_arm_right_probability": float(
-                        outputs["semantic_object_arm_right_probability"]
-                    ),
+                    "object_arm_right_probability": float(outputs["semantic_object_arm_right_probability"]),
                     "stage_probabilities": outputs["semantic_stage_probabilities"],
                     "confirmed_phase_id": int(self.observation_window["phase_id"][0]),
                 }

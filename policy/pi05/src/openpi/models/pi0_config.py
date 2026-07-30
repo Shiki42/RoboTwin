@@ -34,6 +34,7 @@ class Pi0Config(_model.BaseModelConfig):
     casm_mode: casm.CasmMode = "none"
     coordination_gate_hidden_dim: int = 64
     cross_attention_dim: int = 128
+    cross_output_rank: int = 4
     gate_loss_weight: float = 0.2
     gate_positive_weight: float = 1.0
     usefulness_loss_weight: float = 0.2
@@ -51,6 +52,8 @@ class Pi0Config(_model.BaseModelConfig):
             raise ValueError(f"unknown CASM mode: {self.casm_mode}")
         if self.coordination_gate_hidden_dim < 1 or self.cross_attention_dim < 1:
             raise ValueError("CASM hidden dimensions must be positive")
+        if self.cross_output_rank < 1:
+            raise ValueError("cross-output rank must be positive")
         if min(self.gate_loss_weight, self.usefulness_loss_weight, self.phase_prior_loss_weight) < 0:
             raise ValueError("CASM loss weights must be non-negative")
         if self.gate_positive_weight <= 0:

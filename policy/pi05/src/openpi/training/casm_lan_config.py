@@ -22,6 +22,7 @@ def create(base_config, *, name: str, project_name: str):
                     "state": "observation.state",
                     "actions": "action",
                     "action_mask": "observation.arm_active_mask",
+                    "action_is_pad": "action_is_pad",
                     "action_phase": "observation.phase_one_hot",
                     "semantic_subtask_id": "observation.semantic_subtask_id",
                     "prompt": "prompt",
@@ -57,9 +58,7 @@ def create_heads_only(base_config, *, name: str, project_name: str):
         semantic_stage_loss_weight=1.0,
     )
     weight_loader = dataclasses.replace(config.weight_loader, missing_regex=r"(?!x)x")
-    trainable_heads = nnx_utils.PathRegex(
-        r".*(phase_gate|semantic_(role|stage)_head).*"
-    )
+    trainable_heads = nnx_utils.PathRegex(r".*(phase_gate|semantic_(role|stage)_head).*")
     return dataclasses.replace(
         config,
         model=model,
