@@ -34,6 +34,21 @@ import openpi.training.utils as training_utils
 import openpi.training.weight_loaders as _weight_loaders
 
 
+def resolve_update_limit(configured_updates: int, start_step: int) -> int:
+    raw_limit = os.environ.get("PARALLELVLA_PREFLIGHT_MAX_UPDATES")
+    if raw_limit is None:
+        return configured_updates
+    try:
+        update_limit = int(raw_limit)
+    except ValueError as error:
+        raise ValueError("preflight update limit must be an integer") from error
+    if not start_step < update_limit <= configured_updates:
+        raise ValueError(
+            f"preflight update limit must satisfy {start_step} < limit <= {configured_updates}, " f"got {update_limit}"
+        )
+    return update_limit
+
+
 def init_logging():
     """Custom logging format for better readability."""
     level_mapping = {
@@ -312,8 +327,9 @@ def main(config: _config.TrainConfig):
     accumulation_steps = config.gradient_accumulation_steps
     if start_microstep != start_step * accumulation_steps:
         raise ValueError(f"checkpoint is not on an optimizer boundary: step={start_step}, microstep={start_microstep}")
-    total_microsteps = config.num_train_steps * accumulation_steps
-    pbar = tqdm.tqdm(total=config.num_train_steps, initial=start_step, dynamic_ncols=True)
+    update_limit = resolve_update_limit(config.num_train_steps, start_step)
+    total_microsteps = update_limit * accumulation_steps
+    pbar = tqdm.tqdm(total=update_limit, initial=start_step, dynamic_ncols=True)
 
     performance_receipt = None
     performance_path = os.environ.get("PARALLELVLA_PERFORMANCE_RECEIPT")
@@ -377,7 +393,7 @@ def main(config: _config.TrainConfig):
 
             checkpoint_started = time.perf_counter()
             checkpoint_saved = optimizer_update and (
-                optimizer_step % config.save_interval == 0 or optimizer_step == config.num_train_steps
+                optimizer_step % config.save_interval == 0 or optimizer_step == update_limit
             )
             if checkpoint_saved:
                 _checkpoints.save_state(
