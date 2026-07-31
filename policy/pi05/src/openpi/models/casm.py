@@ -17,10 +17,12 @@ CasmMode = Literal[
     "usefulness_gate",
     "visual_phase_gate",
     "cross_output_shared_head",
+    "skillvla_per_arm_gated",
 ]
-VISUAL_PHASE_GATE_MODES = frozenset({"visual_phase_gate", "cross_output_shared_head"})
+VISUAL_GATED_STREAM_MODES = frozenset({"cross_output_shared_head", "skillvla_per_arm_gated"})
+VISUAL_PHASE_GATE_MODES = frozenset({"visual_phase_gate", *VISUAL_GATED_STREAM_MODES})
 LEARNED_GATE_MODES = frozenset({"hard_gate", "gated_cross_attention", "usefulness_gate", *VISUAL_PHASE_GATE_MODES})
-CROSS_ATTENTION_MODES = frozenset({"gated_cross_attention", "usefulness_gate"})
+CROSS_ATTENTION_MODES = frozenset({"gated_cross_attention", "usefulness_gate", "skillvla_per_arm_gated"})
 VALID_CASM_MODES = frozenset({"none", "hard_mask", *LEARNED_GATE_MODES})
 CROSS_ATTENTION_OUTPUT_INIT = jax.nn.initializers.normal(1e-3)
 ROBOT_ARM_DIM = 7
@@ -77,6 +79,16 @@ def isolate_arm_observation(
     image_masks = dict(observation.image_masks)
     image_masks[masked_wrist] = jnp.zeros_like(image_masks[masked_wrist])
     return observation.replace(image_masks=image_masks)
+
+
+def isolate_arm_skill_observation(observation: _model.Observation, arm: str) -> _model.Observation:
+    """Keep only the selected wrist and its native seven-dimensional state."""
+    isolated = isolate_arm_observation(observation, arm)
+    indices = jnp.arange(observation.state.shape[-1])
+    state_mask = indices < ROBOT_ARM_DIM
+    if arm == "right":
+        state_mask = (indices >= ROBOT_ARM_DIM) & (indices < 2 * ROBOT_ARM_DIM)
+    return isolated.replace(state=jnp.where(state_mask, observation.state, 0.0))
 
 
 def hard_mask_arm_observation(
@@ -139,6 +151,37 @@ def merge_stream_vector_fields(
         right,
         0.0,
     )
+
+
+def native_per_arm_projection(left_hidden, right_hidden, kernel, bias, action_dim: int):
+    """Project each stream through its pretrained physical-coordinate output basis."""
+    minimum_action_dim = 2 * ROBOT_ARM_DIM
+    if kernel.ndim != 2 or kernel.shape[1] < minimum_action_dim:
+        raise ValueError(f"invalid PI0.5 output kernel shape: {kernel.shape}")
+    if bias.ndim != 1 or bias.shape[0] < minimum_action_dim:
+        raise ValueError(f"invalid PI0.5 output bias shape: {bias.shape}")
+    if action_dim < minimum_action_dim:
+        raise ValueError(f"action dimension {action_dim} cannot hold two robot arms")
+
+    left = (
+        jnp.einsum(
+            "...d,df->...f",
+            left_hidden,
+            kernel[:, :ROBOT_ARM_DIM],
+            precision=jax.lax.Precision.DEFAULT,
+        )
+        + bias[:ROBOT_ARM_DIM]
+    )
+    right = (
+        jnp.einsum(
+            "...d,df->...f",
+            right_hidden,
+            kernel[:, ROBOT_ARM_DIM:minimum_action_dim],
+            precision=jax.lax.Precision.DEFAULT,
+        )
+        + bias[ROBOT_ARM_DIM:minimum_action_dim]
+    )
+    return merge_shared_arm_vector_fields(left, right, action_dim)
 
 
 def shared_single_arm_projection(hidden, kernel, bias):
@@ -272,6 +315,35 @@ class LowRankBidirectionalCrossResidual(nnx.Module):
         right_message = self.up(nnx.gelu(self.down(right)))
         left_message = self.up(nnx.gelu(self.down(left)))
         return left + weight * right_message, right + weight * left_message
+
+
+class PerArmLowRankResidual(nnx.Module):
+    """Independent low-rank residuals that keep per-arm latent adaptation disentangled."""
+
+    def __init__(self, width: int, rank: int, *, rngs: nnx.Rngs):
+        if rank < 1:
+            raise ValueError("per-arm adapter rank must be positive")
+        self.left_down = BiasFreeLinear(width, rank, rngs=rngs)
+        self.left_up = nnx.Linear(
+            rank,
+            width,
+            kernel_init=jax.nn.initializers.zeros,
+            bias_init=jax.nn.initializers.zeros,
+            rngs=rngs,
+        )
+        self.right_down = BiasFreeLinear(width, rank, rngs=rngs)
+        self.right_up = nnx.Linear(
+            rank,
+            width,
+            kernel_init=jax.nn.initializers.zeros,
+            bias_init=jax.nn.initializers.zeros,
+            rngs=rngs,
+        )
+
+    def __call__(self, left, right):
+        left_residual = self.left_up(nnx.gelu(self.left_down(left)))
+        right_residual = self.right_up(nnx.gelu(self.right_down(right)))
+        return left + left_residual, right + right_residual
 
 
 class GatedBidirectionalCrossAttention(nnx.Module):

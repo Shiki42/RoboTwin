@@ -56,6 +56,18 @@ def test_hard_mask_keeps_joint_context_only_for_sync_samples():
     assert isolated.image_masks["right_wrist_0_rgb"].tolist() == [False, False]
 
 
+def test_skill_observation_keeps_only_native_arm_state_and_wrist():
+    obs = observation().replace(state=jnp.arange(64, dtype=jnp.float32).reshape(2, 32))
+    left = casm.isolate_arm_skill_observation(obs, "left")
+    right = casm.isolate_arm_skill_observation(obs, "right")
+
+    assert np.array_equal(left.state[..., :7], obs.state[..., :7])
+    assert np.all(np.asarray(left.state[..., 7:]) == 0)
+    assert np.all(np.asarray(right.state[..., :7]) == 0)
+    assert np.array_equal(right.state[..., 7:14], obs.state[..., 7:14])
+    assert np.all(np.asarray(right.state[..., 14:]) == 0)
+
+
 def test_stream_action_routing_and_merge():
     actions = jnp.arange(2 * 1 * 32, dtype=jnp.float32).reshape(2, 1, 32)
     routed = casm.hard_mask_stream_action_inputs(actions, jnp.array([[1], [0]]))
@@ -68,6 +80,28 @@ def test_stream_action_routing_and_merge():
     assert np.all(merged[..., :7] == 1)
     assert np.all(merged[..., 7:14] == 2)
     assert np.all(merged[..., 14:] == 0)
+
+
+def test_native_per_arm_projection_uses_both_pretrained_output_bases():
+    left_hidden = jnp.ones((1, 1, 2), dtype=jnp.float32)
+    right_hidden = jnp.full((1, 1, 2), 2.0, dtype=jnp.float32)
+    kernel = jnp.zeros((2, 32), dtype=jnp.float32)
+    kernel = kernel.at[:, :7].set(3.0)
+    kernel = kernel.at[:, 7:14].set(5.0)
+    bias = jnp.arange(32, dtype=jnp.float32)
+
+    projected = casm.native_per_arm_projection(left_hidden, right_hidden, kernel, bias, action_dim=32)
+    assert np.allclose(projected[..., :7], 6.0 + bias[:7])
+    assert np.allclose(projected[..., 7:14], 20.0 + bias[7:14])
+    assert np.all(np.asarray(projected[..., 14:]) == 0)
+
+    def loss(candidate_kernel):
+        return jnp.sum(casm.native_per_arm_projection(left_hidden, right_hidden, candidate_kernel, bias, 32))
+
+    gradient = jax.grad(loss)(kernel)
+    assert np.all(np.asarray(gradient[:, :7]) == 1.0)
+    assert np.all(np.asarray(gradient[:, 7:14]) == 2.0)
+    assert np.all(np.asarray(gradient[:, 14:]) == 0.0)
 
 
 def test_shared_single_arm_head_uses_canonical_columns_and_routes_both_arms():
@@ -123,6 +157,28 @@ def test_low_rank_cross_residual_gate_and_initialization_contract():
     assert np.all(np.asarray(on_left) > np.asarray(left))
     assert np.all(np.asarray(on_right) > np.asarray(right))
     assert np.all(np.asarray(on_left - left) > np.asarray(on_right - right))
+
+
+def test_per_arm_residuals_are_zero_initialized_and_independent():
+    module = casm.PerArmLowRankResidual(4, 2, rngs=nnx.Rngs(5))
+    left = jnp.ones((1, 3, 4))
+    right = jnp.full((1, 3, 4), 2.0)
+
+    initial_left, initial_right = module(left, right)
+    assert np.array_equal(initial_left, left)
+    assert np.array_equal(initial_right, right)
+
+    module.left_down.kernel.value = jnp.ones_like(module.left_down.kernel.value)
+    module.right_down.kernel.value = jnp.ones_like(module.right_down.kernel.value)
+    module.left_up.kernel.value = jnp.ones_like(module.left_up.kernel.value)
+    module.right_up.kernel.value = jnp.full_like(module.right_up.kernel.value, 2.0)
+
+    first_left, first_right = module(left, right)
+    second_left, second_right = module(3.0 * left, right)
+    assert not np.array_equal(first_left, second_left)
+    assert np.array_equal(first_right, second_right)
+    assert np.all(np.asarray(first_left) > np.asarray(left))
+    assert np.all(np.asarray(first_right) > np.asarray(right))
 
 
 def test_shared_arm_head_rejects_invalid_shapes():

@@ -29,6 +29,7 @@ import openpi.training.cross_output_config as cross_output_config
 import openpi.training.droid_rlds_dataset as droid_rlds_dataset
 import openpi.training.misc.roboarena_config as roboarena_config
 import openpi.training.optimizer as _optimizer
+import openpi.training.skillvla_config as skillvla_config
 import openpi.training.weight_loaders as weight_loaders
 import openpi.transforms as _transforms
 
@@ -854,6 +855,8 @@ _CONFIGS = [
         "casm_lan_base", "visual_phase_gate", "parallelvla-casm-lan")),
     *cross_output_config.create_variants(_putcab_anchor_adapt_config(
         "cross_output_base", "none", "parallelvla-cross-output")),
+    skillvla_config.create_variant(_putcab_anchor_adapt_config(
+        "skillvla_base", "none", "parallelvla-skillvla-probe")),
     _putcab_jax_config("pi05_putcab_casm_visual_phase_gate_jax_full", "visual_phase_gate"),
     _putcab_jax_config("pi05_putcab_jax_matched_full", "none"),
     _putcab_pytorch_config("pi05_putcab_pytorch_matched_full", "none"),

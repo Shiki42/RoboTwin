@@ -158,6 +158,12 @@ class Pi0(_model.BaseModel):
                 config.cross_attention_dim,
                 rngs=rngs,
             )
+        if self.casm_mode == "skillvla_per_arm_gated":
+            self.per_arm_adapter = casm.PerArmLowRankResidual(
+                action_expert_config.width,
+                config.skill_adapter_rank,
+                rngs=rngs,
+            )
         if self.casm_mode == "cross_output_shared_head":
             self.cross_output_adapter = casm.LowRankBidirectionalCrossResidual(
                 action_expert_config.width,
@@ -373,10 +379,10 @@ class Pi0(_model.BaseModel):
         )
         return self._project_stream_hidden(left_hidden, right_hidden, noisy_actions.shape[0])
 
-    def _cross_output_hidden_fields(self, observation, noisy_actions, time):
+    def _visual_gated_stream_hidden_fields(self, observation, noisy_actions, time, observation_fn):
         stream_observation = casm.concatenate_observations(
-            casm.isolate_arm_observation(observation, "left"),
-            casm.isolate_arm_observation(observation, "right"),
+            observation_fn(observation, "left"),
+            observation_fn(observation, "right"),
         )
         stream_actions = casm.isolated_stream_action_inputs(noisy_actions)
         stream_time = jnp.concatenate([time, time], axis=0)
@@ -405,6 +411,16 @@ class Pi0(_model.BaseModel):
         left_fused, right_fused = self.cross_attention(left_hidden, right_hidden, gate)
         return self._project_stream_hidden(left_fused, right_fused, batch_size)
 
+    def _skillvla_vector_field(self, left_hidden, right_hidden, cooperation_gate):
+        left_local, right_local = self.per_arm_adapter(
+            left_hidden,
+            right_hidden,
+        )
+        left_fused, right_fused = self.cross_attention(left_local, right_local, cooperation_gate)
+        kernel = self.action_out_proj.kernel.value
+        bias = self.action_out_proj.bias.value
+        return casm.native_per_arm_projection(left_fused, right_fused, kernel, bias, self.action_dim)
+
     def _routed_vector_fields(
         self,
         observation: _model.Observation,
@@ -418,12 +434,21 @@ class Pi0(_model.BaseModel):
             return predicted, gate_logits, None, visual_summary
 
         if self.casm_mode == "cross_output_shared_head":
-            left_hidden, right_hidden, visual_summary = self._cross_output_hidden_fields(
-                observation, noisy_actions, time
+            left_hidden, right_hidden, visual_summary = self._visual_gated_stream_hidden_fields(
+                observation, noisy_actions, time, casm.isolate_arm_observation
             )
             gate_logits = self.phase_gate(visual_summary, observation.state)
             sync_probability = 1.0 - jax.nn.sigmoid(gate_logits)
             predicted = self._project_cross_output_hidden(left_hidden, right_hidden, sync_probability)
+            return predicted, gate_logits, None, visual_summary
+
+        if self.casm_mode == "skillvla_per_arm_gated":
+            left_hidden, right_hidden, visual_summary = self._visual_gated_stream_hidden_fields(
+                observation, noisy_actions, time, casm.isolate_arm_skill_observation
+            )
+            gate_logits = self.phase_gate(visual_summary, observation.state)
+            cooperation_probability = 1.0 - jax.nn.sigmoid(gate_logits)
+            predicted = self._skillvla_vector_field(left_hidden, right_hidden, cooperation_probability)
             return predicted, gate_logits, None, visual_summary
 
         if self.casm_mode == "none":
@@ -514,7 +539,8 @@ class Pi0(_model.BaseModel):
         x_t = time_expanded * noise + (1 - time_expanded) * actions
         u_t = noise - actions
         v_t, gate, alternatives, visual_summary = self._routed_vector_fields(observation, x_t, time)
-        action_loss = reduce_action_loss(jnp.square(v_t - u_t), observation.action_mask)
+        squared_error = jnp.square(v_t - u_t)
+        action_loss = reduce_action_loss(squared_error, observation.action_mask)
         if gate is None:
             return action_loss
         if observation.phase_id is None:
@@ -528,8 +554,14 @@ class Pi0(_model.BaseModel):
             )
             total_loss = action_loss + self.gate_loss_weight * gate_loss[..., None]
             probability = jax.nn.sigmoid(gate)
+            left_mask = None if observation.action_mask is None else observation.action_mask[..., :7]
+            right_mask = None if observation.action_mask is None else observation.action_mask[..., 7:14]
+            left_action_loss = reduce_action_loss(squared_error[..., :7], left_mask)
+            right_action_loss = reduce_action_loss(squared_error[..., 7:14], right_mask)
             aux = {
                 "action_loss": jnp.mean(action_loss),
+                "left_action_loss": jnp.mean(left_action_loss),
+                "right_action_loss": jnp.mean(right_action_loss),
                 "gate_loss": jnp.mean(gate_loss),
                 "gate_accuracy": jnp.mean((probability >= 0.5) == (target >= 0.5)),
                 "gate_async_probability": jnp.mean(probability),
@@ -728,10 +760,15 @@ class Pi0(_model.BaseModel):
         if self.casm_mode not in casm.VISUAL_PHASE_GATE_MODES:
             raise ValueError("async probability is only available for visual-phase-gate CASM")
         observation = _model.preprocess_observation(None, observation, train=False)
-        if self.casm_mode == "cross_output_shared_head":
+        if self.casm_mode in casm.VISUAL_GATED_STREAM_MODES:
+            observation_fn = (
+                casm.isolate_arm_skill_observation
+                if self.casm_mode == "skillvla_per_arm_gated"
+                else casm.isolate_arm_observation
+            )
             stream_observation = casm.concatenate_observations(
-                casm.isolate_arm_observation(observation, "left"),
-                casm.isolate_arm_observation(observation, "right"),
+                observation_fn(observation, "left"),
+                observation_fn(observation, "right"),
             )
             _, _, _, stream_visual = self._embed_prefix_with_visual(stream_observation)
             batch_size = observation.state.shape[0]
@@ -783,21 +820,28 @@ class Pi0(_model.BaseModel):
         stream_prefix = None
         stream_observation = None
         gate = None
-        if self.casm_mode in casm.CROSS_ATTENTION_MODES:
+        if self.casm_mode in casm.CROSS_ATTENTION_MODES - casm.VISUAL_PHASE_GATE_MODES:
             gate = self._cooperation_probability(observation)
         stream_modes = {"hard_mask", "cross_output_shared_head", *casm.CROSS_ATTENTION_MODES}
         if self.casm_mode in stream_modes:
-            observation_fn = (
-                casm.hard_mask_arm_observation if self.casm_mode == "hard_mask" else casm.isolate_arm_observation
-            )
+            if self.casm_mode == "hard_mask":
+                observation_fn = casm.hard_mask_arm_observation
+            elif self.casm_mode == "skillvla_per_arm_gated":
+                observation_fn = casm.isolate_arm_skill_observation
+            else:
+                observation_fn = casm.isolate_arm_observation
             stream_observation = casm.concatenate_observations(
                 observation_fn(observation, "left"),
                 observation_fn(observation, "right"),
             )
-            if self.casm_mode == "cross_output_shared_head":
+            if self.casm_mode in casm.VISUAL_GATED_STREAM_MODES:
                 stream_prefix, stream_visual = self._prepare_prefix_with_visual(stream_observation)
                 visual_summary = 0.5 * (stream_visual[:batch_size] + stream_visual[batch_size:])
-                gate = 1.0 - jax.nn.sigmoid(self.phase_gate(visual_summary, observation.state))
+                async_probability = jax.nn.sigmoid(self.phase_gate(visual_summary, observation.state))
+                if self.casm_mode == "skillvla_per_arm_gated":
+                    gate = (async_probability < 0.5).astype(async_probability.dtype)
+                else:
+                    gate = 1.0 - async_probability
             else:
                 stream_prefix = self._prepare_prefix(stream_observation)
         if self.casm_mode in {"none", "visual_phase_gate"}:
@@ -832,6 +876,8 @@ class Pi0(_model.BaseModel):
                 v_t = self._project_stream_hidden(left_hidden, right_hidden, batch_size)
             elif self.casm_mode == "cross_output_shared_head":
                 v_t = self._project_cross_output_hidden(left_hidden, right_hidden, gate)
+            elif self.casm_mode == "skillvla_per_arm_gated":
+                v_t = self._skillvla_vector_field(left_hidden, right_hidden, gate)
             else:
                 v_t = self._cross_attention_fields(
                     left_hidden,

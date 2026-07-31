@@ -81,6 +81,7 @@ def test_casm_modes_support_training_and_sampling_shapes():
         "usefulness_gate",
         "visual_phase_gate",
         "cross_output_shared_head",
+        "skillvla_per_arm_gated",
     )
     for mode in modes:
         config = _pi0_config.Pi0Config(pi05=True, casm_mode=mode)
@@ -94,6 +95,11 @@ def test_casm_modes_support_training_and_sampling_shapes():
 def test_cross_output_rank_must_be_positive():
     with pytest.raises(ValueError, match="cross-output rank must be positive"):
         _pi0_config.Pi0Config(pi05=True, casm_mode="cross_output_shared_head", cross_output_rank=0)
+
+
+def test_skill_adapter_rank_must_be_positive():
+    with pytest.raises(ValueError, match="skill adapter rank must be positive"):
+        _pi0_config.Pi0Config(pi05=True, casm_mode="skillvla_per_arm_gated", skill_adapter_rank=0)
 
 
 def _visual_phase_gate_aux_shape():
@@ -117,6 +123,8 @@ def test_visual_phase_gate_returns_separate_training_metrics():
     assert loss.shape == (2, 50)
     assert set(aux) == {
         "action_loss",
+        "left_action_loss",
+        "right_action_loss",
         "gate_loss",
         "gate_accuracy",
         "gate_async_probability",
