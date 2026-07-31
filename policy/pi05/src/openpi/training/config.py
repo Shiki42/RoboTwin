@@ -774,7 +774,6 @@ _CONFIGS = [
         num_train_steps=30000,
         fsdp_devices=1,
     ),
-    # Pi0.5 temporal-debias breadth config with explicit phase prompts and arm supervision masks.
     TrainConfig(
         name="pi05_putcab_temporal_debias_lora",
         model=pi0_config.Pi0Config(
