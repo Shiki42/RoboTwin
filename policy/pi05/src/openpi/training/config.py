@@ -863,7 +863,6 @@ _CONFIGS = [
     _putcab_jax_config("pi05_putcab_jax_matched_full", "none"),
     _putcab_pytorch_config("pi05_putcab_pytorch_matched_full", "none"),
     _putcab_pytorch_config("pi05_putcab_casm_visual_phase_gate_pytorch_full", "visual_phase_gate"),
-    # pi0_base by lora
     TrainConfig(
         name="pi0_base_aloha_robotwin_lora",
         model=pi0_config.Pi0Config(paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"),
@@ -893,7 +892,6 @@ _CONFIGS = [
         num_train_steps=30000,
         fsdp_devices=1,  # refer line 359
     ),
-    # pi0_fast_base by lora
     TrainConfig(
         name="pi0_fast_aloha_robotwin_lora",
         model=pi0_fast.Pi0FASTConfig(paligemma_variant="gemma_2b_lora"),
@@ -924,7 +922,6 @@ _CONFIGS = [
         num_train_steps=30000,
         fsdp_devices=2,  # refer line 359
     ),
-    # pi0_base by full
     TrainConfig(
         name="pi0_base_aloha_robotwin_full",
         model=pi0_config.Pi0Config(),
@@ -953,7 +950,6 @@ _CONFIGS = [
         num_train_steps=30000,
         fsdp_devices=4,  # refer line 359
     ),
-    # pi0_fast_base by full
     TrainConfig(
         name="pi0_fast_aloha_robotwin_full",
         model=pi0_fast.Pi0FASTConfig(),
@@ -982,7 +978,6 @@ _CONFIGS = [
         num_train_steps=30000,
         fsdp_devices=1,  # refer line 359
     ),
-    # RoboArena configs.
     *roboarena_config.get_roboarena_configs(),
 ]
 
