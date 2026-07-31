@@ -1,8 +1,10 @@
+from beartype.door import is_bearable
 import jax.numpy as jnp
 import optax
 import pytest
 
 from openpi.training import optimizer
+from openpi.training import utils as training_utils
 
 
 def test_multi_step_optimizer_updates_only_after_accumulation_window():
@@ -22,6 +24,17 @@ def test_multi_step_optimizer_updates_only_after_accumulation_window():
     second_updates, state = tx.update({"weight": jnp.array(4.0)}, state, first_params)
     second_params = optax.apply_updates(first_params, second_updates)
     assert second_params["weight"] < first_params["weight"]
+
+
+def test_train_state_annotation_accepts_multi_step_optimizer():
+    schedule = optimizer.CosineDecaySchedule(warmup_steps=0, peak_lr=0.1, decay_steps=10, decay_lr=0.1)
+    tx = optimizer.create_optimizer(
+        optimizer.AdamW(weight_decay=0.0, clip_gradient_norm=100.0),
+        schedule,
+        gradient_accumulation_steps=2,
+    )
+
+    assert is_bearable(tx, training_utils.TrainState.__annotations__["tx"])
 
 
 def test_optimizer_rejects_non_positive_accumulation():
