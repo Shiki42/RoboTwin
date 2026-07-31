@@ -34,6 +34,17 @@ def test_skillvla_probe_matches_control_data_and_budget():
     assert skillvla.weight_loader.missing_regex == r".*(phase_gate|cross_attention|per_arm_adapter).*"
 
 
+def test_skillvla_adaptation_probe_has_explicit_short_schedule():
+    adaptation = config.get_config("pi05_putcab_skillvla_per_arm_gated_adaptation_probe")
+
+    assert adaptation.model.casm_mode == "skillvla_per_arm_gated"
+    assert adaptation.num_train_steps == 100
+    assert adaptation.lr_schedule.warmup_steps == 20
+    assert adaptation.lr_schedule.decay_steps == 100
+    assert adaptation.lr_schedule.peak_lr == 2.5e-5
+    assert adaptation.lr_schedule.decay_lr == 2.5e-6
+
+
 def test_skillvla_probe_has_strict_trainable_scope():
     skillvla = config.get_config("pi05_putcab_skillvla_per_arm_gated_probe")
 

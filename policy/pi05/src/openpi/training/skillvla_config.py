@@ -47,3 +47,21 @@ def create_variant(base_config):
         ema_decay=None,
         wandb_enabled=False,
     )
+
+
+def create_adaptation_variant(base_config):
+    probe = create_variant(base_config)
+    lr_schedule = dataclasses.replace(
+        probe.lr_schedule,
+        warmup_steps=20,
+        decay_steps=100,
+        decay_lr=2.5e-6,
+    )
+    return dataclasses.replace(
+        probe,
+        name="pi05_putcab_skillvla_per_arm_gated_adaptation_probe",
+        lr_schedule=lr_schedule,
+        num_train_steps=100,
+        save_interval=50,
+        keep_period=100,
+    )

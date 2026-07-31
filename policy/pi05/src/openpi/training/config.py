@@ -857,6 +857,8 @@ _CONFIGS = [
         "cross_output_base", "none", "parallelvla-cross-output")),
     skillvla_config.create_variant(_putcab_anchor_adapt_config(
         "skillvla_base", "none", "parallelvla-skillvla-probe")),
+    skillvla_config.create_adaptation_variant(_putcab_anchor_adapt_config(
+        "skillvla_adaptation_base", "none", "parallelvla-skillvla-probe")),
     _putcab_jax_config("pi05_putcab_casm_visual_phase_gate_jax_full", "visual_phase_gate"),
     _putcab_jax_config("pi05_putcab_jax_matched_full", "none"),
     _putcab_pytorch_config("pi05_putcab_pytorch_matched_full", "none"),
