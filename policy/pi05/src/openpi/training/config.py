@@ -28,6 +28,7 @@ import openpi.training.casm_lan_config as casm_lan_config
 import openpi.training.cross_output_config as cross_output_config
 import openpi.training.droid_rlds_dataset as droid_rlds_dataset
 import openpi.training.misc.roboarena_config as roboarena_config
+import openpi.training.official_clean_config as official_clean_config
 import openpi.training.optimizer as _optimizer
 import openpi.training.skillvla_config as skillvla_config
 import openpi.training.weight_loaders as weight_loaders
@@ -566,7 +567,6 @@ class TrainConfig:
         if self.gradient_accumulation_steps < 1:
             raise ValueError("gradient accumulation steps must be positive")
 
-
 def _putcab_casm_data(repo_id: str) -> LeRobotAlohaDataConfig:
     return LeRobotAlohaDataConfig(
         repo_id=repo_id,
@@ -643,7 +643,6 @@ def _putcab_casm_config(
         wandb_enabled=wandb_enabled,
         fsdp_devices=1,
     )
-
 
 def _putcab_anchor_adapt_config(name: str, mode: casm.CasmMode, project_name: str, *, freeze_vision: bool = False) -> TrainConfig:
     return _putcab_casm_config(
@@ -858,6 +857,7 @@ _CONFIGS = [
         "skillvla_base", "none", "parallelvla-skillvla-probe")),
     skillvla_config.create_adaptation_variant(_putcab_anchor_adapt_config(
         "skillvla_adaptation_base", "none", "parallelvla-skillvla-probe")),
+    official_clean_config.create_config(),
     _putcab_jax_config("pi05_putcab_casm_visual_phase_gate_jax_full", "visual_phase_gate"),
     _putcab_jax_config("pi05_putcab_jax_matched_full", "none"),
     _putcab_pytorch_config("pi05_putcab_pytorch_matched_full", "none"),

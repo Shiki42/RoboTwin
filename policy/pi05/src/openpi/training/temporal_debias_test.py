@@ -49,6 +49,22 @@ def test_aloha_inputs_masks_temporal_padding_and_requires_pad_receipt():
         AlohaInputs(adapt_to_pi=False)(data)
 
 
+def test_aloha_inputs_defaults_to_both_arms_active_with_temporal_padding():
+    image = np.zeros((3, 8, 8), dtype=np.uint8)
+    output = AlohaInputs(adapt_to_pi=False)(
+        {
+            "images": {"cam_high": image},
+            "state": np.zeros(14, dtype=np.float32),
+            "actions": np.zeros((3, 14), dtype=np.float32),
+            "action_is_pad": np.array([False, True, False]),
+        }
+    )
+
+    assert output["action_mask"].shape == (3, 14)
+    assert np.all(output["action_mask"][[0, 2]] == 1)
+    assert np.all(output["action_mask"][1] == 0)
+
+
 def test_aloha_outputs_preserves_async_probability():
     output = AlohaOutputs(adapt_to_pi=False)(
         {
