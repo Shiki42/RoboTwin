@@ -16,21 +16,20 @@ import openpi.shared.normalize as _normalize
 import openpi.training.data_loader as _data_loader
 import openpi.training.utils as training_utils
 
-_CHECKPOINT_CONCURRENT_GB = 4
+_CHECKPOINT_CONCURRENT_GB = 6
 
 
 class _SequentialArrayHandler(ocp.type_handlers.ArrayHandler):
     """Bound device-to-host checkpoint transfers to one array at a time."""
 
     async def serialize(self, values, infos, args=None):
-        commit_futures = []
         for index, (value, info) in enumerate(zip(values, infos, strict=True)):
             value_args = None if args is None else [args[index]]
             futures = await super().serialize([value], [info], value_args)
             for commit_future in futures:
-                await asyncio.to_thread(commit_future.result)
-            commit_futures.extend(futures)
-        return commit_futures
+                commit_future.result()
+            del commit_future, futures
+        return []
 
 
 def _type_handler_registry() -> ocp.type_handlers.TypeHandlerRegistry:
@@ -143,7 +142,15 @@ def save_state(
             "params": {"params": params},
             "data_loader": data_loader.state_dict(),
         }
-    checkpoint_manager.save(step, items)
+    checkpoint_args = {
+        "assets": CallbackSave(save_assets),
+        **{
+            name: ocp.args.PyTreeSave(item, enable_pinned_host_transfer=True)
+            for name, item in items.items()
+            if name != "assets"
+        },
+    }
+    checkpoint_manager.save(step, args=ocp.args.Composite(**checkpoint_args))
 
 
 def restore_state(

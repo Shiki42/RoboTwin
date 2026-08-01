@@ -24,8 +24,8 @@ def test_checkpoint_pytree_handlers_limit_host_transfer_concurrency():
 
     for name in ("params", "train_state", "data_loader"):
         handler = handlers[name]
-        assert handler._save_concurrent_bytes == 4_000_000_000  # noqa: SLF001
-        assert handler._restore_concurrent_bytes == 4_000_000_000  # noqa: SLF001
+        assert handler._save_concurrent_bytes == 6_000_000_000  # noqa: SLF001
+        assert handler._restore_concurrent_bytes == 6_000_000_000  # noqa: SLF001
 
 
 def test_checkpoint_pytree_handlers_use_sequential_array_transfers():
@@ -53,8 +53,34 @@ def test_sequential_array_handler_waits_before_next_transfer(monkeypatch):
         checkpoints._SequentialArrayHandler().serialize(values, [object(), object()], [object(), object()])  # noqa: SLF001
     )
 
-    assert len(result) == 2
+    assert result == []
     assert events == [("serialize", values[0]), "wait", ("serialize", values[1]), "wait"]
+
+
+def test_save_state_enables_pinned_host_transfer(monkeypatch):
+    class CheckpointManager:
+        saved = None
+
+        def save(self, step, *, args):
+            self.saved = (step, args)
+
+    class DataLoader:
+        def state_dict(self):
+            return {"cursor": 32}
+
+    monkeypatch.setattr(checkpoints, "_split_params", lambda state: ("train-state", "ema-params"))
+    manager = CheckpointManager()
+    checkpoints.save_state(manager, object(), DataLoader(), 1, params_only=False)
+
+    step, args = manager.saved
+    assert step == 1
+    assert set(args.keys()) == {"assets", "train_state", "params", "data_loader"}
+    assert isinstance(args["assets"], checkpoints.CallbackSave)
+    assert args["train_state"].item == "train-state"
+    assert args["params"].item == {"params": "ema-params"}
+    assert args["data_loader"].item == {"cursor": 32}
+    for name in ("train_state", "params", "data_loader"):
+        assert args[name].enable_pinned_host_transfer is True
 
 
 def test_params_only_checkpoint_rejects_resume(tmp_path: Path):
