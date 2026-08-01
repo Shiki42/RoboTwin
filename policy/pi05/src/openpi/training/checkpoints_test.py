@@ -17,6 +17,15 @@ def test_checkpoint_item_handlers_match_storage_mode():
     }
 
 
+def test_checkpoint_pytree_handlers_limit_host_transfer_concurrency():
+    handlers = checkpoints._checkpoint_item_handlers(params_only=False)  # noqa: SLF001
+
+    for name in ("params", "train_state", "data_loader"):
+        handler = handlers[name]
+        assert handler._save_concurrent_bytes == 1_000_000_000  # noqa: SLF001
+        assert handler._restore_concurrent_bytes == 1_000_000_000  # noqa: SLF001
+
+
 def test_params_only_checkpoint_rejects_resume(tmp_path: Path):
     with pytest.raises(ValueError, match="cannot resume"):
         checkpoints.initialize_checkpoint_dir(

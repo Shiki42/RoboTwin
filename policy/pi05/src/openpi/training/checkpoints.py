@@ -15,15 +15,24 @@ import openpi.shared.normalize as _normalize
 import openpi.training.data_loader as _data_loader
 import openpi.training.utils as training_utils
 
+_CHECKPOINT_CONCURRENT_GB = 1
+
+
+def _pytree_checkpoint_handler() -> ocp.PyTreeCheckpointHandler:
+    return ocp.PyTreeCheckpointHandler(
+        save_concurrent_gb=_CHECKPOINT_CONCURRENT_GB,
+        restore_concurrent_gb=_CHECKPOINT_CONCURRENT_GB,
+    )
+
 
 def _checkpoint_item_handlers(*, params_only: bool) -> dict:
     handlers = {
         "assets": CallbackHandler(),
-        "params": ocp.PyTreeCheckpointHandler(),
+        "params": _pytree_checkpoint_handler(),
     }
     if not params_only:
-        handlers["train_state"] = ocp.PyTreeCheckpointHandler()
-        handlers["data_loader"] = ocp.PyTreeCheckpointHandler()
+        handlers["train_state"] = _pytree_checkpoint_handler()
+        handlers["data_loader"] = _pytree_checkpoint_handler()
     return handlers
 
 
