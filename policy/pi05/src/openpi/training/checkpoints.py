@@ -8,6 +8,7 @@ from typing import Protocol
 
 from etils import epath
 import jax
+import numpy as np
 import orbax.checkpoint as ocp
 
 from openpi.shared import array_typing as at
@@ -15,13 +16,41 @@ import openpi.shared.normalize as _normalize
 import openpi.training.data_loader as _data_loader
 import openpi.training.utils as training_utils
 
-_CHECKPOINT_CONCURRENT_GB = 1
+_CHECKPOINT_CONCURRENT_GB = 4
+
+
+class _SequentialArrayHandler(ocp.type_handlers.ArrayHandler):
+    """Bound device-to-host checkpoint transfers to one array at a time."""
+
+    async def serialize(self, values, infos, args=None):
+        commit_futures = []
+        for index, (value, info) in enumerate(zip(values, infos, strict=True)):
+            value_args = None if args is None else [args[index]]
+            futures = await super().serialize([value], [info], value_args)
+            for commit_future in futures:
+                await asyncio.to_thread(commit_future.result)
+            commit_futures.extend(futures)
+        return commit_futures
+
+
+def _type_handler_registry() -> ocp.type_handlers.TypeHandlerRegistry:
+    handlers = ocp.type_handlers
+    return handlers.create_type_handler_registry(
+        (int, handlers.ScalarHandler()),
+        (float, handlers.ScalarHandler()),
+        (bytes, handlers.ScalarHandler()),
+        (np.number, handlers.ScalarHandler()),
+        (np.ndarray, handlers.NumpyHandler()),
+        (jax.Array, _SequentialArrayHandler()),
+        (str, handlers.StringHandler()),
+    )
 
 
 def _pytree_checkpoint_handler() -> ocp.PyTreeCheckpointHandler:
     return ocp.PyTreeCheckpointHandler(
         save_concurrent_gb=_CHECKPOINT_CONCURRENT_GB,
         restore_concurrent_gb=_CHECKPOINT_CONCURRENT_GB,
+        type_handler_registry=_type_handler_registry(),
     )
 
 

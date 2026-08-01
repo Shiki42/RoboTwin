@@ -2,6 +2,8 @@ import asyncio
 from pathlib import Path
 
 from etils import epath
+import jax
+import orbax.checkpoint as ocp
 import pytest
 
 from openpi.training import checkpoints
@@ -22,8 +24,37 @@ def test_checkpoint_pytree_handlers_limit_host_transfer_concurrency():
 
     for name in ("params", "train_state", "data_loader"):
         handler = handlers[name]
-        assert handler._save_concurrent_bytes == 1_000_000_000  # noqa: SLF001
-        assert handler._restore_concurrent_bytes == 1_000_000_000  # noqa: SLF001
+        assert handler._save_concurrent_bytes == 4_000_000_000  # noqa: SLF001
+        assert handler._restore_concurrent_bytes == 4_000_000_000  # noqa: SLF001
+
+
+def test_checkpoint_pytree_handlers_use_sequential_array_transfers():
+    handler = checkpoints._pytree_checkpoint_handler()  # noqa: SLF001
+    array_handler = handler._type_handler_registry.get(jax.Array)  # noqa: SLF001
+
+    assert isinstance(array_handler, checkpoints._SequentialArrayHandler)  # noqa: SLF001
+
+
+def test_sequential_array_handler_waits_before_next_transfer(monkeypatch):
+    events = []
+
+    class CompletedFuture:
+        def result(self):
+            events.append("wait")
+
+    async def fake_serialize(self, values, infos, args=None):
+        del self, infos, args
+        events.append(("serialize", values[0]))
+        return [CompletedFuture()]
+
+    monkeypatch.setattr(ocp.type_handlers.ArrayHandler, "serialize", fake_serialize)
+    values = [object(), object()]
+    result = asyncio.run(
+        checkpoints._SequentialArrayHandler().serialize(values, [object(), object()], [object(), object()])  # noqa: SLF001
+    )
+
+    assert len(result) == 2
+    assert events == [("serialize", values[0]), "wait", ("serialize", values[1]), "wait"]
 
 
 def test_params_only_checkpoint_rejects_resume(tmp_path: Path):
