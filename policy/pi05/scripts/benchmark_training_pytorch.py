@@ -29,6 +29,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--assets-base-dir", type=pathlib.Path, required=True)
     parser.add_argument("--output", type=pathlib.Path, required=True)
     parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument("--gradient-accumulation-steps", type=int, default=1)
     parser.add_argument("--warmup-steps", type=int, default=5)
     parser.add_argument("--measured-steps", type=int, default=100)
     parser.add_argument("--seed", type=int, default=87431)
@@ -60,6 +61,8 @@ def _parse_args() -> argparse.Namespace:
 def _validate_args(args: argparse.Namespace) -> None:
     if args.warmup_steps < 0 or args.measured_steps < 1:
         raise ValueError("benchmark requires non-negative warmup and positive measured steps")
+    if args.gradient_accumulation_steps < 1:
+        raise ValueError("gradient accumulation steps must be positive")
     if args.num_workers < 0:
         raise ValueError("number of workers must be non-negative")
     if args.prefetch_factor < 1:
@@ -73,6 +76,7 @@ def _build_config(args: argparse.Namespace, assets_base_dir: str) -> _config.Tra
         _config.get_config(args.config_name),
         assets_base_dir=assets_base_dir,
         batch_size=args.batch_size,
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
         num_workers=args.num_workers,
         prefetch_factor=args.prefetch_factor,
         persistent_workers=args.persistent_workers,
@@ -94,19 +98,25 @@ def _step(
     step: int,
     *,
     record_batch_sha256: bool,
+    ema_state: dict[str, torch.Tensor] | None,
 ) -> tuple[dict[str, float | int | str], str | None]:
     wall_started = time.perf_counter()
-    data_started = time.perf_counter()
-    observation, actions = next(iterator)
-    data_wait_ms = (time.perf_counter() - data_started) * 1000
-    batch_hash = _performance.tree_sha256((observation, actions)) if record_batch_sha256 else None
-
+    cpu_batches = []
+    data_wait_ms = 0.0
+    for _ in range(config.gradient_accumulation_steps):
+        data_started = time.perf_counter()
+        cpu_batches.append(next(iterator))
+        data_wait_ms += (time.perf_counter() - data_started) * 1000
+    batch_hash = _performance.tree_sha256(cpu_batches) if record_batch_sha256 else None
     timer = _performance.CudaStageTimer()
-    timer.start("h2d")
-    observation = pytorch_training.move_to_device(observation, device, non_blocking=True)
-    actions = actions.to(device=device, dtype=torch.float32, non_blocking=True)
-    timer.end("h2d")
-    metrics = _trainer.train_step(model, optimizer, observation, actions, config, step - 1, timer)
+    batches = []
+    for cpu_observation, cpu_actions in cpu_batches:
+        timer.start("h2d")
+        observation = pytorch_training.move_to_device(cpu_observation, device, non_blocking=True)
+        actions = cpu_actions.to(device=device, dtype=torch.float32, non_blocking=True)
+        timer.end("h2d")
+        batches.append((observation, actions))
+    metrics = _trainer.train_step(model, optimizer, batches, config, step - 1, timer, ema_state)
     cuda_timings = timer.resolve_ms()
     row: dict[str, float | int | str] = {
         "step": step,
@@ -139,7 +149,7 @@ def main() -> None:
         config,
         framework="pytorch",
         shuffle=True,
-        num_batches=total_steps,
+        num_batches=total_steps * config.gradient_accumulation_steps,
     )
 
     initialization_started = time.perf_counter()
@@ -148,6 +158,7 @@ def main() -> None:
     base = _trainer.require_run_receipts(config)
     _trainer.initialize_pretrained(model, base)
     initialization_s = time.perf_counter() - initialization_started
+    ema_state = pytorch_training.initialize_ema(model) if config.ema_decay is not None else None
     attention_backends = _model_benchmark.attention_implementations(model)
 
     compile_registration_started = time.perf_counter()
@@ -181,6 +192,7 @@ def main() -> None:
                 device,
                 step,
                 record_batch_sha256=args.record_batch_sha256,
+                ema_state=ema_state,
             )
             if first_step_s is None:
                 first_step_s = float(row["step_total_ms"]) / 1000

@@ -19,6 +19,43 @@ def test_resolve_benchmark_assets_base_dir_requires_an_existing_directory(tmp_pa
         performance.resolve_benchmark_assets_base_dir(file_path)
 
 
+def test_cuda_stage_timer_sums_repeated_accumulation_stages(monkeypatch):
+    class FakeEvent:
+        next_id = 0
+
+        def __init__(self, *, enable_timing):
+            assert enable_timing is True
+            self.event_id = FakeEvent.next_id
+            FakeEvent.next_id += 1
+            self.synchronized = False
+
+        def record(self):
+            return None
+
+        def synchronize(self):
+            self.synchronized = True
+
+        def elapsed_time(self, end):
+            return float(end.event_id - self.event_id)
+
+    monkeypatch.setattr(performance.torch.cuda, "Event", FakeEvent)
+    timer = performance.CudaStageTimer()
+    for stage in ("h2d", "forward", "backward"):
+        timer.start(stage)
+        timer.end(stage)
+        timer.start(stage)
+        timer.end(stage)
+    timer.start("optimizer")
+    timer.end("optimizer")
+
+    assert timer.resolve_ms() == {
+        "h2d_ms": 2.0,
+        "forward_ms": 2.0,
+        "backward_ms": 2.0,
+        "optimizer_ms": 1.0,
+    }
+
+
 def test_timing_receipt_keeps_raw_warmup_and_summarizes_measured(tmp_path):
     path = tmp_path / "timings.jsonl"
     receipt = performance.TimingReceipt(path, warmup_steps=1, metadata={"batch_size": 16, "images_per_sample": 3})

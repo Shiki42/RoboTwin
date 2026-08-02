@@ -124,6 +124,34 @@ def _checkpoint_model(model: nn.Module) -> nn.Module:
     return model
 
 
+def initialize_ema(model: nn.Module) -> dict[str, torch.Tensor]:
+    return {
+        name: parameter.detach().to(dtype=torch.float32).clone()
+        for name, parameter in _checkpoint_model(model).named_parameters()
+    }
+
+
+@torch.no_grad()
+def update_ema(
+    ema_state: Mapping[str, torch.Tensor],
+    model: nn.Module,
+    decay: float,
+) -> None:
+    if not 0.0 < decay < 1.0:
+        raise ValueError("EMA decay must be between zero and one")
+    parameters = dict(_checkpoint_model(model).named_parameters())
+    if parameters.keys() != ema_state.keys():
+        raise ValueError("EMA state does not match model parameters")
+    for name, parameter in parameters.items():
+        ema_state[name].mul_(decay).add_(parameter.detach(), alpha=1.0 - decay)
+
+
+def _load_model_file(model: nn.Module, path: pathlib.Path, device: torch.device) -> None:
+    missing, unexpected = safetensors.torch.load_model(model, path, strict=True, device=str(device))
+    if missing or unexpected:
+        raise ValueError(f"checkpoint state mismatch: missing={missing}, unexpected={unexpected}")
+
+
 def save_checkpoint(
     model: nn.Module,
     optimizer: torch.optim.Optimizer,
@@ -132,6 +160,7 @@ def save_checkpoint(
     checkpoint_root: pathlib.Path,
     metadata: Mapping[str, Any],
     extra_files: Mapping[pathlib.Path, str | bytes] | None = None,
+    ema_state: Mapping[str, torch.Tensor] | None = None,
 ) -> pathlib.Path:
     if global_step < 1:
         raise ValueError("global_step must be positive")
@@ -146,10 +175,28 @@ def save_checkpoint(
     temporary_dir.mkdir()
 
     try:
-        safetensors.torch.save_model(
-            _checkpoint_model(model),
-            temporary_dir / "model.safetensors",
-        )
+        checkpoint_model = _checkpoint_model(model)
+        model_path = temporary_dir / "model.safetensors"
+        if ema_state is None:
+            safetensors.torch.save_model(checkpoint_model, model_path)
+        else:
+            parameters = dict(checkpoint_model.named_parameters())
+            if parameters.keys() != ema_state.keys():
+                raise ValueError("EMA state does not match model parameters")
+            training_model_path = temporary_dir / "training_model.safetensors"
+            safetensors.torch.save_model(checkpoint_model, training_model_path)
+            try:
+                with torch.no_grad():
+                    for name, parameter in parameters.items():
+                        parameter.copy_(ema_state[name])
+                safetensors.torch.save_model(checkpoint_model, model_path)
+            finally:
+                device = next(checkpoint_model.parameters()).device
+                _load_model_file(checkpoint_model, training_model_path, device)
+            safetensors.torch.save_file(
+                dict(ema_state),
+                temporary_dir / "ema_state.safetensors",
+            )
         torch.save(
             {
                 "global_step": global_step,
@@ -206,23 +253,25 @@ def load_checkpoint(
     checkpoint: pathlib.Path,
     *,
     device: torch.device,
-) -> tuple[int, dict[str, Any]]:
+    load_ema: bool = False,
+) -> tuple[int, dict[str, Any], dict[str, torch.Tensor] | None]:
     checkpoint = pathlib.Path(checkpoint)
     if checkpoint.name.isdigit() is False:
         checkpoint = latest_checkpoint(checkpoint)
-    model_path = checkpoint / "model.safetensors"
+    model_path = checkpoint / ("training_model.safetensors" if load_ema else "model.safetensors")
     state_path = checkpoint / "training_state.pt"
     if not model_path.is_file() or not state_path.is_file():
         raise FileNotFoundError(f"incomplete checkpoint: {checkpoint}")
-    missing, unexpected = safetensors.torch.load_model(
-        _checkpoint_model(model),
-        model_path,
-        strict=True,
-        device=str(device),
-    )
-    if missing or unexpected:
-        raise ValueError(f"checkpoint state mismatch: missing={missing}, unexpected={unexpected}")
+    _load_model_file(_checkpoint_model(model), model_path, device)
     state = torch.load(state_path, map_location=device, weights_only=False)
     optimizer.load_state_dict(state["optimizer"])
     restore_rng_state(state["rng"])
-    return int(state["global_step"]), dict(state["metadata"])
+    ema_state = None
+    if load_ema:
+        ema_path = checkpoint / "ema_state.safetensors"
+        if not ema_path.is_file():
+            raise FileNotFoundError(f"incomplete EMA checkpoint: {checkpoint}")
+        ema_state = safetensors.torch.load_file(ema_path, device=str(device))
+        if ema_state.keys() != dict(_checkpoint_model(model).named_parameters()).keys():
+            raise ValueError("EMA checkpoint does not match model parameters")
+    return int(state["global_step"]), dict(state["metadata"]), ema_state

@@ -94,7 +94,7 @@ def test_checkpoint_round_trip_restores_model_optimizer_step_and_rng(tmp_path):
 
     restored_model = nn.Linear(3, 2)
     restored_optimizer = torch.optim.AdamW(restored_model.parameters(), lr=9e-4)
-    step, metadata = pytorch_training.load_checkpoint(
+    step, metadata, ema_state = pytorch_training.load_checkpoint(
         restored_model,
         restored_optimizer,
         checkpoint,
@@ -103,6 +103,7 @@ def test_checkpoint_round_trip_restores_model_optimizer_step_and_rng(tmp_path):
 
     assert step == 20
     assert metadata == {"run": "smoke"}
+    assert ema_state is None
     assert (checkpoint / "assets/task/norm_stats.json").read_text() == "{}"
     for expected, actual in zip(model.parameters(), restored_model.parameters(), strict=True):
         assert torch.equal(expected, actual)
@@ -110,6 +111,51 @@ def test_checkpoint_round_trip_restores_model_optimizer_step_and_rng(tmp_path):
     assert random.random() == expected_python
     assert np.random.random() == expected_numpy
     assert torch.equal(torch.rand(3), expected_torch)
+
+
+def test_ema_checkpoint_preserves_training_and_inference_weights(tmp_path):
+    model = nn.Linear(2, 1, bias=False)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    ema_state = pytorch_training.initialize_ema(model)
+    initial = model.weight.detach().clone()
+    with torch.no_grad():
+        model.weight.add_(2.0)
+    pytorch_training.update_ema(ema_state, model, decay=0.5)
+    expected_training = model.weight.detach().clone()
+    expected_ema = initial + 1.0
+
+    checkpoint = pytorch_training.save_checkpoint(
+        model,
+        optimizer,
+        global_step=3,
+        checkpoint_root=tmp_path,
+        metadata={"run": "ema"},
+        ema_state=ema_state,
+    )
+
+    assert torch.equal(model.weight, expected_training)
+    assert (checkpoint / "model.safetensors").is_file()
+    assert (checkpoint / "training_model.safetensors").is_file()
+    assert (checkpoint / "ema_state.safetensors").is_file()
+    inference_model = nn.Linear(2, 1, bias=False)
+    safetensors.torch.load_model(inference_model, checkpoint / "model.safetensors", strict=True)
+    assert torch.equal(inference_model.weight, expected_ema)
+
+    restored_model = nn.Linear(2, 1, bias=False)
+    restored_optimizer = torch.optim.AdamW(restored_model.parameters(), lr=1e-3)
+    step, metadata, restored_ema = pytorch_training.load_checkpoint(
+        restored_model,
+        restored_optimizer,
+        checkpoint,
+        device=torch.device("cpu"),
+        load_ema=True,
+    )
+
+    assert step == 3
+    assert metadata == {"run": "ema"}
+    assert torch.equal(restored_model.weight, expected_training)
+    assert restored_ema is not None
+    assert torch.equal(restored_ema["weight"], expected_ema)
 
 
 def test_save_checkpoint_is_atomic_and_rejects_duplicate_step(tmp_path):

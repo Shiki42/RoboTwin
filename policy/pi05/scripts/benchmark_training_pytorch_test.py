@@ -37,6 +37,7 @@ def test_parse_data_pipeline_options(monkeypatch, tmp_path):
     assert args.persistent_workers is True
     assert args.pin_memory is True
     assert args.record_batch_sha256 is True
+    assert args.gradient_accumulation_steps == 1
 
 
 @pytest.mark.parametrize(
@@ -46,6 +47,7 @@ def test_parse_data_pipeline_options(monkeypatch, tmp_path):
         ({"measured_steps": 0}, "positive measured steps"),
         ({"num_workers": -1}, "non-negative"),
         ({"prefetch_factor": 0}, "positive"),
+        ({"gradient_accumulation_steps": 0}, "gradient accumulation"),
         ({"num_workers": 0, "persistent_workers": True}, "at least one worker"),
     ],
 )
@@ -56,6 +58,7 @@ def test_validate_args_rejects_invalid_settings(updates, message):
         "num_workers": 2,
         "prefetch_factor": 2,
         "persistent_workers": True,
+        "gradient_accumulation_steps": 1,
     }
     values.update(updates)
 

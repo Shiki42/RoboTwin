@@ -43,6 +43,8 @@ def _tiny_config():
     return SimpleNamespace(
         lr_schedule=SimpleNamespace(warmup_steps=0, peak_lr=0.1, decay_steps=10, decay_lr=0.01),
         optimizer=SimpleNamespace(clip_gradient_norm=1.0),
+        gradient_accumulation_steps=1,
+        ema_decay=None,
     )
 
 
@@ -53,8 +55,7 @@ def test_train_step_updates_torch_model_and_reports_finite_metrics():
     metrics = train_pytorch.train_step(
         model,
         optimizer,
-        observation=None,
-        actions=torch.ones(2, 3),
+        batches=[(None, torch.ones(2, 3))],
         config=_tiny_config(),
         global_step=0,
     )
@@ -62,6 +63,39 @@ def test_train_step_updates_torch_model_and_reports_finite_metrics():
     assert model.weight.detach() > 0
     assert metrics["loss"] == pytest.approx(1.0)
     assert np.isfinite(metrics["gradient_norm"])
+
+
+def test_train_step_accumulation_matches_one_global_batch():
+    full_batch_model = TinyPolicy()
+    accumulated_model = TinyPolicy()
+    full_batch_optimizer = torch.optim.SGD(full_batch_model.parameters(), lr=0.1)
+    accumulated_optimizer = torch.optim.SGD(accumulated_model.parameters(), lr=0.1)
+    first = torch.tensor([[1.0, 2.0]])
+    second = torch.tensor([[3.0, 4.0]])
+    full_config = _tiny_config()
+    full_config.optimizer = SimpleNamespace(clip_gradient_norm=100.0)
+    accumulated_config = _tiny_config()
+    accumulated_config.optimizer = SimpleNamespace(clip_gradient_norm=100.0)
+    accumulated_config.gradient_accumulation_steps = 2
+
+    full_metrics = train_pytorch.train_step(
+        full_batch_model,
+        full_batch_optimizer,
+        [(None, torch.cat((first, second), dim=0))],
+        full_config,
+        global_step=0,
+    )
+    accumulated_metrics = train_pytorch.train_step(
+        accumulated_model,
+        accumulated_optimizer,
+        [(None, first), (None, second)],
+        accumulated_config,
+        global_step=0,
+    )
+
+    assert torch.allclose(full_batch_model.weight, accumulated_model.weight)
+    assert accumulated_metrics["loss"] == pytest.approx(full_metrics["loss"])
+    assert accumulated_metrics["gradient_norm"] == pytest.approx(full_metrics["gradient_norm"])
 
 
 def test_action_expert_scope_freezes_only_pretrained_paligemma():
@@ -73,14 +107,8 @@ def test_action_expert_scope_freezes_only_pretrained_paligemma():
     )
 
     assert trainable_names
-    assert not any(
-        name.startswith("paligemma_with_expert.paligemma.")
-        for name in trainable_names
-    )
-    assert all(
-        parameter.requires_grad == (name in trainable_names)
-        for name, parameter in model.named_parameters()
-    )
+    assert not any(name.startswith("paligemma_with_expert.paligemma.") for name in trainable_names)
+    assert all(parameter.requires_grad == (name in trainable_names) for name, parameter in model.named_parameters())
     for prefix in (
         "paligemma_with_expert.gemma_expert.",
         "action_in_proj.",
@@ -100,6 +128,10 @@ def test_resume_signature_allows_only_training_budget_extension(monkeypatch):
     extended = dataclasses.replace(config, num_train_steps=config.num_train_steps + 1)
 
     assert train_pytorch.config_signature(config) == train_pytorch.config_signature(extended)
+    accumulated = dataclasses.replace(config, gradient_accumulation_steps=2)
+    assert train_pytorch.config_signature(accumulated)["batch_size"] == 32
+    assert train_pytorch.config_signature(accumulated)["microbatch_size"] == 16
+    assert train_pytorch.config_signature(config) != train_pytorch.config_signature(accumulated)
     eager_attention = dataclasses.replace(config, pytorch_attention_implementation="eager")
     assert train_pytorch.config_signature(eager_attention)["pytorch_attention_implementation"] == "eager"
     assert train_pytorch.config_signature(config) != train_pytorch.config_signature(eager_attention)

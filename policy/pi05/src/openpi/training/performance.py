@@ -28,20 +28,27 @@ class CudaStageTimer:
     """Record ordered CUDA stages and synchronize once when resolving them."""
 
     def __init__(self) -> None:
-        self._events = {
-            name: (torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True))
-            for name in CUDA_STAGE_NAMES
-        }
+        self._events = {name: [] for name in CUDA_STAGE_NAMES}
 
     def start(self, name: str) -> None:
-        self._events[name][0].record()
+        start = torch.cuda.Event(enable_timing=True)
+        end = torch.cuda.Event(enable_timing=True)
+        start.record()
+        self._events[name].append((start, end))
 
     def end(self, name: str) -> None:
-        self._events[name][1].record()
+        if not self._events[name]:
+            raise RuntimeError(f"CUDA stage ended before it started: {name}")
+        self._events[name][-1][1].record()
 
     def resolve_ms(self) -> dict[str, float]:
-        self._events[CUDA_STAGE_NAMES[-1]][1].synchronize()
-        return {f"{name}_ms": start.elapsed_time(end) for name, (start, end) in self._events.items()}
+        optimizer_events = self._events[CUDA_STAGE_NAMES[-1]]
+        if not optimizer_events:
+            raise RuntimeError("optimizer CUDA stage was not recorded")
+        optimizer_events[-1][1].synchronize()
+        return {
+            f"{name}_ms": sum(start.elapsed_time(end) for start, end in events) for name, events in self._events.items()
+        }
 
 
 class TimingReceipt:

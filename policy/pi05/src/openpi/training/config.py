@@ -858,6 +858,7 @@ _CONFIGS = [
     skillvla_config.create_adaptation_variant(_putcab_anchor_adapt_config(
         "skillvla_adaptation_base", "none", "parallelvla-skillvla-probe")),
     official_clean_config.create_config(),
+    official_clean_config.create_pytorch_config(),
     _putcab_jax_config("pi05_putcab_casm_visual_phase_gate_jax_full", "visual_phase_gate"),
     _putcab_jax_config("pi05_putcab_jax_matched_full", "none"),
     _putcab_pytorch_config("pi05_putcab_pytorch_matched_full", "none"),

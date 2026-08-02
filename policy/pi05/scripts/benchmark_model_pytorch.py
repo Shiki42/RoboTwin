@@ -29,6 +29,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--assets-base-dir", type=pathlib.Path, required=True)
     parser.add_argument("--output", type=pathlib.Path, required=True)
     parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument("--gradient-accumulation-steps", type=int, default=1)
     parser.add_argument("--warmup-steps", type=int, default=5)
     parser.add_argument("--measured-steps", type=int, default=100)
     parser.add_argument("--seed", type=int, default=87431)
@@ -104,6 +105,7 @@ def main() -> None:
         _config.get_config(args.config_name),
         assets_base_dir=assets_base_dir,
         batch_size=args.batch_size,
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
         pytorch_compile_mode=args.compile_mode,
         pytorch_attention_implementation=args.attention_implementation,
         pytorch_gradient_checkpointing=args.gradient_checkpointing,
@@ -129,6 +131,7 @@ def main() -> None:
     optimizer = _trainer.build_optimizer(config, model)
     base = _trainer.require_run_receipts(config)
     _trainer.initialize_pretrained(model, base)
+    ema_state = pytorch_training.initialize_ema(model) if config.ema_decay is not None else None
     if args.channels_last:
         model.to(memory_format=torch.channels_last)
     initialization_s = time.perf_counter() - initialization_started
@@ -165,7 +168,15 @@ def main() -> None:
             end_event = torch.cuda.Event(enable_timing=True)
             wall_started = time.perf_counter()
             start_event.record()
-            metrics = _trainer.train_step(model, optimizer, observation, actions, config, step - 1)
+            batches = [(observation, actions)] * config.gradient_accumulation_steps
+            metrics = _trainer.train_step(
+                model,
+                optimizer,
+                batches,
+                config,
+                step - 1,
+                ema_state=ema_state,
+            )
             end_event.record()
             end_event.synchronize()
             wall_s = time.perf_counter() - wall_started

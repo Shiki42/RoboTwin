@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 import dataclasses
 import json
 import logging
@@ -40,7 +41,11 @@ def config_signature(config: _config.TrainConfig) -> dict[str, Any]:
     model = config.model
     return {
         "config_name": config.name,
-        "batch_size": config.batch_size,
+        "batch_size": config.batch_size * config.gradient_accumulation_steps,
+        "microbatch_size": config.batch_size,
+        "gradient_accumulation_steps": config.gradient_accumulation_steps,
+        "pytorch_training_precision": config.pytorch_training_precision,
+        "ema_decay": config.ema_decay,
         "num_workers": config.num_workers,
         "prefetch_factor": config.prefetch_factor,
         "persistent_workers": config.persistent_workers,
@@ -202,12 +207,14 @@ def _append_metrics(path: pathlib.Path, metrics: dict[str, float | int]) -> None
 def train_step(
     model: pi0_pytorch.PI0Pytorch,
     optimizer: torch.optim.AdamW,
-    observation,
-    actions: torch.Tensor,
+    batches: Sequence[tuple[Any, torch.Tensor]],
     config: _config.TrainConfig,
     global_step: int,
     timer: _performance.CudaStageTimer | None = None,
+    ema_state: dict[str, torch.Tensor] | None = None,
 ) -> dict[str, float]:
+    if len(batches) != config.gradient_accumulation_steps:
+        raise ValueError("batch count must match gradient accumulation steps")
     lr = pytorch_training.learning_rate(
         global_step,
         warmup_steps=config.lr_schedule.warmup_steps,
@@ -218,22 +225,31 @@ def train_step(
     for group in optimizer.param_groups:
         group["lr"] = lr
 
+    optimizer.zero_grad(set_to_none=True)
+    metric_sums: dict[str, float] = {}
+    accumulation_steps = len(batches)
+    for observation, actions in batches:
+        if timer is not None:
+            timer.start("forward")
+        if model.casm_mode == "visual_phase_gate":
+            losses, auxiliary = model(observation, actions, return_aux=True)
+        else:
+            losses = model(observation, actions)
+            auxiliary = {}
+        loss = losses.mean()
+        if not torch.isfinite(loss):
+            raise FloatingPointError(f"non-finite loss at step {global_step}: {loss}")
+        if timer is not None:
+            timer.end("forward")
+            timer.start("backward")
+        (loss / accumulation_steps).backward()
+        if timer is not None:
+            timer.end("backward")
+        metric_sums["loss"] = metric_sums.get("loss", 0.0) + float(loss.detach().cpu())
+        for name, value in auxiliary.items():
+            metric_sums[name] = metric_sums.get(name, 0.0) + float(value.detach().cpu())
+
     if timer is not None:
-        timer.start("forward")
-    if model.casm_mode == "visual_phase_gate":
-        losses, auxiliary = model(observation, actions, return_aux=True)
-    else:
-        losses = model(observation, actions)
-        auxiliary = {}
-    loss = losses.mean()
-    if not torch.isfinite(loss):
-        raise FloatingPointError(f"non-finite loss at step {global_step}: {loss}")
-    if timer is not None:
-        timer.end("forward")
-        timer.start("backward")
-    loss.backward()
-    if timer is not None:
-        timer.end("backward")
         timer.start("optimizer")
     gradient_norm = torch.nn.utils.clip_grad_norm_(
         model.parameters(),
@@ -242,14 +258,19 @@ def train_step(
     )
     optimizer.step()
     optimizer.zero_grad(set_to_none=True)
+    if config.ema_decay is not None:
+        if ema_state is None:
+            raise ValueError("EMA state is required when EMA decay is configured")
+        pytorch_training.update_ema(ema_state, model, config.ema_decay)
+    elif ema_state is not None:
+        raise ValueError("EMA state was provided without an EMA decay")
     if timer is not None:
         timer.end("optimizer")
     metrics = {
-        "loss": float(loss.detach().cpu()),
         "learning_rate": lr,
         "gradient_norm": float(gradient_norm.detach().cpu()),
     }
-    metrics.update({name: float(value.detach().cpu()) for name, value in auxiliary.items()})
+    metrics.update({name: value / accumulation_steps for name, value in metric_sums.items()})
     return metrics
 
 
@@ -286,20 +307,24 @@ def train(config: _config.TrainConfig) -> None:
     model = build_model(config, device)
     optimizer = build_optimizer(config, model)
 
+    ema_state = None
     global_step = 0
     resume_metadata: dict[str, Any] = {}
     if config.resume:
-        global_step, resume_metadata = pytorch_training.load_checkpoint(
+        global_step, resume_metadata, ema_state = pytorch_training.load_checkpoint(
             model,
             optimizer,
             checkpoint_root,
             device=device,
+            load_ema=config.ema_decay is not None,
         )
         if resume_metadata["config_signature"] != manifest:
             raise ValueError("resume config signature does not match checkpoint")
         loader.load_state_dict(resume_metadata["data_loader_state"])
     else:
         initialize_pretrained(model, base)
+        if config.ema_decay is not None:
+            ema_state = pytorch_training.initialize_ema(model)
     if config.pytorch_compile_mode != "none":
         model.compile(mode=config.pytorch_compile_mode)
 
@@ -317,22 +342,28 @@ def train(config: _config.TrainConfig) -> None:
             warmup_steps=int(os.environ.get("PARALLELVLA_PERFORMANCE_WARMUP_STEPS", "5")),
             metadata={**manifest, "images_per_sample": 3, "record_batch_sha256": record_batch_sha256},
         )
-    cuda_timer = _performance.CudaStageTimer() if performance_receipt is not None else None
 
     try:
         while global_step < config.num_train_steps:
             step_started = time.perf_counter()
-            data_started = time.perf_counter()
-            observation, actions = next(iterator)
-            data_wait_ms = (time.perf_counter() - data_started) * 1000
-            batch_sha256 = _performance.tree_sha256((observation, actions)) if record_batch_sha256 else None
-            if cuda_timer is not None:
-                cuda_timer.start("h2d")
-            observation = pytorch_training.move_to_device(observation, device, non_blocking=True)
-            actions = actions.to(device=device, dtype=torch.float32, non_blocking=True)
-            if cuda_timer is not None:
-                cuda_timer.end("h2d")
-            metrics = train_step(model, optimizer, observation, actions, config, global_step, cuda_timer)
+            cpu_batches = []
+            data_wait_ms = 0.0
+            for _ in range(config.gradient_accumulation_steps):
+                data_started = time.perf_counter()
+                cpu_batches.append(next(iterator))
+                data_wait_ms += (time.perf_counter() - data_started) * 1000
+            batch_sha256 = _performance.tree_sha256(cpu_batches) if record_batch_sha256 else None
+            cuda_timer = _performance.CudaStageTimer() if performance_receipt is not None else None
+            batches = []
+            for cpu_observation, cpu_actions in cpu_batches:
+                if cuda_timer is not None:
+                    cuda_timer.start("h2d")
+                observation = pytorch_training.move_to_device(cpu_observation, device, non_blocking=True)
+                actions = cpu_actions.to(device=device, dtype=torch.float32, non_blocking=True)
+                if cuda_timer is not None:
+                    cuda_timer.end("h2d")
+                batches.append((observation, actions))
+            metrics = train_step(model, optimizer, batches, config, global_step, cuda_timer, ema_state)
             cuda_timings = cuda_timer.resolve_ms() if cuda_timer is not None else {}
             global_step += 1
             metrics["step"] = global_step
@@ -369,6 +400,7 @@ def train(config: _config.TrainConfig) -> None:
                     checkpoint_root=checkpoint_root,
                     metadata=metadata,
                     extra_files=extra_files,
+                    ema_state=ema_state,
                 )
                 pytorch_training.prune_checkpoints(
                     checkpoint_root,
