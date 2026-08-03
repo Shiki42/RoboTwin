@@ -146,6 +146,7 @@ def config_signature(config: _config.TrainConfig) -> dict[str, Any]:
         "microbatch_size": config.batch_size,
         "gradient_accumulation_steps": config.gradient_accumulation_steps,
         "pytorch_training_precision": config.pytorch_training_precision,
+        "pytorch_compute_precision": config.pytorch_compute_precision,
         "ema_decay": config.ema_decay,
         "num_workers": config.num_workers,
         "validation_num_workers": config.validation_num_workers,
@@ -202,6 +203,8 @@ def _prepare_checkpoint_root(config: _config.TrainConfig) -> pathlib.Path:
 def build_model(config: _config.TrainConfig, device: torch.device) -> pi0_pytorch.PI0Pytorch:
     if not isinstance(config.model, pi0_config.Pi0Config):
         raise TypeError("PyTorch trainer requires Pi0Config")
+    if config.pytorch_training_precision != "float32":
+        raise ValueError("PyTorch training requires float32 master parameters")
     model_config = dataclasses.replace(config.model, dtype=config.pytorch_training_precision)
     model = pi0_pytorch.PI0Pytorch(model_config).to(device)
     model.set_attention_implementation(config.pytorch_attention_implementation)
@@ -367,6 +370,23 @@ def _mean_action_loss(losses: torch.Tensor, action_mask: torch.Tensor | None) ->
     return total / weight
 
 
+def forward_losses(
+    model: pi0_pytorch.PI0Pytorch,
+    observation: Any,
+    actions: torch.Tensor,
+    config: _config.TrainConfig,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    use_autocast = config.pytorch_compute_precision == "bfloat16"
+    with torch.autocast(
+        device_type=actions.device.type,
+        dtype=torch.bfloat16,
+        enabled=use_autocast,
+    ):
+        if getattr(model, "casm_mode", "none") == "visual_phase_gate":
+            return model(observation, actions, return_aux=True)
+        return model(observation, actions), {}
+
+
 def train_step(
     model: pi0_pytorch.PI0Pytorch,
     optimizer: torch.optim.AdamW,
@@ -394,12 +414,10 @@ def train_step(
     for observation, actions in batches:
         if timer is not None:
             timer.start("forward")
+        losses, auxiliary = forward_losses(model, observation, actions, config)
         if model.casm_mode == "visual_phase_gate":
-            losses, auxiliary = model(observation, actions, return_aux=True)
             loss = losses.mean()
         else:
-            losses = model(observation, actions)
-            auxiliary = {}
             action_mask = getattr(observation, "action_mask", None)
             if config.pytorch_trainable_scope == "lora" and action_mask is None:
                 raise ValueError("LoRA training requires action_is_pad-derived supervision mask")
@@ -449,6 +467,7 @@ def evaluate_validation_loss(
     device: torch.device,
     *,
     seed: int,
+    config: _config.TrainConfig,
 ) -> dict[str, float | int]:
     rng_state = pytorch_training.capture_rng_state()
     was_training = model.training
@@ -463,7 +482,7 @@ def evaluate_validation_loss(
         for cpu_observation, cpu_actions in loader:
             observation = pytorch_training.move_to_device(cpu_observation, device, non_blocking=True)
             actions = cpu_actions.to(device=device, dtype=torch.float32, non_blocking=True)
-            losses = model(observation, actions)
+            losses, _ = forward_losses(model, observation, actions, config)
             action_mask = getattr(observation, "action_mask", None)
             batch_loss, batch_weight = _action_loss_total(losses, action_mask)
             loss_total += batch_loss
@@ -559,7 +578,13 @@ def train(config: _config.TrainConfig) -> None:
         )
 
     if validation_loader is not None and global_step == 0:
-        validation_metrics = evaluate_validation_loss(model, validation_loader, device, seed=config.seed + 1)
+        validation_metrics = evaluate_validation_loss(
+            model,
+            validation_loader,
+            device,
+            seed=config.seed + 1,
+            config=config,
+        )
         validation_metrics["step"] = 0
         _append_metrics(validation_metrics_path, validation_metrics)
         logger.info("step=0 validation_loss=%.6f", validation_metrics["validation_loss"])
@@ -614,7 +639,13 @@ def train(config: _config.TrainConfig) -> None:
                 global_step % config.validation_interval == 0 or global_step == config.num_train_steps
             )
             if should_validate:
-                validation_metrics = evaluate_validation_loss(model, validation_loader, device, seed=config.seed + 1)
+                validation_metrics = evaluate_validation_loss(
+                    model,
+                    validation_loader,
+                    device,
+                    seed=config.seed + 1,
+                    config=config,
+                )
                 validation_metrics["step"] = global_step
                 _append_metrics(validation_metrics_path, validation_metrics)
                 logger.info("step=%d validation_loss=%.6f", global_step, validation_metrics["validation_loss"])

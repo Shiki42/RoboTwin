@@ -62,6 +62,21 @@ class TinyLoRAScopedPolicy(nn.Module):
         self.time_mlp_out = nn.Linear(2, 2)
 
 
+class TinyPrecisionPolicy(nn.Module):
+    casm_mode = "none"
+
+    def __init__(self):
+        super().__init__()
+        self.linear = nn.Linear(4, 4)
+        self.last_output_dtype = None
+
+    def forward(self, observation, actions):
+        del observation
+        output = self.linear(actions)
+        self.last_output_dtype = output.dtype
+        return output.square()
+
+
 def _tiny_config():
     return SimpleNamespace(
         lr_schedule=SimpleNamespace(warmup_steps=0, peak_lr=0.1, decay_steps=10, decay_lr=0.01),
@@ -69,6 +84,7 @@ def _tiny_config():
         gradient_accumulation_steps=1,
         ema_decay=None,
         pytorch_trainable_scope="all",
+        pytorch_compute_precision="float32",
     )
 
 
@@ -87,6 +103,34 @@ def test_train_step_updates_torch_model_and_reports_finite_metrics():
     assert model.weight.detach() > 0
     assert metrics["loss"] == pytest.approx(1.0)
     assert np.isfinite(metrics["gradient_norm"])
+
+
+def test_bfloat16_compute_keeps_fp32_master_parameters():
+    model = TinyPrecisionPolicy()
+    optimizer = torch.optim.AdamW(model.parameters(), lr=0.1)
+    config = _tiny_config()
+    config.pytorch_compute_precision = "bfloat16"
+
+    metrics = train_pytorch.train_step(
+        model,
+        optimizer,
+        batches=[(None, torch.ones(2, 4))],
+        config=config,
+        global_step=0,
+    )
+
+    assert model.last_output_dtype == torch.bfloat16
+    assert all(parameter.dtype == torch.float32 for parameter in model.parameters())
+    assert np.isfinite(metrics["loss"])
+
+
+def test_build_model_rejects_bfloat16_master_parameters(monkeypatch):
+    config = _config.get_config("pi05_putcab_pytorch_matched_full")
+    config = dataclasses.replace(config, pytorch_training_precision="bfloat16")
+    monkeypatch.setattr(train_pytorch.pi0_pytorch, "PI0Pytorch", TinyPolicy)
+
+    with pytest.raises(ValueError, match="float32 master parameters"):
+        train_pytorch.build_model(config, torch.device("cpu"))
 
 
 def test_train_step_accumulation_matches_one_global_batch():
@@ -190,6 +234,9 @@ def test_resume_signature_allows_only_training_budget_extension(monkeypatch):
     assert train_pytorch.config_signature(accumulated)["batch_size"] == 32
     assert train_pytorch.config_signature(accumulated)["microbatch_size"] == 16
     assert train_pytorch.config_signature(config) != train_pytorch.config_signature(accumulated)
+    fp32_compute = dataclasses.replace(config, pytorch_compute_precision="float32")
+    assert train_pytorch.config_signature(fp32_compute)["pytorch_compute_precision"] == "float32"
+    assert train_pytorch.config_signature(config) != train_pytorch.config_signature(fp32_compute)
     eager_attention = dataclasses.replace(config, pytorch_attention_implementation="eager")
     assert train_pytorch.config_signature(eager_attention)["pytorch_attention_implementation"] == "eager"
     assert train_pytorch.config_signature(config) != train_pytorch.config_signature(eager_attention)
@@ -321,9 +368,22 @@ def test_validation_loss_is_weighted_deterministic_and_restores_rng_state():
     expected = (random.random(), np.random.random(), torch.rand(()))
     pytorch_training.restore_rng_state(rng_state)
 
-    first = train_pytorch.evaluate_validation_loss(model, loader, torch.device("cpu"), seed=999)
+    config = _tiny_config()
+    first = train_pytorch.evaluate_validation_loss(
+        model,
+        loader,
+        torch.device("cpu"),
+        seed=999,
+        config=config,
+    )
     actual = (random.random(), np.random.random(), torch.rand(()))
-    second = train_pytorch.evaluate_validation_loss(model, loader, torch.device("cpu"), seed=999)
+    second = train_pytorch.evaluate_validation_loss(
+        model,
+        loader,
+        torch.device("cpu"),
+        seed=999,
+        config=config,
+    )
 
     assert first["validation_loss"] == pytest.approx(5.0 / 3.0)
     assert first["validation_loss"] == second["validation_loss"]

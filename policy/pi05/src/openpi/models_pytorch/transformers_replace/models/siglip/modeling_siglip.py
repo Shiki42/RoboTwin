@@ -245,9 +245,9 @@ class SiglipVisionEmbeddings(nn.Module):
 
         # always interpolate when tracing to ensure the exported model works for dynamic input shapes
         if not torch.jit.is_tracing() and num_patches == num_positions and height == width:
-            return self.position_embedding(self.position_ids)
+            return self.position_embedding(self.position_ids).float()
 
-        patch_pos_embed = self.position_embedding.weight.unsqueeze(0)
+        patch_pos_embed = self.position_embedding.weight.float().unsqueeze(0)
 
         dim = embeddings.shape[-1]
 
@@ -270,14 +270,22 @@ class SiglipVisionEmbeddings(nn.Module):
 
     def forward(self, pixel_values: torch.FloatTensor, interpolate_pos_encoding=False) -> torch.Tensor:
         _, _, height, width = pixel_values.shape
-        target_dtype = self.patch_embedding.weight.dtype
-        patch_embeds = self.patch_embedding(pixel_values.to(dtype=target_dtype))  # shape = [*, width, grid, grid]
-        embeddings = patch_embeds.flatten(2).transpose(1, 2)
+        with torch.autocast(device_type=pixel_values.device.type, enabled=False):
+            patch_embeds = nn.functional.conv2d(
+                pixel_values.float(),
+                self.patch_embedding.weight.float(),
+                self.patch_embedding.bias.float() if self.patch_embedding.bias is not None else None,
+                stride=self.patch_embedding.stride,
+                padding=self.patch_embedding.padding,
+                dilation=self.patch_embedding.dilation,
+                groups=self.patch_embedding.groups,
+            )
 
+        embeddings = patch_embeds.flatten(2).transpose(1, 2)
         if interpolate_pos_encoding:
             embeddings = embeddings + self.interpolate_pos_encoding(embeddings, height, width)
         else:
-            embeddings = embeddings + self.position_embedding(self.position_ids)
+            embeddings = embeddings + self.position_embedding(self.position_ids).float()
         return embeddings
 
 
@@ -773,10 +781,13 @@ class SiglipVisionTransformer(nn.Module):
         )
 
         hidden_states = self.embeddings(pixel_values, interpolate_pos_encoding=interpolate_pos_encoding)
-        # Convert to bfloat16 if the encoder uses bfloat16
-        if len(self.encoder.layers) > 0 and self.encoder.layers[0].self_attn.q_proj.weight.dtype == torch.bfloat16:
-            hidden_states = hidden_states.to(torch.bfloat16)
-
+        encoder_weight = self.encoder.layers[0].self_attn.q_proj.weight
+        encoder_dtype = (
+            torch.get_autocast_dtype(hidden_states.device.type)
+            if torch.is_autocast_enabled(hidden_states.device.type)
+            else encoder_weight.dtype
+        )
+        hidden_states = hidden_states.to(encoder_dtype)
         encoder_outputs: BaseModelOutput = self.encoder(
             inputs_embeds=hidden_states,
             output_attentions=output_attentions,

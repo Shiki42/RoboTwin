@@ -486,6 +486,7 @@ class TrainConfig:
     pytorch_weight_path: str | None = None
 
     pytorch_training_precision: Literal["bfloat16", "float32"] = "bfloat16"
+    pytorch_compute_precision: Literal["bfloat16", "float32"] = "float32"
     pytorch_attention_implementation: Literal["eager", "sdpa"] = "sdpa"
     pytorch_gradient_checkpointing: bool = True
     pytorch_gradient_checkpointing_scope: Literal["full", "vision"] = "full"
@@ -693,6 +694,8 @@ def _putcab_pytorch_config(name: str, mode: Literal["none", "visual_phase_gate"]
         model=model,
         data=_putcab_casm_data(dataset_repo),
         pytorch_weight_path=os.environ.get("PI05_PYTORCH_BASE"),
+        pytorch_training_precision="float32",
+        pytorch_compute_precision="bfloat16",
         batch_size=16,
         num_workers=2, prefetch_factor=2, persistent_workers=True, pin_memory=True,
         num_train_steps=20_000,

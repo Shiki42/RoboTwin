@@ -15,7 +15,8 @@ def test_robotwin_lora_config_matches_requested_smoke_and_formal_recipe(monkeypa
     assert train_config.model.pi05 is True
     assert train_config.model.paligemma_variant == "gemma_2b_lora"
     assert train_config.model.action_expert_variant == "gemma_300m_lora"
-    assert train_config.pytorch_training_precision == "bfloat16"
+    assert train_config.pytorch_training_precision == "float32"
+    assert train_config.pytorch_compute_precision == "bfloat16"
     assert train_config.pytorch_trainable_scope == "lora"
     assert train_config.batch_size == 32
     assert train_config.gradient_accumulation_steps == 1
@@ -42,7 +43,7 @@ def test_robotwin_lora_config_routes_pad_mask_into_action_supervision():
     assert train_config.data.adapt_to_pi is False
 
 
-def test_robotwin_full_config_uses_fixed_episode_split_and_fast_bf16_recipe(monkeypatch):
+def test_robotwin_full_config_uses_fixed_episode_split_and_mixed_precision_recipe(monkeypatch):
     monkeypatch.setenv("PARALLELVLA_DATASET_REPO", "pi05_scan_object_retime_100")
 
     train, validation, unused = robotwin_lora_config._episode_split()  # noqa: SLF001
@@ -56,18 +57,23 @@ def test_robotwin_full_config_uses_fixed_episode_split_and_fast_bf16_recipe(monk
     assert train_config.data.repo_id == "pi05_scan_object_retime_100"
     assert train_config.model.paligemma_variant == "gemma_2b"
     assert train_config.model.action_expert_variant == "gemma_300m"
-    assert train_config.pytorch_training_precision == "bfloat16"
+    assert train_config.pytorch_training_precision == "float32"
+    assert train_config.pytorch_compute_precision == "bfloat16"
     assert train_config.pytorch_trainable_scope == "all"
     assert train_config.train_episodes == train
     assert train_config.validation_episodes == validation
     assert train_config.validation_interval == 2_000
-    assert train_config.validation_num_workers == 2
-    assert train_config.batch_size == 16
-    assert train_config.gradient_accumulation_steps == 1
-    assert train_config.num_workers == 4
+    assert train_config.validation_num_workers == 0
+    assert train_config.batch_size == 8
+    assert train_config.gradient_accumulation_steps == 2
+    assert train_config.batch_size * train_config.gradient_accumulation_steps == 16
+    assert train_config.num_workers == 0
+    assert train_config.ema_decay is None
+    assert train_config.persistent_workers is False
     assert train_config.save_interval == 10_000
     assert train_config.pytorch_compile_mode == "default"
-    assert train_config.pytorch_gradient_checkpointing is False
+    assert train_config.pytorch_gradient_checkpointing is True
+    assert train_config.pytorch_gradient_checkpointing_scope == "full"
 
 
 @pytest.mark.parametrize(

@@ -14,17 +14,6 @@ from openpi.models_pytorch.gemma_pytorch import PaliGemmaWithExpertModel
 import openpi.models_pytorch.preprocessing_pytorch as _preprocessing
 
 
-def get_safe_dtype(target_dtype, device_type):
-    """Get a safe dtype for the given device type."""
-    if device_type == "cpu":
-        # CPU doesn't support bfloat16, use float32 instead
-        if target_dtype == torch.bfloat16:
-            return torch.float32
-        if target_dtype == torch.float64:
-            return torch.float64
-    return target_dtype
-
-
 def create_sinusoidal_pos_embedding(
     time: torch.tensor, dimension: int, min_period: float, max_period: float, device="cpu"
 ) -> Tensor:
@@ -35,14 +24,12 @@ def create_sinusoidal_pos_embedding(
     if time.ndim != 1:
         raise ValueError("The time tensor is expected to be of shape `(batch_size, )`.")
 
-    dtype = get_safe_dtype(torch.float64, device.type)
-    fraction = torch.linspace(0.0, 1.0, dimension // 2, dtype=dtype, device=device)
+    fraction = torch.linspace(0.0, 1.0, dimension // 2, dtype=torch.float32, device=device)
     period = min_period * (max_period / min_period) ** fraction
 
-    # Compute the outer product
     scaling_factor = 1.0 / period * 2 * math.pi
-    sin_input = scaling_factor[None, :] * time[:, None]
-    return torch.cat([torch.sin(sin_input), torch.cos(sin_input)], dim=1)
+    sin_input = scaling_factor[None, :] * time.float()[:, None]
+    return torch.cat([torch.sin(sin_input), torch.cos(sin_input)], dim=1).to(time.dtype)
 
 
 def sample_beta(alpha, beta, bsize, device):
@@ -180,10 +167,15 @@ class PI0Pytorch(nn.Module):
         if scope not in {"full", "vision"}:
             raise ValueError(f"Unsupported gradient checkpointing scope: {scope}")
         self.gradient_checkpointing_enabled = True
-        checkpoint_transformer = scope == "full"
-        self.paligemma_with_expert.paligemma.language_model.gradient_checkpointing = checkpoint_transformer
-        self.paligemma_with_expert.paligemma.vision_tower.gradient_checkpointing = checkpoint_transformer
-        self.paligemma_with_expert.gemma_expert.model.gradient_checkpointing = checkpoint_transformer
+        checkpoint_language = scope == "full"
+        self.paligemma_with_expert.paligemma.language_model.gradient_checkpointing = checkpoint_language
+        self.paligemma_with_expert.gemma_expert.model.gradient_checkpointing = checkpoint_language
+        self.paligemma_with_expert.paligemma.vision_tower.gradient_checkpointing_enable(
+            gradient_checkpointing_kwargs={
+                "use_reentrant": False,
+                "preserve_rng_state": False,
+            }
+        )
 
         logging.info("Enabled %s gradient checkpointing for PI0Pytorch model", scope)
 
@@ -191,7 +183,7 @@ class PI0Pytorch(nn.Module):
         """Disable gradient checkpointing."""
         self.gradient_checkpointing_enabled = False
         self.paligemma_with_expert.paligemma.language_model.gradient_checkpointing = False
-        self.paligemma_with_expert.paligemma.vision_tower.gradient_checkpointing = False
+        self.paligemma_with_expert.paligemma.vision_tower.gradient_checkpointing_disable()
         self.paligemma_with_expert.gemma_expert.model.gradient_checkpointing = False
 
         logging.info("Disabled gradient checkpointing for PI0Pytorch model")
@@ -210,10 +202,6 @@ class PI0Pytorch(nn.Module):
 
     def _embed_image(self, image: torch.Tensor) -> torch.Tensor:
         """Checkpoint only the high-activation vision encoder."""
-        if self.gradient_checkpointing_enabled and self.training:
-            return torch.utils.checkpoint.checkpoint(
-                self.paligemma_with_expert.embed_image, image, use_reentrant=False, preserve_rng_state=False
-            )
         return self.paligemma_with_expert.embed_image(image)
 
     def _prepare_attention_masks_4d(self, att_2d_masks):
@@ -319,7 +307,6 @@ class PI0Pytorch(nn.Module):
         time_emb = create_sinusoidal_pos_embedding(
             timestep, self.action_in_proj.out_features, min_period=4e-3, max_period=4.0, device=timestep.device
         )
-        time_emb = time_emb.type(dtype=timestep.dtype)
 
         # Fuse timestep + action information using an MLP
         action_emb = self.action_in_proj(noisy_actions)

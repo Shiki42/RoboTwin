@@ -47,7 +47,8 @@ def test_official_clean_pytorch_config_preserves_global_recipe():
 
     assert train_config.model.pi05 is True
     assert train_config.model.casm_mode == "none"
-    assert train_config.pytorch_training_precision == "bfloat16"
+    assert train_config.pytorch_training_precision == "float32"
+    assert train_config.pytorch_compute_precision == "bfloat16"
     assert train_config.batch_size == 16
     assert train_config.gradient_accumulation_steps == 2
     assert train_config.batch_size * train_config.gradient_accumulation_steps == 32

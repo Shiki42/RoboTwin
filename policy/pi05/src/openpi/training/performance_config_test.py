@@ -15,6 +15,8 @@ def test_putcab_pytorch_and_jax_casm_configs_match_training_semantics():
     assert pytorch.optimizer == jax.optimizer
     assert pytorch.ema_decay is None
     assert jax.ema_decay is None
+    assert pytorch.pytorch_training_precision == "float32"
+    assert pytorch.pytorch_compute_precision == "bfloat16"
     assert pytorch.num_workers == 2
     assert pytorch.prefetch_factor == 2
     assert pytorch.persistent_workers is True
@@ -35,6 +37,8 @@ def test_putcab_pytorch_and_jax_baseline_configs_match_training_semantics():
     assert pytorch.lr_schedule == jax.lr_schedule
     assert pytorch.optimizer == jax.optimizer
     assert pytorch.ema_decay is jax.ema_decay is None
+    assert pytorch.pytorch_training_precision == "float32"
+    assert pytorch.pytorch_compute_precision == "bfloat16"
     assert pytorch.num_workers == 2
     assert pytorch.prefetch_factor == 2
     assert pytorch.persistent_workers is True
