@@ -38,6 +38,38 @@ def compose_instruction(instruction, prefix=""):
     return f"{prefix} {instruction}"
 
 
+def load_persistent_episode_schedule(path):
+    if path is None:
+        return None
+    payload = json.loads(Path(path).resolve().read_text())
+    if payload.get("schema") != "parallelvla.robotwin_persistent_episode_schedule.v1":
+        raise ValueError("unsupported persistent episode schedule schema")
+    episodes = payload.get("episodes")
+    if not isinstance(episodes, list) or not episodes:
+        raise ValueError("persistent episode schedule must contain episodes")
+    normalized = []
+    for row in episodes:
+        episode_index = int(row["episode_index"])
+        seed = int(row["seed"])
+        policy_seed = int(row.get("policy_seed", seed))
+        instruction = row.get("instruction")
+        if min(episode_index, seed, policy_seed) < 0:
+            raise ValueError(f"invalid persistent episode row: {row}")
+        if instruction is not None and not str(instruction).strip():
+            raise ValueError(f"empty persistent instruction: {row}")
+        normalized.append({
+            "episode_index": episode_index,
+            "seed": seed,
+            "policy_seed": policy_seed,
+            "instruction": str(instruction).strip() if instruction is not None else None,
+        })
+    for key in ("episode_index", "seed"):
+        values = [row[key] for row in normalized]
+        if len(values) != len(set(values)):
+            raise ValueError(f"duplicate {key} in persistent episode schedule")
+    return normalized
+
+
 def load_seed_table(usr_args, task_name, task_config):
     path = Path(usr_args["seed_table_path"])
     serialized = path.read_bytes()
@@ -216,6 +248,16 @@ def main(usr_args):
     suc_nums = []
     test_num = int(usr_args.get("test_num", 100))
     start_episode_index = int(usr_args.get("start_episode_index", 0))
+    episode_schedule = load_persistent_episode_schedule(
+        usr_args.get("persistent_episode_schedule")
+    )
+    if episode_schedule is not None:
+        if args["eval_video_log"]:
+            raise ValueError("persistent episode schedules do not support video logging")
+        if bool(args.get("expert_check", True)):
+            raise ValueError("persistent episode schedules require expert_check=False")
+        test_num = len(episode_schedule)
+        start_episode_index = episode_schedule[0]["episode_index"]
     topk = 1
 
     model = get_model(usr_args)
@@ -228,7 +270,8 @@ def main(usr_args):
                                    start_episode_index=start_episode_index,
                                    video_size=video_size,
                                    instruction_type=instruction_type,
-                                   save_dir=save_dir)
+                                   save_dir=save_dir,
+                                   episode_schedule=episode_schedule)
     suc_nums.append(suc_num)
 
     topk_success_rate = sorted(suc_nums, reverse=True)[:topk]
@@ -253,7 +296,8 @@ def eval_policy(task_name,
                 start_episode_index=0,
                 video_size=None,
                 instruction_type=None,
-                save_dir=None):
+                save_dir=None,
+                episode_schedule=None):
     print(f"\033[34mTask Name: {args['task_name']}\033[0m")
     print(f"\033[34mPolicy Name: {args['policy_name']}\033[0m")
 
@@ -263,6 +307,8 @@ def eval_policy(task_name,
 
     now_id = int(start_episode_index)
     succ_seed = 0
+    completed_episodes = 0
+    schedule_cursor = 0
     suc_test_seed_list = []
 
     policy_name = args["policy_name"]
@@ -275,7 +321,13 @@ def eval_policy(task_name,
 
     args["eval_mode"] = True
 
-    while succ_seed < test_num:
+    while schedule_cursor < len(episode_schedule) if episode_schedule is not None else succ_seed < test_num:
+        schedule_row = None
+        if episode_schedule is not None:
+            schedule_row = episode_schedule[schedule_cursor]
+            now_seed = int(schedule_row["seed"])
+            now_id = int(schedule_row["episode_index"])
+            TASK_ENV.test_num = now_id
         render_freq = args["render_freq"]
         args["render_freq"] = 0
 
@@ -314,14 +366,14 @@ def eval_policy(task_name,
         args["render_freq"] = render_freq
 
         TASK_ENV.setup_demo(now_ep_num=now_id, seed=now_seed, is_test=True, **args)
+        wrist_camera_preset = None
         wrist_camera_preset_name = args["camera"].get("wrist_camera_preset")
         if wrist_camera_preset_name is None:
             raise ValueError("native policy evaluation requires camera.wrist_camera_preset")
         from parallel_vla.robotwin_wrist_camera import install_wrist_camera_preset
 
         wrist_camera_preset = install_wrist_camera_preset(
-            TASK_ENV,
-            wrist_camera_preset_name,
+            TASK_ENV, wrist_camera_preset_name
         )
         if wrist_camera_preset["name"] != wrist_camera_preset_name:
             raise ValueError("installed wrist camera preset does not match task config")
@@ -332,17 +384,23 @@ def eval_policy(task_name,
             episode_info = TASK_ENV.prepare_episode_metadata()
         episode_info_list = [episode_info["info"]]
         instruction_seed = int(now_seed)
-        instruction_random_state = random.getstate()
-        random.seed(instruction_seed)
-        try:
-            results = generate_episode_descriptions(args["task_name"], episode_info_list, test_num)
-        finally:
-            random.setstate(instruction_random_state)
-        instruction_rng = np.random.default_rng(instruction_seed)
-        instruction = compose_instruction(
-            instruction_rng.choice(results[0][instruction_type]),
-            args.get("instruction_prefix", ""),
-        )
+        frozen_instruction = schedule_row.get("instruction") if schedule_row is not None else None
+        if frozen_instruction is not None:
+            instruction = frozen_instruction
+        else:
+            instruction_random_state = random.getstate()
+            random.seed(instruction_seed)
+            try:
+                results = generate_episode_descriptions(
+                    args["task_name"], episode_info_list, test_num
+                )
+            finally:
+                random.setstate(instruction_random_state)
+            instruction_rng = np.random.default_rng(instruction_seed)
+            instruction = compose_instruction(
+                instruction_rng.choice(results[0][instruction_type]),
+                args.get("instruction_prefix", ""),
+            )
         print(f"Evaluation instruction: {instruction}")
         TASK_ENV.set_instruction(instruction=instruction)  # set language instruction
 
@@ -377,7 +435,11 @@ def eval_policy(task_name,
 
         succ = False
         episode_start_time = time.time()
-        policy_seed = int(args.get("policy_seed", now_seed))
+        policy_seed = int(
+            schedule_row["policy_seed"]
+            if schedule_row is not None
+            else args.get("policy_seed", now_seed)
+        )
         policy_rng = str(args.get("policy_rng", "legacy_stream"))
         set_episode_seed = getattr(model, "set_episode_seed", None)
         if policy_rng not in {"episode_addressable", "legacy_stream"}:
@@ -445,19 +507,26 @@ def eval_policy(task_name,
             print("\033[91mFail!\033[0m")
 
         now_id += 1
-        TASK_ENV.close_env(clear_cache=((succ_seed + 1) % clear_cache_freq == 0))
+        completed_episodes += 1
+        TASK_ENV.close_env(clear_cache=(completed_episodes % clear_cache_freq == 0))
 
         if TASK_ENV.render_freq:
             TASK_ENV.viewer.close()
 
-        TASK_ENV.test_num += 1
+        if schedule_row is None:
+            TASK_ENV.test_num += 1
+        else:
+            TASK_ENV.test_num = now_id
 
         print(
             f"\033[93m{task_name}\033[0m | \033[94m{args['policy_name']}\033[0m | \033[92m{args['task_config']}\033[0m | \033[91m{args['ckpt_setting']}\033[0m\n"
-            f"Success rate: \033[96m{TASK_ENV.suc}/{TASK_ENV.test_num}\033[0m => \033[95m{round(TASK_ENV.suc/TASK_ENV.test_num*100, 1)}%\033[0m, current seed: \033[90m{now_seed}\033[0m\n"
+            f"Success rate: \033[96m{TASK_ENV.suc}/{completed_episodes}\033[0m => \033[95m{round(TASK_ENV.suc/completed_episodes*100, 1)}%\033[0m, current seed: \033[90m{now_seed}\033[0m\n"
         )
         # TASK_ENV._take_picture()
-        now_seed += 1
+        if schedule_row is None:
+            now_seed += 1
+        else:
+            schedule_cursor += 1
 
     return now_seed, TASK_ENV.suc
 
