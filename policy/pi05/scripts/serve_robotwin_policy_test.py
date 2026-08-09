@@ -4,6 +4,7 @@ from pathlib import Path
 
 import numpy as np
 
+from robotwin_image_transport import encode_images
 from scripts.serve_robotwin_policy import RobotwinPolicyService
 from scripts.serve_robotwin_policy import validate_checkpoint_inventory
 
@@ -46,7 +47,8 @@ class FakeModel:
 def test_service_dispatches_infer_observe_metrics_and_reset():
     model = FakeModel()
     service = RobotwinPolicyService(model)
-    observation = {"images": [np.zeros((2, 2, 3))] * 3, "state": np.zeros(14)}
+    raw_images = [np.zeros((2, 2, 3), dtype=np.uint8)] * 3
+    observation = {"images": encode_images(raw_images), "state": np.zeros(14)}
 
     assert service.infer({"command": "seed", "seed": 100008}) == {"ok": True}
     response = service.infer({"command": "infer", "instruction": "task", **observation})
@@ -54,6 +56,14 @@ def test_service_dispatches_infer_observe_metrics_and_reset():
     assert ("seed", 100008) in model.calls
     assert ("language", "task") in model.calls
     assert ("chunk", 3) in model.calls
+    assert all(
+        np.array_equal(image, expected)
+        for image, expected in zip(
+            model.observation_window["images"],
+            raw_images,
+            strict=True,
+        )
+    )
 
     service.infer({"command": "observe", "action": np.ones(14), "previous_state": np.zeros(14), **observation})
     assert ("update", True) in model.calls

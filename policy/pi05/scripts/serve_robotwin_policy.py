@@ -17,6 +17,8 @@ _ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT))
 
 from pi_model import PI0  # noqa: E402
+from robotwin_image_transport import ROBOTWIN_POLICY_PROTOCOL  # noqa: E402
+from robotwin_image_transport import decode_images  # noqa: E402
 
 
 class RobotwinPolicyService:
@@ -68,7 +70,7 @@ class RobotwinPolicyService:
 
     def _update_observation(self, request, *, action_executed: bool):
         self._model.update_observation_window(
-            request["images"],
+            decode_images(request["images"]),
             request["state"],
             action_executed=action_executed,
         )
@@ -213,7 +215,7 @@ def main(args: Args):
         policy=RobotwinPolicyService(model),
         host="0.0.0.0",
         port=args.port,
-        metadata={"protocol": "robotwin_pi0_v2", **checkpoint_metadata},
+        metadata={"protocol": ROBOTWIN_POLICY_PROTOCOL, **checkpoint_metadata},
     )
     server.serve_forever()
 

@@ -12,6 +12,9 @@ import numpy as np
 from openpi_client import msgpack_numpy
 import websockets.sync.client
 
+from robotwin_image_transport import ROBOTWIN_POLICY_PROTOCOL
+from robotwin_image_transport import encode_images
+
 
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
@@ -122,7 +125,7 @@ def main() -> None:
         max_size=None,
     ) as connection:
         metadata = msgpack_numpy.unpackb(connection.recv(timeout=30))
-        if metadata.get("protocol") != "robotwin_pi0_v2":
+        if metadata.get("protocol") != ROBOTWIN_POLICY_PROTOCOL:
             raise ValueError(f"unexpected server protocol: {metadata}")
         if metadata.get("checkpoint_tree_sha256") != args.expected_tree_sha256:
             raise ValueError("server checkpoint tree SHA-256 mismatch")
@@ -145,7 +148,7 @@ def main() -> None:
             packer,
             {
                 "command": "infer",
-                "images": images,
+                "images": encode_images(images),
                 "state": state,
                 "instruction": instruction,
             },

@@ -5,6 +5,9 @@ from pathlib import Path
 
 import numpy as np
 
+from robotwin_image_transport import ROBOTWIN_POLICY_PROTOCOL
+from robotwin_image_transport import encode_images
+
 _CLIENT_SRC = Path(__file__).parent / "packages" / "openpi-client" / "src"
 
 
@@ -22,6 +25,12 @@ class RobotwinRemoteModel:
 
     def __init__(self, host: str, port: int):
         self._client = _client_policy(host, port)
+        metadata = self._client.get_server_metadata()
+        if metadata.get("protocol") != ROBOTWIN_POLICY_PROTOCOL:
+            raise ValueError(
+                "policy server protocol mismatch: "
+                f"{metadata.get('protocol')!r} != {ROBOTWIN_POLICY_PROTOCOL!r}"
+            )
         self.observation_window = None
         self.base_instruction = None
         self._pending_action = None
@@ -35,7 +44,7 @@ class RobotwinRemoteModel:
 
     def update_observation_window(self, img_arr, state, *, action_executed=False):
         observation = {
-            "images": [np.asarray(image) for image in img_arr],
+            "images": encode_images(img_arr),
             "state": np.asarray(state),
         }
         if action_executed:
