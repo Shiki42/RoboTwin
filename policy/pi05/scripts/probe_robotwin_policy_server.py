@@ -159,7 +159,7 @@ def main() -> None:
         )
     elapsed = time.monotonic() - started
 
-    if seed_response != {"ok": True} or reset_response != {"ok": True}:
+    if seed_response.get("ok") is not True or reset_response.get("ok") is not True:
         raise ValueError("policy server rejected seed or reset RPC")
     actions = np.asarray(response["actions"])
     if actions.shape != (10, 14) or not np.all(np.isfinite(actions)):
@@ -203,6 +203,10 @@ def main() -> None:
             "requests": 1,
             "elapsed_sec": elapsed,
             "server_metrics": metrics,
+        },
+        "rpc_timing": {
+            "seed": seed_response.get("server_timing"),
+            "reset": reset_response.get("server_timing"),
         },
         "probe_script": {"path": str(script_path), "sha256": _sha256_file(script_path)},
     }
