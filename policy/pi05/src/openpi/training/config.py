@@ -126,7 +126,7 @@ class ModelTransformFactory(GroupFactory):
                 )
             case _model.ModelType.PI05:
                 assert isinstance(model_config, pi0_config.Pi0Config)
-                return _transforms.Group(
+                group = _transforms.Group(
                     inputs=[
                         _transforms.InjectDefaultPrompt(self.default_prompt),
                         _transforms.ResizeImages(224, 224),
@@ -137,6 +137,18 @@ class ModelTransformFactory(GroupFactory):
                         _transforms.PadStatesAndActions(model_config.action_dim),
                     ],
                 )
+                if model_config.spline_field:
+                    spline_kwargs = {
+                        "control_horizon": model_config.control_horizon,
+                        "control_points": model_config.spline_control_points,
+                        "degree": model_config.spline_degree,
+                        "regularization": model_config.spline_regularization,
+                    }
+                    group = group.push(
+                        inputs=[_transforms.SplineFieldTargets(**spline_kwargs)],
+                        outputs=[_transforms.DecodeSplineField(**spline_kwargs)],
+                    )
+                return group
             case _model.ModelType.PI0_FAST:
                 tokenizer_cls = (
                     _tokenizer.FASTTokenizer
@@ -570,9 +582,10 @@ class TrainConfig:
             raise ValueError("Cannot resume and overwrite at the same time.")
 
 
-def _putcab_casm_data(repo_id: str) -> LeRobotAlohaDataConfig:
+def _putcab_casm_data(repo_id: str, *, inactive_action_weight: float = 0.0) -> LeRobotAlohaDataConfig:
     return LeRobotAlohaDataConfig(
         repo_id=repo_id,
+        inactive_action_weight=inactive_action_weight,
         adapt_to_pi=False,
         repack_transforms=_transforms.Group(inputs=[
             _transforms.RepackTransform({
@@ -682,6 +695,46 @@ def _putcab_pytorch_config(name: str, mode: Literal["none", "visual_phase_gate"]
         ema_decay=None,
         wandb_enabled=True,
         pytorch_compile_mode="default", pytorch_gradient_checkpointing_scope="vision",
+        fsdp_devices=1,
+    )
+
+
+def _putcab_spline_field_pytorch_config() -> TrainConfig:
+    model = pi0_config.Pi0Config(
+        pi05=True,
+        casm_mode="none",
+        paligemma_variant="gemma_2b",
+        action_expert_variant="gemma_300m",
+        spline_field=True,
+        action_horizon=16,
+        control_horizon=50,
+        spline_control_points=16,
+    )
+    dataset_repo = os.environ.get(
+        "PARALLELVLA_DATASET_REPO",
+        "Shiki42/robotwin_put_obj_cabinet_50_dynFcam_nFov_dynamicMain_lerobot",
+    )
+    return TrainConfig(
+        name="pi05_putcab_spline_field_pytorch",
+        project_name="parallelvla-putcab-spline-field",
+        model=model,
+        data=_putcab_casm_data(dataset_repo, inactive_action_weight=1.0),
+        pytorch_weight_path=os.environ.get("PI05_PYTORCH_BASE"),
+        batch_size=16,
+        num_workers=2,
+        prefetch_factor=2,
+        persistent_workers=True,
+        pin_memory=True,
+        num_train_steps=2_000,
+        save_interval=500,
+        keep_period=2_000,
+        params_only_checkpoint=False,
+        ema_decay=None,
+        wandb_enabled=True,
+        pytorch_compile_mode="default",
+        pytorch_gradient_checkpointing=False,
+        pytorch_fused_optimizer=False,
+        pytorch_trainable_scope="action_expert_and_gate",
         fsdp_devices=1,
     )
 
@@ -858,6 +911,7 @@ _CONFIGS = [
     _putcab_jax_config("pi05_putcab_jax_matched_full", "none"),
     _putcab_pytorch_config("pi05_putcab_pytorch_matched_full", "none"),
     _putcab_pytorch_config("pi05_putcab_casm_visual_phase_gate_pytorch_full", "visual_phase_gate"),
+    _putcab_spline_field_pytorch_config(),
     # pi0_base by lora
     TrainConfig(
         name="pi0_base_aloha_robotwin_lora",

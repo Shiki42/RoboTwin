@@ -8,6 +8,7 @@ import jax
 import numpy as np
 from openpi_client import image_tools
 
+from openpi import spline_field
 from openpi.models import tokenizer as _tokenizer
 from openpi.shared import array_typing as at
 from openpi.shared import normalize as _normalize
@@ -337,6 +338,61 @@ class PadStatesAndActions(DataTransformFn):
         if "action_mask" in data:
             data["action_mask"] = pad_to_dim(data["action_mask"], self.model_action_dim, axis=-1)
         return data
+
+
+@dataclasses.dataclass(frozen=True)
+class SplineFieldTargets(DataTransformFn):
+    """Replace a normalized action trajectory with compact B-spline coefficients."""
+
+    control_horizon: int
+    control_points: int
+    degree: int = 3
+    regularization: float = 1e-6
+
+    def __call__(self, data: DataDict) -> DataDict:
+        if "actions" not in data:
+            return data
+        data["actions"] = spline_field.encode_actions(
+            data["actions"],
+            control_horizon=self.control_horizon,
+            control_points=self.control_points,
+            degree=self.degree,
+            regularization=self.regularization,
+        )
+        if "action_mask" in data:
+            action_mask = np.asarray(data["action_mask"])
+            expected_shape = (self.control_horizon, data["actions"].shape[-1])
+            if action_mask.shape[-2:] != expected_shape:
+                raise ValueError(f"expected action mask suffix {expected_shape}, got {action_mask.shape}")
+            dimension_mask = np.min(action_mask, axis=-2, keepdims=True)
+            data["action_mask"] = np.repeat(dimension_mask, self.control_points, axis=-2)
+        return data
+
+
+@dataclasses.dataclass(frozen=True)
+class DecodeSplineField(DataTransformFn):
+    """Decode model coefficients to the control grid while retaining the continuous field."""
+
+    control_horizon: int
+    control_points: int
+    degree: int = 3
+    regularization: float = 1e-6
+
+    def __call__(self, data: DataDict) -> DataDict:
+        coefficients = np.asarray(data["actions"])
+        if coefficients.shape[-2] != self.control_points:
+            raise ValueError(f"expected {self.control_points} spline control points, got {coefficients.shape}")
+        return {
+            **data,
+            "action_spline_coefficients_normalized": coefficients,
+            "actions": spline_field.decode_actions(
+                coefficients,
+                control_horizon=self.control_horizon,
+                control_points=self.control_points,
+                degree=self.degree,
+                regularization=self.regularization,
+            ),
+        }
 
 
 def flatten_dict(tree: at.PyTree) -> dict:

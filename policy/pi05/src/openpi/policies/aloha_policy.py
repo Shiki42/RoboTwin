@@ -136,6 +136,10 @@ class AlohaOutputs(transforms.DataTransformFn):
         outputs = {"actions": _encode_actions(actions, adapt_to_pi=self.adapt_to_pi)}
         if "async_probability" in data:
             outputs["async_probability"] = np.asarray(data["async_probability"])
+        if "action_spline_coefficients_normalized" in data:
+            outputs["action_spline_coefficients_normalized"] = np.asarray(
+                data["action_spline_coefficients_normalized"][:, :14]
+            )
         return outputs
 
 

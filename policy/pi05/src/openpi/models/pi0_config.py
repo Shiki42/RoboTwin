@@ -31,6 +31,11 @@ class Pi0Config(_model.BaseModelConfig):
     # - the state input is part of the discrete language tokens rather than a continuous input that is part of the suffix
     # - the action expert uses adaRMSNorm to inject the flow matching timestep
     pi05: bool = False
+    spline_field: bool = False
+    control_horizon: int = 50
+    spline_control_points: int = 16
+    spline_degree: int = 3
+    spline_regularization: float = 1e-6
     casm_mode: casm.CasmMode = "none"
     coordination_gate_hidden_dim: int = 64
     cross_attention_dim: int = 128
@@ -47,6 +52,19 @@ class Pi0Config(_model.BaseModelConfig):
     discrete_state_input: bool = None  # type: ignore
 
     def __post_init__(self):
+        if self.spline_field:
+            if not self.pi05:
+                raise ValueError("spline action fields initially require pi05")
+            if self.casm_mode != "none":
+                raise ValueError("spline action fields initially require casm_mode none")
+            if self.action_horizon != self.spline_control_points:
+                raise ValueError("action_horizon must equal spline_control_points in spline field mode")
+            if self.control_horizon <= self.spline_control_points:
+                raise ValueError("control_horizon must be greater than spline_control_points")
+            if self.spline_control_points <= self.spline_degree:
+                raise ValueError("spline_control_points must be greater than spline_degree")
+            if self.spline_regularization < 0:
+                raise ValueError("spline_regularization must be non-negative")
         if self.casm_mode not in casm.VALID_CASM_MODES:
             raise ValueError(f"unknown CASM mode: {self.casm_mode}")
         if self.coordination_gate_hidden_dim < 1 or self.cross_attention_dim < 1:
