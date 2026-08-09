@@ -15,8 +15,6 @@ from openpi.training.robotwin_routing import EpisodeStartSceneContextRouter
 from openpi.training.robotwin_routing import LearnedAsyncToSyncRouter
 from openpi.training.robotwin_routing import RolloutActivityMetrics
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-
 
 def checkpoint_asset_id(assets_dir: str | Path) -> str:
     assets_path = Path(assets_dir)
@@ -34,8 +32,7 @@ class PI0:
     def __init__(
         self,
         train_config_name,
-        model_name,
-        checkpoint_id,
+        checkpoint_dir,
         pi0_step,
         *,
         async_scene_context_steps=0,
@@ -45,18 +42,7 @@ class PI0:
         gate_sync_confirmations=2,
     ):
         self.train_config_name = train_config_name
-        self.model_name = model_name
-        self.checkpoint_id = checkpoint_id
-
-        checkpoint_dir = (
-            _REPO_ROOT
-            / "policy"
-            / "pi05"
-            / "checkpoints"
-            / self.train_config_name
-            / self.model_name
-            / str(self.checkpoint_id)
-        )
+        checkpoint_dir = Path(checkpoint_dir).resolve()
         assets_id = checkpoint_asset_id(checkpoint_dir / "assets")
 
         config = _config.get_config(self.train_config_name)
@@ -103,7 +89,6 @@ class PI0:
         img_front, img_right, img_left = img_arr
         if action_executed and not self.learned_phase_routing:
             self.main_camera_router.advance()
-        img_front = self.main_camera_router.route(img_front)
         img_front = np.transpose(img_front, (2, 0, 1))
         img_right = np.transpose(img_right, (2, 0, 1))
         img_left = np.transpose(img_left, (2, 0, 1))
@@ -161,6 +146,9 @@ class PI0:
                 raise ValueError("visual phase gate inference must return async_probability")
             self.main_camera_router.update(outputs["async_probability"])
         return outputs["actions"]
+
+    def set_episode_seed(self, seed):
+        self.policy.set_episode_seed(seed)
 
     def reset_obsrvationwindows(self):
         self.base_instruction = None
