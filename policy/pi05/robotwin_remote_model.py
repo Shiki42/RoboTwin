@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
 from pathlib import Path
+import sys
 
 import numpy as np
 
@@ -12,12 +14,12 @@ _CLIENT_SRC = Path(__file__).parent / "packages" / "openpi-client" / "src"
 
 
 def _client_policy(host: str, port: int):
-    import sys
-
     sys.path.insert(0, str(_CLIENT_SRC))
-    from openpi_client.websocket_client_policy import WebsocketClientPolicy
+    client_module = importlib.import_module(
+        "openpi_client.websocket_client_policy"
+    )
 
-    return WebsocketClientPolicy(host=host, port=port)
+    return client_module.WebsocketClientPolicy(host=host, port=port)
 
 
 class RobotwinRemoteModel:
