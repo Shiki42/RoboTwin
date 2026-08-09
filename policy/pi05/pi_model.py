@@ -82,8 +82,8 @@ class PI0:
     # Update the observation window buffer
     def update_observation_window(self, img_arr, state, *, action_executed=False):
         img_front, img_right, img_left = img_arr
-        if action_executed and not self.learned_phase_routing:
-            self.main_camera_router.advance()
+        if action_executed:
+            self.advance_after_action()
         img_front = np.transpose(img_front, (2, 0, 1))
         img_right = np.transpose(img_right, (2, 0, 1))
         img_left = np.transpose(img_left, (2, 0, 1))
@@ -101,6 +101,10 @@ class PI0:
             },
             "prompt": self.base_instruction,
         }
+
+    def advance_after_action(self):
+        if not self.learned_phase_routing:
+            self.main_camera_router.advance()
 
     def record_chunk(self, length):
         self.activity_metrics.record_chunk(

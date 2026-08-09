@@ -24,6 +24,9 @@ class FakeModel:
     def record_action(self, action, state):
         self.calls.append(("record_action", action, state))
 
+    def advance_after_action(self):
+        self.calls.append(("advance",))
+
     def update_observation_window(self, images, state, *, action_executed):
         self.calls.append(("update", action_executed))
         self.observation_window = {"images": images, "state": state}
@@ -65,8 +68,15 @@ def test_service_dispatches_infer_observe_metrics_and_reset():
         )
     )
 
-    service.infer({"command": "observe", "action": np.ones(14), "previous_state": np.zeros(14), **observation})
-    assert ("update", True) in model.calls
+    service.infer(
+        {
+            "command": "observe",
+            "action": np.ones(14),
+            "previous_state": np.zeros(14),
+        }
+    )
+    assert ("advance",) in model.calls
+    assert ("update", True) not in model.calls
     metrics = service.infer({"command": "metrics"})["metrics"]
     assert metrics["chunk_count"] == 1
     assert metrics["server_policy_inference_requests"] == 1

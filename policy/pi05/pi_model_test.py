@@ -97,3 +97,46 @@ def test_casm_lan_records_exact_semantic_prompt():
             "confirmed_phase_id": 1,
         }
     ]
+
+
+class CountingRouter:
+    def __init__(self):
+        self.advances = 0
+        self.async_phase = False
+
+    def advance(self):
+        self.advances += 1
+
+
+def test_observation_update_and_remote_advance_share_phase_semantics():
+    model = object.__new__(PI0)
+    model.learned_phase_routing = False
+    model.main_camera_router = CountingRouter()
+    model.base_instruction = "put the object away"
+    images = [
+        np.full((3, 4, 3), fill_value=index, dtype=np.uint8)
+        for index in range(3)
+    ]
+    state = np.arange(14, dtype=np.float32)
+
+    model.update_observation_window(images, state, action_executed=True)
+
+    assert model.main_camera_router.advances == 1
+    assert np.array_equal(
+        model.observation_window["images"]["cam_high"],
+        np.transpose(images[0], (2, 0, 1)),
+    )
+    assert np.array_equal(model.observation_window["state"], state)
+
+    model.advance_after_action()
+    assert model.main_camera_router.advances == 2
+
+
+def test_visual_phase_router_does_not_advance_between_queries():
+    model = object.__new__(PI0)
+    model.learned_phase_routing = True
+    model.main_camera_router = CountingRouter()
+
+    model.advance_after_action()
+
+    assert model.main_camera_router.advances == 0

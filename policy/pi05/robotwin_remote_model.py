@@ -55,7 +55,6 @@ class RobotwinRemoteModel:
             self._client.infer(
                 {
                     "command": "observe",
-                    **observation,
                     "action": self._pending_action,
                     "previous_state": self._pending_state,
                 }

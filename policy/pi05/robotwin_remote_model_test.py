@@ -27,6 +27,7 @@ def test_remote_model_forwards_episode_protocol(monkeypatch):
     monkeypatch.setattr(robotwin_remote_model, "_client_policy", lambda host, port: client)
     model = robotwin_remote_model.RobotwinRemoteModel("localhost", 8000)
     images = [np.zeros((4, 4, 3), dtype=np.uint8)] * 3
+    updated_images = [np.ones((4, 4, 3), dtype=np.uint8)] * 3
     state = np.zeros(14, dtype=np.float32)
 
     model.set_episode_seed(100008)
@@ -36,22 +37,26 @@ def test_remote_model_forwards_episode_protocol(monkeypatch):
     actions = model.get_action()
     model.record_chunk(3)
     model.record_action(actions[0], state)
-    model.update_observation_window(images, state + 1, action_executed=True)
+    model.update_observation_window(updated_images, state + 1, action_executed=True)
 
     assert [request["command"] for request in client.requests] == ["seed", "reset", "infer", "observe"]
-    assert model.execution_steps() == 3
-    assert model.inference_index == 1
-    assert len(model.episode_action_sha256()) == 64
-    assert np.array_equal(client.requests[-1]["previous_state"], state)
-    decoded = decode_images(client.requests[-1]["images"])
+    observe_request = client.requests[-1]
+    assert set(observe_request) == {"command", "action", "previous_state"}
+    assert np.array_equal(observe_request["previous_state"], state)
+
+    model.get_action()
+    boundary_images = decode_images(client.requests[-1]["images"])
     assert all(
         np.array_equal(image, expected)
         for image, expected in zip(
-            decoded,
-            images,
+            boundary_images,
+            updated_images,
             strict=True,
         )
     )
+    assert model.execution_steps() == 3
+    assert model.inference_index == 2
+    assert len(model.episode_action_sha256()) == 64
     assert model.rollout_metrics() == {"chunk_count": 1}
 
 

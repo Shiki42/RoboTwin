@@ -6,7 +6,7 @@ import zlib
 
 import numpy as np
 
-ROBOTWIN_POLICY_PROTOCOL = "robotwin_pi0_v3_zlib_images"
+ROBOTWIN_POLICY_PROTOCOL = "robotwin_pi0_v4_chunk_boundary_images"
 _IMAGE_ENCODING = "zlib_raw_uint8_v1"
 _MAX_IMAGE_BYTES = 64 * 1024 * 1024
 

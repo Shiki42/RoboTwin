@@ -56,7 +56,7 @@ class RobotwinPolicyService:
             return {"ok": True}
         if command == "observe":
             self._model.record_action(request["action"], request["previous_state"])
-            self._update_observation(request, action_executed=True)
+            self._model.advance_after_action()
             return {"ok": True}
         if command == "infer":
             if self._model.observation_window is None:
