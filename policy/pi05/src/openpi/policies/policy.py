@@ -154,6 +154,12 @@ class Policy(BasePolicy):
         }
         return outputs
 
+    def set_episode_seed(self, seed: int) -> None:
+        if self._is_pytorch_model:
+            torch.manual_seed(seed)
+            return
+        self._rng = jax.random.key(seed)
+
     @property
     def metadata(self) -> dict[str, Any]:
         return self._metadata

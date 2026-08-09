@@ -18,19 +18,18 @@ def encode_obs(observation):
 def get_model(usr_args):
     remote_port = int(usr_args.get("remote_policy_port", 0))
     if remote_port:
-        from robotwin_remote_model import RobotwinRemoteModel  # noqa: PLC0415
+        from robotwin_remote_model import RobotwinRemoteModel
 
         return RobotwinRemoteModel(
             host=usr_args.get("remote_policy_host", "127.0.0.1"),
             port=remote_port,
         )
 
-    from pi_model import PI0  # noqa: PLC0415
+    from pi_model import PI0
 
     return PI0(
         usr_args["train_config_name"],
-        usr_args["model_name"],
-        usr_args["checkpoint_id"],
+        usr_args["checkpoint_path"],
         usr_args["pi0_step"],
         async_scene_context_steps=int(usr_args.get("async_scene_context_steps", 0)),
         sync_action_chunk_steps=int(usr_args.get("sync_action_chunk_steps", 10)),

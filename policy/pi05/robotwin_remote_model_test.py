@@ -23,6 +23,7 @@ def test_remote_model_forwards_episode_protocol(monkeypatch):
     images = [np.zeros((4, 4, 3), dtype=np.uint8)] * 3
     state = np.zeros(14, dtype=np.float32)
 
+    model.set_episode_seed(100008)
     model.reset_obsrvationwindows()
     model.set_language("put the object in the cabinet")
     model.update_observation_window(images, state)
@@ -31,8 +32,10 @@ def test_remote_model_forwards_episode_protocol(monkeypatch):
     model.record_action(actions[0], state)
     model.update_observation_window(images, state + 1, action_executed=True)
 
-    assert [request["command"] for request in client.requests] == ["reset", "infer", "observe"]
+    assert [request["command"] for request in client.requests] == ["seed", "reset", "infer", "observe"]
     assert model.execution_steps() == 3
+    assert model.inference_index == 1
+    assert len(model.episode_action_sha256()) == 64
     assert np.array_equal(client.requests[-1]["previous_state"], state)
     assert model.rollout_metrics() == {"chunk_count": 1}
 

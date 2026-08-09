@@ -8,8 +8,7 @@ instruction_type: unseen
 
 # Add Parameters You Need
 train_config_name: null
-model_name: null
-checkpoint_id: 30000
+checkpoint_path: null
 pi0_step: 50
 async_scene_context_steps: 0
 sync_action_chunk_steps: 10
