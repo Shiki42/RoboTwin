@@ -720,6 +720,7 @@ def _putcab_spline_field_pytorch_config() -> TrainConfig:
         model=model,
         data=_putcab_casm_data(dataset_repo, inactive_action_weight=1.0),
         pytorch_weight_path=os.environ.get("PI05_PYTORCH_BASE"),
+        seed=87_431,
         batch_size=16,
         num_workers=2,
         prefetch_factor=2,
