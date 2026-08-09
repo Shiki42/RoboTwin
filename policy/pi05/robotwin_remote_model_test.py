@@ -1,11 +1,16 @@
 import numpy as np
 
+from robotwin_image_transport import ROBOTWIN_POLICY_PROTOCOL
+from robotwin_image_transport import decode_images
 import robotwin_remote_model
 
 
 class FakeClient:
     def __init__(self):
         self.requests = []
+
+    def get_server_metadata(self):
+        return {"protocol": ROBOTWIN_POLICY_PROTOCOL}
 
     def infer(self, request):
         self.requests.append(request)
@@ -37,6 +42,15 @@ def test_remote_model_forwards_episode_protocol(monkeypatch):
     assert model.inference_index == 1
     assert len(model.episode_action_sha256()) == 64
     assert np.array_equal(client.requests[-1]["previous_state"], state)
+    decoded = decode_images(client.requests[-1]["images"])
+    assert all(
+        np.array_equal(image, expected)
+        for image, expected in zip(
+            decoded,
+            images,
+            strict=True,
+        )
+    )
     assert model.rollout_metrics() == {"chunk_count": 1}
 
 
@@ -50,3 +64,22 @@ def test_remote_model_rejects_observe_without_action(monkeypatch):
 
     with pytest.raises(RuntimeError, match="record_action"):
         model.update_observation_window(images, np.zeros(14), action_executed=True)
+
+
+def test_remote_model_rejects_wrong_server_protocol(monkeypatch):
+    client = FakeClient()
+    monkeypatch.setattr(
+        client,
+        "get_server_metadata",
+        lambda: {"protocol": "robotwin_pi0_v2"},
+    )
+    monkeypatch.setattr(
+        robotwin_remote_model,
+        "_client_policy",
+        lambda host, port: client,
+    )
+
+    import pytest
+
+    with pytest.raises(ValueError, match="protocol mismatch"):
+        robotwin_remote_model.RobotwinRemoteModel("localhost", 8000)
