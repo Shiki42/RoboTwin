@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from robotwin_image_transport import ROBOTWIN_POLICY_PROTOCOL
 from robotwin_image_transport import decode_images
@@ -60,8 +61,6 @@ def test_remote_model_rejects_observe_without_action(monkeypatch):
     model = robotwin_remote_model.RobotwinRemoteModel("localhost", 8000)
     images = [np.zeros((4, 4, 3), dtype=np.uint8)] * 3
 
-    import pytest
-
     with pytest.raises(RuntimeError, match="record_action"):
         model.update_observation_window(images, np.zeros(14), action_executed=True)
 
@@ -78,8 +77,6 @@ def test_remote_model_rejects_wrong_server_protocol(monkeypatch):
         "_client_policy",
         lambda host, port: client,
     )
-
-    import pytest
 
     with pytest.raises(ValueError, match="protocol mismatch"):
         robotwin_remote_model.RobotwinRemoteModel("localhost", 8000)
