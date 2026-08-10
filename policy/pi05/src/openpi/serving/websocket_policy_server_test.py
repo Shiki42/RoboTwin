@@ -3,6 +3,7 @@ import asyncio
 import contextlib
 import threading
 import time
+from unittest import mock
 
 from openpi.serving.websocket_policy_server import WebsocketPolicyServer
 
@@ -102,3 +103,31 @@ def test_cancelled_inference_keeps_policy_serialized():
 
     assert policy.max_active == 1
     assert result == {"observation": {"id": 2}}
+
+
+def test_server_disables_transport_keepalive():
+    policy = _BlockingPolicy()
+    server = WebsocketPolicyServer(policy)
+
+    class _ServingContext:
+        def __init__(self):
+            self.served = False
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc_value, traceback):
+            return False
+
+        async def serve_forever(self):
+            self.served = True
+
+    context = _ServingContext()
+    with mock.patch(
+        "openpi.serving.websocket_policy_server._server.serve",
+        return_value=context,
+    ) as serve:
+        asyncio.run(server.run())
+
+    assert context.served is True
+    assert serve.call_args.kwargs["ping_interval"] is None
