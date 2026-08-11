@@ -1,5 +1,4 @@
 """See _CONFIGS for the list of available configs."""
-
 import abc
 from collections.abc import Sequence
 import dataclasses
@@ -586,30 +585,25 @@ class TrainConfig:
         if set(episode_groups[0]) & set(episode_groups[1]):
             raise ValueError("training and validation episodes must be disjoint")
 
-
 def _putcab_casm_data(repo_id: str) -> LeRobotAlohaDataConfig:
     return LeRobotAlohaDataConfig(
         repo_id=repo_id,
         adapt_to_pi=False,
-        repack_transforms=_transforms.Group(
-            inputs=[
-                _transforms.RepackTransform(
-                    {
-                        "images": {
-                            "cam_high": "observation.images.cam_high",
-                            "cam_left_wrist": "observation.images.cam_left_wrist",
-                            "cam_right_wrist": "observation.images.cam_right_wrist",
-                        },
-                        "state": "observation.state",
-                        "actions": "action",
-                        "action_mask": "observation.arm_active_mask",
-                        "action_is_pad": "action_is_pad",
-                        "action_phase": "observation.phase_one_hot",
-                        "prompt": "prompt",
-                    }
-                )
-            ]
-        ),
+        repack_transforms=_transforms.Group(inputs=[
+            _transforms.RepackTransform({
+                "images": {
+                    "cam_high": "observation.images.cam_high",
+                    "cam_left_wrist": "observation.images.cam_left_wrist",
+                    "cam_right_wrist": "observation.images.cam_right_wrist",
+                },
+                "state": "observation.state",
+                "actions": "action",
+                "action_mask": "observation.arm_active_mask",
+                "action_is_pad": "action_is_pad",
+                "action_phase": "observation.phase_one_hot",
+                "prompt": "prompt",
+            })
+        ]),
         base_config=DataConfig(prompt_from_task=True, video_backend="pyav"),
         action_sequence_keys=(
             "action",
@@ -638,10 +632,8 @@ def _putcab_casm_config(
     freeze_vision: bool = False,
 ) -> TrainConfig:
     model = pi0_config.Pi0Config(
-        pi05=True,
-        casm_mode=mode,
-        paligemma_variant="gemma_2b_lora",
-        action_expert_variant="gemma_300m_lora",
+        pi05=True, casm_mode=mode,
+        paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora",
         gate_positive_weight=gate_positive_weight,
     )
     freeze_filter = model.get_freeze_filter()
@@ -670,27 +662,14 @@ def _putcab_casm_config(
         fsdp_devices=1,
     )
 
-
-def _putcab_anchor_adapt_config(
-    name: str, mode: casm.CasmMode, project_name: str, *, freeze_vision: bool = False
-) -> TrainConfig:
+def _putcab_anchor_adapt_config(name: str, mode: casm.CasmMode, project_name: str, *, freeze_vision: bool = False) -> TrainConfig:
     return _putcab_casm_config(
-        name,
-        mode,
-        repo_id=os.environ.get("PARALLELVLA_DATASET_REPO", "Shiki42/robotwin_put_obj_cabinet_50_dynFcam_nFov"),
+        name, mode, repo_id=os.environ.get("PARALLELVLA_DATASET_REPO", "Shiki42/robotwin_put_obj_cabinet_50_dynFcam_nFov"),
         base_checkpoint=os.environ.get("PI05_ANCHOR_CHECKPOINT", "gs://openpi-assets/checkpoints/pi05_base/params"),
-        train_steps=2_000,
-        save_interval=500,
-        batch_size=16,
-        num_workers=4,
-        wandb_enabled=True,
-        project_name=project_name,
-        params_only_checkpoint=False,
-        ema_decay=None,
-        strict_checkpoint=True,
-        freeze_vision=freeze_vision,
+        train_steps=2_000, save_interval=500, batch_size=16, num_workers=4,
+        wandb_enabled=True, project_name=project_name, params_only_checkpoint=False,
+        ema_decay=None, strict_checkpoint=True, freeze_vision=freeze_vision,
     )
-
 
 def _putcab_pytorch_config(name: str, mode: Literal["none", "visual_phase_gate"]) -> TrainConfig:
     model = pi0_config.Pi0Config(
@@ -710,18 +689,14 @@ def _putcab_pytorch_config(name: str, mode: Literal["none", "visual_phase_gate"]
         data=_putcab_casm_data(dataset_repo),
         pytorch_weight_path=os.environ.get("PI05_PYTORCH_BASE"),
         batch_size=16,
-        num_workers=2,
-        prefetch_factor=2,
-        persistent_workers=True,
-        pin_memory=True,
+        num_workers=2, prefetch_factor=2, persistent_workers=True, pin_memory=True,
         num_train_steps=20_000,
         save_interval=2_000,
         keep_period=20_000,
         params_only_checkpoint=False,
         ema_decay=None,
         wandb_enabled=True,
-        pytorch_compile_mode="default",
-        pytorch_gradient_checkpointing_scope="vision",
+        pytorch_compile_mode="default", pytorch_gradient_checkpointing_scope="vision",
         fsdp_devices=1,
     )
 
@@ -765,22 +740,18 @@ _CONFIGS = [
         data=LeRobotAlohaDataConfig(
             repo_id="your_repo_id",
             adapt_to_pi=False,
-            repack_transforms=_transforms.Group(
-                inputs=[
-                    _transforms.RepackTransform(
-                        {
-                            "images": {
-                                "cam_high": "observation.images.cam_high",
-                                "cam_left_wrist": "observation.images.cam_left_wrist",
-                                "cam_right_wrist": "observation.images.cam_right_wrist",
-                            },
-                            "state": "observation.state",
-                            "actions": "action",
-                            "prompt": "prompt",
-                        }
-                    )
-                ]
-            ),
+            repack_transforms=_transforms.Group(inputs=[
+                _transforms.RepackTransform({
+                    "images": {
+                        "cam_high": "observation.images.cam_high",
+                        "cam_left_wrist": "observation.images.cam_left_wrist",
+                        "cam_right_wrist": "observation.images.cam_right_wrist",
+                    },
+                    "state": "observation.state",
+                    "actions": "action",
+                    "prompt": "prompt",
+                })
+            ]),
             base_config=DataConfig(
                 prompt_from_task=True,
             ),
@@ -793,35 +764,28 @@ _CONFIGS = [
     # pi05_base by lora
     TrainConfig(
         name="pi05_base_aloha_lora",
-        model=pi0_config.Pi0Config(
-            pi05=True, paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
-        ),
+        model=pi0_config.Pi0Config(pi05=True, paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"),
         data=LeRobotAlohaDataConfig(
             repo_id="your_repo_id",  # your datasets repo_id
             adapt_to_pi=False,
-            repack_transforms=_transforms.Group(
-                inputs=[
-                    _transforms.RepackTransform(
-                        {
-                            "images": {
-                                "cam_high": "observation.images.cam_high",
-                                "cam_left_wrist": "observation.images.cam_left_wrist",
-                                "cam_right_wrist": "observation.images.cam_right_wrist",
-                            },
-                            "state": "observation.state",
-                            "actions": "action",
-                            "prompt": "prompt",
-                        }
-                    )
-                ]
-            ),
+            repack_transforms=_transforms.Group(inputs=[
+                _transforms.RepackTransform({
+                    "images": {
+                        "cam_high": "observation.images.cam_high",
+                        "cam_left_wrist": "observation.images.cam_left_wrist",
+                        "cam_right_wrist": "observation.images.cam_right_wrist",
+                    },
+                    "state": "observation.state",
+                    "actions": "action",
+                    "prompt": "prompt",
+                })
+            ]),
             base_config=DataConfig(
                 prompt_from_task=True,  # Set to True for prompt by task_name
             ),
         ),
-        freeze_filter=pi0_config.Pi0Config(
-            paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
-        ).get_freeze_filter(),
+        freeze_filter=pi0_config.Pi0Config(paligemma_variant="gemma_2b_lora",
+                                    action_expert_variant="gemma_300m_lora").get_freeze_filter(),
         batch_size=32,  # the total batch_size not pre_gpu batch_size
         weight_loader=weight_loaders.CheckpointWeightLoader("s3://openpi-assets/checkpoints/pi05_base/params"),
         num_train_steps=30000,
@@ -837,25 +801,21 @@ _CONFIGS = [
         data=LeRobotAlohaDataConfig(
             repo_id="Shiki42/parallelvla_putcab_temporal_debias_full_v1",
             adapt_to_pi=False,
-            repack_transforms=_transforms.Group(
-                inputs=[
-                    _transforms.RepackTransform(
-                        {
-                            "images": {
-                                "cam_high": "observation.images.cam_high",
-                                "cam_left_wrist": "observation.images.cam_left_wrist",
-                                "cam_right_wrist": "observation.images.cam_right_wrist",
-                            },
-                            "state": "observation.state",
-                            "actions": "action",
-                            "action_mask": "observation.arm_active_mask",
-                            "action_is_pad": "action_is_pad",
-                            "action_phase": "observation.phase_one_hot",
-                            "prompt": "prompt",
-                        }
-                    )
-                ]
-            ),
+            repack_transforms=_transforms.Group(inputs=[
+                _transforms.RepackTransform({
+                    "images": {
+                        "cam_high": "observation.images.cam_high",
+                        "cam_left_wrist": "observation.images.cam_left_wrist",
+                        "cam_right_wrist": "observation.images.cam_right_wrist",
+                    },
+                    "state": "observation.state",
+                    "actions": "action",
+                    "action_mask": "observation.arm_active_mask",
+                    "action_is_pad": "action_is_pad",
+                    "action_phase": "observation.phase_one_hot",
+                    "prompt": "prompt",
+                })
+            ]),
             base_config=DataConfig(prompt_from_task=True),
             action_sequence_keys=(
                 "action",
@@ -867,7 +827,9 @@ _CONFIGS = [
             paligemma_variant="gemma_2b_lora",
             action_expert_variant="gemma_300m_lora",
         ).get_freeze_filter(),
-        weight_loader=weight_loaders.CheckpointWeightLoader("s3://openpi-assets/checkpoints/pi05_base/params"),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "s3://openpi-assets/checkpoints/pi05_base/params"
+        ),
         batch_size=4,
         num_workers=0,
         num_train_steps=5_000,
@@ -896,34 +858,23 @@ _CONFIGS = [
         "pi05_putcab_casm_usefulness_gate_lora",
         "usefulness_gate",
     ),
-    _putcab_anchor_adapt_config(
-        "pi05_putcab_casm_visual_phase_gate_pi05_anchor_adapt_lora", "visual_phase_gate", "parallelvla-casm"
-    ),
+    _putcab_anchor_adapt_config("pi05_putcab_casm_visual_phase_gate_pi05_anchor_adapt_lora", "visual_phase_gate", "parallelvla-casm"),
     _putcab_anchor_adapt_config("pi05_putcab_pi05_anchor_adapt_matched_lora", "none", "parallelvla-pi05-matched"),
     _putcab_anchor_adapt_config(
-        "pi05_putcab_pi05_anchor_adapt_vision_frozen_lora",
-        "none",
-        "parallelvla-pi05-vision-frozen",
-        freeze_vision=True,
+        "pi05_putcab_pi05_anchor_adapt_vision_frozen_lora", "none", "parallelvla-pi05-vision-frozen", freeze_vision=True,
     ),
     dataclasses.replace(
-        _putcab_anchor_adapt_config(
-            "pi05_putcab_casm_visual_phase_gate_pi05_anchor_gate_only",
-            "visual_phase_gate",
-            "parallelvla-casm-gate-only",
-        ),
+        _putcab_anchor_adapt_config("pi05_putcab_casm_visual_phase_gate_pi05_anchor_gate_only", "visual_phase_gate", "parallelvla-casm-gate-only"),
         freeze_filter=nnx.Not(nnx_utils.PathRegex(r".*phase_gate.*")),
     ),
-    *casm_lan_config.create_variants(
-        _putcab_anchor_adapt_config("casm_lan_base", "visual_phase_gate", "parallelvla-casm-lan")
-    ),
-    *cross_output_config.create_variants(
-        _putcab_anchor_adapt_config("cross_output_base", "none", "parallelvla-cross-output")
-    ),
-    skillvla_config.create_variant(_putcab_anchor_adapt_config("skillvla_base", "none", "parallelvla-skillvla-probe")),
-    skillvla_config.create_adaptation_variant(
-        _putcab_anchor_adapt_config("skillvla_adaptation_base", "none", "parallelvla-skillvla-probe")
-    ),
+    *casm_lan_config.create_variants(_putcab_anchor_adapt_config(
+        "casm_lan_base", "visual_phase_gate", "parallelvla-casm-lan")),
+    *cross_output_config.create_variants(_putcab_anchor_adapt_config(
+        "cross_output_base", "none", "parallelvla-cross-output")),
+    skillvla_config.create_variant(_putcab_anchor_adapt_config(
+        "skillvla_base", "none", "parallelvla-skillvla-probe")),
+    skillvla_config.create_adaptation_variant(_putcab_anchor_adapt_config(
+        "skillvla_adaptation_base", "none", "parallelvla-skillvla-probe")),
     official_clean_config.create_config(),
     official_clean_config.create_pytorch_config(),
     robotwin_lora_config.create_config(),
@@ -938,29 +889,24 @@ _CONFIGS = [
         data=LeRobotAlohaDataConfig(
             repo_id="your_repo_id",  # your datasets repo_id
             adapt_to_pi=False,
-            repack_transforms=_transforms.Group(
-                inputs=[
-                    _transforms.RepackTransform(
-                        {
-                            "images": {
-                                "cam_high": "observation.images.cam_high",
-                                "cam_left_wrist": "observation.images.cam_left_wrist",
-                                "cam_right_wrist": "observation.images.cam_right_wrist",
-                            },
-                            "state": "observation.state",
-                            "actions": "action",
-                            "prompt": "prompt",
-                        }
-                    )
-                ]
-            ),
+            repack_transforms=_transforms.Group(inputs=[
+                _transforms.RepackTransform({
+                    "images": {
+                        "cam_high": "observation.images.cam_high",
+                        "cam_left_wrist": "observation.images.cam_left_wrist",
+                        "cam_right_wrist": "observation.images.cam_right_wrist",
+                    },
+                    "state": "observation.state",
+                    "actions": "action",
+                    "prompt": "prompt",
+                })
+            ]),
             base_config=DataConfig(
                 prompt_from_task=True,  # Set to True for prompt by task_name
             ),
         ),
-        freeze_filter=pi0_config.Pi0Config(
-            paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
-        ).get_freeze_filter(),
+        freeze_filter=pi0_config.Pi0Config(paligemma_variant="gemma_2b_lora",
+                                    action_expert_variant="gemma_300m_lora").get_freeze_filter(),
         batch_size=32,  # the total batch_size not pre_gpu batch_size
         weight_loader=weight_loaders.CheckpointWeightLoader("s3://openpi-assets/checkpoints/pi0_base/params"),
         num_train_steps=30000,
@@ -972,22 +918,18 @@ _CONFIGS = [
         data=LeRobotAlohaDataConfig(
             repo_id="your_repo_id",  # your datasets repo_id
             adapt_to_pi=False,
-            repack_transforms=_transforms.Group(
-                inputs=[
-                    _transforms.RepackTransform(
-                        {
-                            "images": {
-                                "cam_high": "observation.images.cam_high",
-                                "cam_left_wrist": "observation.images.cam_left_wrist",
-                                "cam_right_wrist": "observation.images.cam_right_wrist",
-                            },
-                            "state": "observation.state",
-                            "actions": "action",
-                            "prompt": "prompt",
-                        }
-                    )
-                ]
-            ),
+            repack_transforms=_transforms.Group(inputs=[
+                _transforms.RepackTransform({
+                    "images": {
+                        "cam_high": "observation.images.cam_high",
+                        "cam_left_wrist": "observation.images.cam_left_wrist",
+                        "cam_right_wrist": "observation.images.cam_right_wrist",
+                    },
+                    "state": "observation.state",
+                    "actions": "action",
+                    "prompt": "prompt",
+                })
+            ]),
             base_config=DataConfig(
                 prompt_from_task=True,
             ),
@@ -1006,22 +948,18 @@ _CONFIGS = [
         data=LeRobotAlohaDataConfig(
             repo_id="your_repo_id",  # your datasets repo_id
             adapt_to_pi=False,
-            repack_transforms=_transforms.Group(
-                inputs=[
-                    _transforms.RepackTransform(
-                        {
-                            "images": {
-                                "cam_high": "observation.images.cam_high",
-                                "cam_left_wrist": "observation.images.cam_left_wrist",
-                                "cam_right_wrist": "observation.images.cam_right_wrist",
-                            },
-                            "state": "observation.state",
-                            "actions": "action",
-                            "prompt": "prompt",
-                        }
-                    )
-                ]
-            ),
+            repack_transforms=_transforms.Group(inputs=[
+                _transforms.RepackTransform({
+                    "images": {
+                        "cam_high": "observation.images.cam_high",
+                        "cam_left_wrist": "observation.images.cam_left_wrist",
+                        "cam_right_wrist": "observation.images.cam_right_wrist",
+                    },
+                    "state": "observation.state",
+                    "actions": "action",
+                    "prompt": "prompt",
+                })
+            ]),
             base_config=DataConfig(
                 prompt_from_task=True,  # Set to True for prompt by task_name
             ),
@@ -1038,22 +976,18 @@ _CONFIGS = [
         data=LeRobotAlohaDataConfig(
             repo_id="your_repo_id",  # your datasets repo_id
             adapt_to_pi=False,
-            repack_transforms=_transforms.Group(
-                inputs=[
-                    _transforms.RepackTransform(
-                        {
-                            "images": {
-                                "cam_high": "observation.images.cam_high",
-                                "cam_left_wrist": "observation.images.cam_left_wrist",
-                                "cam_right_wrist": "observation.images.cam_right_wrist",
-                            },
-                            "state": "observation.state",
-                            "actions": "action",
-                            "prompt": "prompt",
-                        }
-                    )
-                ]
-            ),
+            repack_transforms=_transforms.Group(inputs=[
+                _transforms.RepackTransform({
+                    "images": {
+                        "cam_high": "observation.images.cam_high",
+                        "cam_left_wrist": "observation.images.cam_left_wrist",
+                        "cam_right_wrist": "observation.images.cam_right_wrist",
+                    },
+                    "state": "observation.state",
+                    "actions": "action",
+                    "prompt": "prompt",
+                })
+            ]),
             base_config=DataConfig(
                 prompt_from_task=True,
             ),
