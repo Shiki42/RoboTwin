@@ -2,11 +2,11 @@
 name = "openpi"
 version = "0.1.0"
 description = "Physical Intelligence open source repo"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.13"
 license = { file = "LICENSE" }
 dependencies = [
     "pip==24.2",
-    "augmax>=0.3.4",
+    "augmax>=0.4.1",
     "dm-tree>=0.1.8",
     "einops>=0.8.0",
     "equinox>=0.11.8",
@@ -15,7 +15,12 @@ dependencies = [
     "fsspec[gcs]>=2024.6.0",
     "gym-aloha>=0.1.1",
     "imageio>=2.36.1",
-    "jax[cuda12]==0.5.0",
+    "jax[cuda12]==0.6.2",
+    "nvidia-cublas-cu12>=12.8; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "nvidia-cuda-nvcc-cu12>=12.8; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "nvidia-cuda-nvrtc-cu12>=12.8; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "nvidia-cuda-runtime-cu12>=12.8; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "nvidia-nvjitlink-cu12>=12.8; sys_platform == 'linux' and platform_machine == 'x86_64'",
     "jaxtyping==0.2.36",
     "lerobot",
     "ml_collections==1.0.0",
@@ -27,7 +32,8 @@ dependencies = [
     "pillow>=11.0.0",
     "s3fs>=2024.9.0",
     "sentencepiece>=0.2.0",
-    "torch>=2.5.1",
+    "torch==2.6.0",
+    "torchvision==0.21.0",
     "tqdm-loggable>=0.2",
     "typing-extensions>=4.12.2",
     "tyro>=0.9.5",
@@ -71,6 +77,17 @@ dev = [
 [tool.uv.sources]
 openpi-client = { workspace = true }
 lerobot = { git = "https://github.com/huggingface/lerobot", rev = "a445d9c9da6bea99a8972daa4fe1fdd053d711d2" }
+torch = [
+    { index = "pytorch-cpu", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" },
+]
+torchvision = [
+    { index = "pytorch-cpu", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 [tool.uv.workspace]
 members = ["packages/*"]

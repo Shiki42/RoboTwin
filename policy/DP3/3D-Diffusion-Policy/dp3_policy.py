@@ -34,6 +34,12 @@ class DP3:
     def update_obs(self, observation):
         self.env_runner.update_obs(observation)
 
+    def set_episode_seed(self, seed):
+        import torch
+
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+
     def get_action(self, observation=None):
         action = self.env_runner.get_action(self.policy, observation)
         return action

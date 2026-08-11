@@ -235,6 +235,8 @@ class LeRobotAlohaDataConfig(DataConfigFactory):
     # the space used by the pi internal runtime which was used to train the base model. People who
     # use standard Aloha data should set this to true.
     adapt_to_pi: bool = True
+    # Weight assigned to demonstrator-inactive arm labels.
+    inactive_action_weight: float = 0.0
 
     # Repack transforms.
     repack_transforms: tyro.conf.Suppress[_transforms.Group] = dataclasses.field(
@@ -256,7 +258,12 @@ class LeRobotAlohaDataConfig(DataConfigFactory):
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
         data_transforms = _transforms.Group(
-            inputs=[aloha_policy.AlohaInputs(adapt_to_pi=self.adapt_to_pi)],
+            inputs=[
+                aloha_policy.AlohaInputs(
+                    adapt_to_pi=self.adapt_to_pi,
+                    inactive_action_weight=self.inactive_action_weight,
+                )
+            ],
             outputs=[aloha_policy.AlohaOutputs(adapt_to_pi=self.adapt_to_pi)],
         )
         if self.use_delta_joint_actions:
@@ -507,6 +514,8 @@ class TrainConfig:
     save_interval: int = 1000
     # If set, any existing checkpoints matching step % keep_period == 0 will not be deleted.
     keep_period: int | None = 5000
+    # Save inference parameters and assets without optimizer state. These checkpoints cannot resume training.
+    params_only_checkpoint: bool = False
 
     # If true, will overwrite the checkpoint directory if it already exists.
     overwrite: bool = False
@@ -608,6 +617,103 @@ _CONFIGS = [
         batch_size=32,  # the total batch_size not pre_gpu batch_size
         weight_loader=weight_loaders.CheckpointWeightLoader("s3://openpi-assets/checkpoints/pi05_base/params"),
         num_train_steps=30000,
+        fsdp_devices=1,
+    ),
+    # Pi0.5 temporal-debias breadth config with explicit phase prompts and arm supervision masks.
+    TrainConfig(
+        name="pi05_putcab_temporal_debias_lora",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ),
+        data=LeRobotAlohaDataConfig(
+            repo_id="Shiki42/parallelvla_putcab_temporal_debias_full_v1",
+            adapt_to_pi=False,
+            repack_transforms=_transforms.Group(inputs=[
+                _transforms.RepackTransform({
+                    "images": {
+                        "cam_high": "observation.images.cam_high",
+                        "cam_left_wrist": "observation.images.cam_left_wrist",
+                        "cam_right_wrist": "observation.images.cam_right_wrist",
+                    },
+                    "state": "observation.state",
+                    "actions": "action",
+                    "action_mask": "observation.arm_active_mask",
+                    "action_phase": "observation.phase_one_hot",
+                    "prompt": "prompt",
+                })
+            ]),
+            base_config=DataConfig(prompt_from_task=True),
+            action_sequence_keys=(
+                "action",
+                "observation.arm_active_mask",
+                "observation.phase_one_hot",
+            ),
+        ),
+        freeze_filter=pi0_config.Pi0Config(
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ).get_freeze_filter(),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "s3://openpi-assets/checkpoints/pi05_base/params"
+        ),
+        batch_size=4,
+        num_workers=0,
+        num_train_steps=5_000,
+        save_interval=1_000,
+        keep_period=5_000,
+        params_only_checkpoint=True,
+        wandb_enabled=False,
+        fsdp_devices=1,
+    ),
+    # CASM-lite uses the same phase-aware data but isolates wrist/action streams during async phases.
+    TrainConfig(
+        name="pi05_putcab_casm_lite_lora",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            casm_lite=True,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ),
+        data=LeRobotAlohaDataConfig(
+            repo_id="Shiki42/parallelvla_putcab_temporal_debias_full_v1",
+            adapt_to_pi=False,
+            repack_transforms=_transforms.Group(inputs=[
+                _transforms.RepackTransform({
+                    "images": {
+                        "cam_high": "observation.images.cam_high",
+                        "cam_left_wrist": "observation.images.cam_left_wrist",
+                        "cam_right_wrist": "observation.images.cam_right_wrist",
+                    },
+                    "state": "observation.state",
+                    "actions": "action",
+                    "action_mask": "observation.arm_active_mask",
+                    "action_phase": "observation.phase_one_hot",
+                    "prompt": "prompt",
+                })
+            ]),
+            base_config=DataConfig(prompt_from_task=True),
+            action_sequence_keys=(
+                "action",
+                "observation.arm_active_mask",
+                "observation.phase_one_hot",
+            ),
+        ),
+        freeze_filter=pi0_config.Pi0Config(
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ).get_freeze_filter(),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "s3://openpi-assets/checkpoints/pi05_base/params"
+        ),
+        batch_size=4,
+        num_workers=0,
+        num_train_steps=5_000,
+        save_interval=1_000,
+        keep_period=5_000,
+        params_only_checkpoint=True,
+        wandb_enabled=False,
         fsdp_devices=1,
     ),
     # pi0_base by lora

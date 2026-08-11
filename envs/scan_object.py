@@ -92,6 +92,11 @@ class scan_object(Base_Task):
                 is_open=False,
             ))
 
+        return self.prepare_episode_metadata()
+
+    def prepare_episode_metadata(self):
+        scanner_arm_tag = ArmTag("left" if self.scanner.get_pose().p[0] < 0 else "right")
+        object_arm_tag = scanner_arm_tag.opposite
         self.info["info"] = {
             "{A}": f"112_tea-box/base{self.object_id}",
             "{B}": f"024_scanner/base{self.scanner_id}",

@@ -314,18 +314,7 @@ class TrainDP3Workspace:
 
         env_runner = RobotRunner(n_obs_steps=n_obs_steps, n_action_steps=n_action_steps)
 
-        if not cfg.policy.use_pc_color:
-            ckpt_file = pathlib.Path(
-                os.path.join(
-                    DP3_ROOT,
-                    f"./checkpoints/{usr_args['task_name']}-{usr_args['ckpt_setting']}-{usr_args['expert_data_num']}_{usr_args['seed']}/{usr_args['checkpoint_num']}.ckpt"
-                ))
-        else:
-            ckpt_file = pathlib.Path(
-                os.path.join(
-                    DP3_ROOT,
-                    f"./checkpoints/{usr_args['task_name']}-{usr_args['ckpt_setting']}-{usr_args['expert_data_num']}_w_rgb_{usr_args['seed']}/{usr_args['checkpoint_num']}.ckpt"
-                ))
+        ckpt_file = pathlib.Path(usr_args["checkpoint_path"]).resolve()
         assert ckpt_file.is_file(), f"ckpt file doesn't exist, {ckpt_file}"
 
         if ckpt_file.is_file():

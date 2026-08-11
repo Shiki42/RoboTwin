@@ -1,0 +1,14 @@
+policy_name: CASM
+task_name: null
+task_config: null
+ckpt_setting: null
+seed: 0
+instruction_type: unseen
+checkpoint_path: null
+pi0_step: 50
+async_scene_context_steps: 0
+sync_action_chunk_steps: 10
+phase_prompt_conditioning: 0
+boundary_context_steps: 0
+remote_policy_host: 127.0.0.1
+remote_policy_port: 8000
