@@ -191,7 +191,11 @@ class FakeDataset(Dataset):
 
 
 def create_torch_dataset(
-    data_config: _config.DataConfig, action_horizon: int, model_config: _model.BaseModelConfig
+    data_config: _config.DataConfig,
+    action_horizon: int,
+    model_config: _model.BaseModelConfig,
+    *,
+    episodes: Sequence[int] | None = None,
 ) -> Dataset:
     """Create a dataset for training."""
     repo_id = data_config.repo_id
@@ -203,6 +207,7 @@ def create_torch_dataset(
     dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id)
     dataset = lerobot_dataset.LeRobotDataset(
         data_config.repo_id,
+        episodes=None if episodes is None else list(episodes),
         delta_timestamps={
             key: [t / dataset_meta.fps for t in range(action_horizon)] for key in data_config.action_sequence_keys
         },
@@ -287,6 +292,7 @@ def transform_iterable_dataset(
 def create_data_loader(
     config: _config.TrainConfig,
     *,
+    split: Literal["train", "validation"] = "train",
     sharding: jax.sharding.Sharding | None = None,
     shuffle: bool = False,
     num_batches: int | None = None,
@@ -306,7 +312,22 @@ def create_data_loader(
     data_config = config.data.create(config.assets_dirs, config.model)
     logger.info("data_config: %s", data_config)
 
+    if split == "validation":
+        if not config.validation_episodes:
+            raise ValueError("validation split is empty")
+        if shuffle:
+            raise ValueError("validation data cannot be shuffled")
+        episodes = config.validation_episodes
+        single_epoch = True
+        drop_last = False
+    else:
+        episodes = config.train_episodes
+        single_epoch = False
+        drop_last = True
+
     if data_config.rlds_data_dir is not None:
+        if split != "train":
+            raise NotImplementedError("RLDS validation splits are not supported")
         return create_rlds_data_loader(
             data_config,
             action_horizon=config.model.action_horizon,
@@ -322,6 +343,9 @@ def create_data_loader(
         model_config=config.model,
         action_horizon=config.model.action_horizon,
         batch_size=config.batch_size,
+        episodes=episodes,
+        single_epoch=single_epoch,
+        drop_last=drop_last,
         sharding=sharding,
         shuffle=shuffle,
         num_batches=num_batches,
@@ -341,6 +365,9 @@ def create_torch_data_loader(
     action_horizon: int,
     batch_size: int,
     *,
+    episodes: Sequence[int] | None = None,
+    single_epoch: bool = False,
+    drop_last: bool = True,
     sharding: jax.sharding.Sharding | None = None,
     skip_norm_stats: bool = False,
     shuffle: bool = False,
@@ -369,7 +396,7 @@ def create_torch_data_loader(
             execute in the main process.
         seed: The seed to use for shuffling the data.
     """
-    dataset = create_torch_dataset(data_config, action_horizon, model_config)
+    dataset = create_torch_dataset(data_config, action_horizon, model_config, episodes=episodes)
     dataset = transform_dataset(dataset, data_config, skip_norm_stats=skip_norm_stats)
 
     # Use TorchDataLoader for both frameworks
@@ -384,7 +411,7 @@ def create_torch_data_loader(
                 num_replicas=torch.distributed.get_world_size(),
                 rank=torch.distributed.get_rank(),
                 shuffle=shuffle,
-                drop_last=True,
+                drop_last=drop_last,
             )
             local_batch_size = batch_size // torch.distributed.get_world_size()
         else:
@@ -402,6 +429,8 @@ def create_torch_data_loader(
         shuffle=(sampler is None and batch_sampler is None and shuffle),
         sampler=sampler,
         batch_sampler=batch_sampler,
+        single_epoch=single_epoch,
+        drop_last=drop_last,
         num_batches=num_batches,
         num_workers=num_workers,
         prefetch_factor=prefetch_factor,
@@ -467,6 +496,8 @@ class TorchDataLoader:
         shuffle: bool = False,
         sampler: torch.utils.data.Sampler | None = None,
         batch_sampler: DeterministicBatchSampler | None = None,
+        single_epoch: bool = False,
+        drop_last: bool = True,
         num_batches: int | None = None,
         num_workers: int = 0,
         prefetch_factor: int = 2,
@@ -511,6 +542,10 @@ class TorchDataLoader:
             raise ValueError("prefetch factor must be positive")
         if batch_sampler is not None and (sampler is not None or shuffle):
             raise ValueError("batch sampler cannot be combined with sampler or shuffle")
+        if single_epoch and num_batches is not None:
+            raise ValueError("single-epoch loading cannot set num_batches")
+        if batch_sampler is not None and not drop_last:
+            raise ValueError("deterministic batch sampling requires drop_last")
 
         mp_context = None
         if num_workers > 0:
@@ -535,11 +570,13 @@ class TorchDataLoader:
                 batch_size=local_batch_size,
                 shuffle=(sampler is None and shuffle),
                 sampler=sampler,
-                drop_last=True,
+                drop_last=drop_last,
             )
         else:
             loader_kwargs["batch_sampler"] = batch_sampler
         self._data_loader = torch.utils.data.DataLoader(**loader_kwargs)
+        if single_epoch:
+            self._num_batches = len(self._data_loader)
 
     @property
     def torch_loader(self) -> torch.utils.data.DataLoader:

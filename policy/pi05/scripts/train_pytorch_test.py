@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 import pathlib
+import random
 from types import SimpleNamespace
 
 import numpy as np
@@ -12,6 +14,8 @@ from torch import nn
 from openpi.models_pytorch import lora_pytorch
 from openpi.shared import normalize as _normalize
 from openpi.training import config as _config
+from openpi.training import pytorch_training
+from openpi.training import robotwin_lora_config
 from scripts import train_pytorch
 
 
@@ -240,3 +244,129 @@ def test_checkpoint_files_include_normalizer_and_manifest():
 def test_checkpoint_files_reject_missing_normalizer():
     with pytest.raises(ValueError, match="normalization stats"):
         train_pytorch._checkpoint_files(_config.DataConfig(asset_id="putcab"), {})  # noqa: SLF001
+
+
+def test_action_loss_total_reports_weighted_sum_and_weight():
+    losses = torch.tensor([[1.0, 3.0]])
+    action_mask = torch.tensor([[[1.0, 1.0], [1.0, 0.0]]])
+
+    total, weight = train_pytorch._action_loss_total(losses, action_mask)  # noqa: SLF001
+
+    assert total == pytest.approx(5.0)
+    assert weight == pytest.approx(3.0)
+
+
+def _write_split_receipt(path, config, *, validation_episodes=None):
+    train, validation, unused = robotwin_lora_config._episode_split()  # noqa: SLF001
+    payload = {
+        "dataset_repo": config.data.repo_id,
+        "dataset_revision": "dataset-revision",
+        "total_episodes": 100,
+        "seed": 42,
+        "train_episodes": list(train),
+        "validation_episodes": list(validation if validation_episodes is None else validation_episodes),
+        "unused_episodes": list(unused),
+    }
+    path.write_text(json.dumps(payload))
+
+
+def test_episode_split_signature_accepts_matching_complete_partition(tmp_path, monkeypatch):
+    config = robotwin_lora_config.create_full_config()
+    receipt = tmp_path / "split.json"
+    _write_split_receipt(receipt, config)
+    monkeypatch.setenv("PARALLELVLA_SPLIT_RECEIPT", str(receipt))
+    monkeypatch.setenv("PARALLELVLA_DATASET_REVISION", "dataset-revision")
+
+    signature = train_pytorch._episode_split_signature(config)  # noqa: SLF001
+
+    assert signature["total_episodes"] == 100
+    assert signature["train_episodes"] == list(config.train_episodes)
+    assert signature["validation_episodes"] == list(config.validation_episodes)
+    assert signature["validation_interval"] == 500
+    assert len(signature["receipt_sha256"]) == 64
+
+
+def test_episode_split_signature_rejects_mismatched_validation_split(tmp_path, monkeypatch):
+    config = robotwin_lora_config.create_full_config()
+    receipt = tmp_path / "split.json"
+    _write_split_receipt(receipt, config, validation_episodes=(99,))
+    monkeypatch.setenv("PARALLELVLA_SPLIT_RECEIPT", str(receipt))
+    monkeypatch.setenv("PARALLELVLA_DATASET_REVISION", "dataset-revision")
+
+    with pytest.raises(ValueError, match="validation episodes"):
+        train_pytorch._episode_split_signature(config)  # noqa: SLF001
+
+
+class ValidationPolicy(nn.Module):
+    def forward(self, observation, actions):
+        del observation
+        _ = random.random(), np.random.random(), torch.rand(())
+        return actions[..., 0]
+
+
+def test_validation_loss_is_weighted_deterministic_and_restores_rng_state():
+    model = ValidationPolicy()
+    loader = [
+        (
+            SimpleNamespace(action_mask=torch.tensor([[[1.0, 1.0]]])),
+            torch.tensor([[[1.0, 0.0]]]),
+        ),
+        (
+            SimpleNamespace(action_mask=torch.tensor([[[1.0, 0.0]]])),
+            torch.tensor([[[3.0, 0.0]]]),
+        ),
+    ]
+    pytorch_training.seed_everything(123)
+    rng_state = pytorch_training.capture_rng_state()
+    expected = (random.random(), np.random.random(), torch.rand(()))
+    pytorch_training.restore_rng_state(rng_state)
+
+    first = train_pytorch.evaluate_validation_loss(model, loader, torch.device("cpu"), seed=999)
+    actual = (random.random(), np.random.random(), torch.rand(()))
+    second = train_pytorch.evaluate_validation_loss(model, loader, torch.device("cpu"), seed=999)
+
+    assert first["validation_loss"] == pytest.approx(5.0 / 3.0)
+    assert first["validation_loss"] == second["validation_loss"]
+    assert first["validation_batches"] == 2
+    assert first["validation_samples"] == 2
+    assert actual[0] == expected[0]
+    assert actual[1] == expected[1]
+    assert actual[2] == expected[2]
+    assert model.training is True
+
+
+def test_normalizer_signature_binds_train_split_inventory_and_exact_file(tmp_path, monkeypatch):
+    config = dataclasses.replace(
+        robotwin_lora_config.create_full_config(),
+        assets_base_dir=str(tmp_path / "assets"),
+    )
+    split_receipt = tmp_path / "split.json"
+    _write_split_receipt(split_receipt, config)
+    monkeypatch.setenv("PARALLELVLA_SPLIT_RECEIPT", str(split_receipt))
+    monkeypatch.setenv("PARALLELVLA_DATASET_REVISION", "dataset-revision")
+    episode_split = train_pytorch._episode_split_signature(config)  # noqa: SLF001
+
+    normalizer_path = config.assets_dirs / config.data.repo_id / "norm_stats.json"
+    normalizer_path.parent.mkdir(parents=True)
+    normalizer_path.write_text("{}")
+    normalizer_receipt = tmp_path / "normalizer.json"
+    normalizer_receipt.write_text(
+        json.dumps(
+            {
+                "dataset_repo": config.data.repo_id,
+                "dataset_revision": "dataset-revision",
+                "train_episodes": list(config.train_episodes),
+                "split_receipt_sha256": episode_split["receipt_sha256"],
+                "statistics": "exact_concat_train_only_valid_action_steps_v1",
+                "normalizer_sha256": train_pytorch._sha256(normalizer_path),  # noqa: SLF001
+                "input_inventory_sha256": "b" * 64,
+            }
+        )
+    )
+    monkeypatch.setenv("PARALLELVLA_NORM_STATS_RECEIPT", str(normalizer_receipt))
+
+    signature = train_pytorch._normalizer_signature(config, episode_split)  # noqa: SLF001
+
+    assert signature["normalizer_sha256"] == train_pytorch._sha256(normalizer_path)  # noqa: SLF001
+    assert signature["input_inventory_sha256"] == "b" * 64
+    assert signature["statistics"] == "exact_concat_train_only_valid_action_steps_v1"

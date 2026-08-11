@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 import dataclasses
+import hashlib
 import json
 import logging
 import os
@@ -38,6 +39,93 @@ def _required_code_commit() -> str:
     return code_commit
 
 
+def _sha256(path: pathlib.Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while chunk := stream.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _episode_split_signature(config: _config.TrainConfig) -> dict[str, Any] | None:
+    if config.train_episodes is None:
+        return None
+    receipt_value = os.environ.get("PARALLELVLA_SPLIT_RECEIPT")
+    if not receipt_value:
+        raise ValueError("PARALLELVLA_SPLIT_RECEIPT is required for episode-subset training")
+    receipt_path = pathlib.Path(receipt_value)
+    if not receipt_path.is_file():
+        raise FileNotFoundError(receipt_path)
+    payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+    revision = os.environ.get("PARALLELVLA_DATASET_REVISION")
+    if payload.get("dataset_repo") != config.data.repo_id:
+        raise ValueError("split receipt dataset repo does not match config")
+    if payload.get("dataset_revision") != revision:
+        raise ValueError("split receipt dataset revision does not match run")
+    train = tuple(payload.get("train_episodes", ()))
+    validation = tuple(payload.get("validation_episodes", ()))
+    unused = tuple(payload.get("unused_episodes", ()))
+    if train != config.train_episodes:
+        raise ValueError("split receipt training episodes do not match config")
+    if validation != config.validation_episodes:
+        raise ValueError("split receipt validation episodes do not match config")
+    total_episodes = payload.get("total_episodes")
+    if not isinstance(total_episodes, int) or total_episodes < 1:
+        raise ValueError("split receipt total_episodes must be positive")
+    if sorted((*train, *validation, *unused)) != list(range(total_episodes)):
+        raise ValueError("split receipt does not partition every source episode exactly once")
+    return {
+        "receipt_sha256": _sha256(receipt_path),
+        "total_episodes": total_episodes,
+        "train_episodes": list(train),
+        "validation_episodes": list(validation),
+        "unused_episodes": list(unused),
+        "validation_interval": config.validation_interval,
+        "validation_rng_seed": config.seed + 1,
+    }
+
+
+def _normalizer_signature(
+    config: _config.TrainConfig,
+    episode_split: dict[str, Any] | None,
+) -> dict[str, str] | None:
+    if episode_split is None:
+        return None
+    receipt_value = os.environ.get("PARALLELVLA_NORM_STATS_RECEIPT")
+    if not receipt_value:
+        raise ValueError("PARALLELVLA_NORM_STATS_RECEIPT is required for episode-subset training")
+    receipt_path = pathlib.Path(receipt_value)
+    if not receipt_path.is_file():
+        raise FileNotFoundError(receipt_path)
+    payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+    if payload.get("dataset_repo") != config.data.repo_id:
+        raise ValueError("normalizer receipt dataset repo does not match config")
+    if payload.get("dataset_revision") != os.environ.get("PARALLELVLA_DATASET_REVISION"):
+        raise ValueError("normalizer receipt dataset revision does not match run")
+    if tuple(payload.get("train_episodes", ())) != config.train_episodes:
+        raise ValueError("normalizer receipt training episodes do not match config")
+    if payload.get("split_receipt_sha256") != episode_split["receipt_sha256"]:
+        raise ValueError("normalizer receipt is not bound to the current episode split")
+    statistics = payload.get("statistics")
+    if statistics != "exact_concat_train_only_valid_action_steps_v1":
+        raise ValueError("normalizer receipt does not record exact train-only statistics")
+    normalizer_path = config.assets_dirs / config.data.repo_id / "norm_stats.json"
+    if not normalizer_path.is_file():
+        raise FileNotFoundError(normalizer_path)
+    normalizer_sha256 = _sha256(normalizer_path)
+    if payload.get("normalizer_sha256") != normalizer_sha256:
+        raise ValueError("normalizer receipt SHA-256 does not match norm_stats.json")
+    inventory_sha256 = payload.get("input_inventory_sha256")
+    if not isinstance(inventory_sha256, str) or re.fullmatch(r"[0-9a-f]{64}", inventory_sha256) is None:
+        raise ValueError("normalizer receipt requires a lowercase input inventory SHA-256")
+    return {
+        "receipt_sha256": _sha256(receipt_path),
+        "normalizer_sha256": normalizer_sha256,
+        "input_inventory_sha256": inventory_sha256,
+        "statistics": statistics,
+    }
+
+
 def _lora_signature(variant: str) -> dict[str, float | int] | None:
     adapters = _gemma.get_config(variant).lora_configs
     if not adapters:
@@ -51,6 +139,7 @@ def _lora_signature(variant: str) -> dict[str, float | int] | None:
 
 def config_signature(config: _config.TrainConfig) -> dict[str, Any]:
     model = config.model
+    episode_split = _episode_split_signature(config)
     return {
         "config_name": config.name,
         "batch_size": config.batch_size * config.gradient_accumulation_steps,
@@ -69,6 +158,8 @@ def config_signature(config: _config.TrainConfig) -> dict[str, Any]:
         "pytorch_gradient_checkpointing_scope": config.pytorch_gradient_checkpointing_scope,
         "pytorch_trainable_scope": config.pytorch_trainable_scope,
         "seed": config.seed,
+        "episode_split": episode_split,
+        "normalizer": _normalizer_signature(config, episode_split),
         "inactive_action_weight": config.data.inactive_action_weight,
         "lr_schedule": dataclasses.asdict(config.lr_schedule),
         "optimizer": dataclasses.asdict(config.optimizer),
@@ -197,17 +288,27 @@ def require_run_receipts(config: _config.TrainConfig) -> pathlib.Path:
     base = pathlib.Path(config.pytorch_weight_path)
     if not (base / "model.safetensors").is_file():
         raise FileNotFoundError(base / "model.safetensors")
-    required_environment = (
+    required_environment = [
         "PI05_BASE_SHA256",
         "PARALLELVLA_DATASET_REVISION",
         "PARALLELVLA_DATASET_RECEIPT",
-    )
+    ]
+    if config.train_episodes is not None:
+        required_environment.extend(
+            (
+                "PARALLELVLA_SPLIT_RECEIPT",
+                "PARALLELVLA_NORM_STATS_RECEIPT",
+            )
+        )
     missing = [name for name in required_environment if not os.environ.get(name)]
     if missing:
         raise ValueError(f"missing run receipt environment: {missing}")
     dataset_receipt = pathlib.Path(os.environ["PARALLELVLA_DATASET_RECEIPT"])
     if not dataset_receipt.is_file():
         raise FileNotFoundError(dataset_receipt)
+    if config.train_episodes is not None:
+        episode_split = _episode_split_signature(config)
+        _normalizer_signature(config, episode_split)
     return base
 
 
@@ -224,6 +325,11 @@ def initialize_pretrained(model: pi0_pytorch.PI0Pytorch, base: pathlib.Path) -> 
 
 def _checkpoint_files(data_config: _config.DataConfig, manifest: dict[str, Any]) -> dict[pathlib.Path, str]:
     files = {pathlib.Path("run_manifest.json"): json.dumps(manifest, indent=2, sort_keys=True)}
+    if manifest.get("episode_split") is not None:
+        split_receipt = pathlib.Path(os.environ["PARALLELVLA_SPLIT_RECEIPT"])
+        normalizer_receipt = pathlib.Path(os.environ["PARALLELVLA_NORM_STATS_RECEIPT"])
+        files[pathlib.Path("receipts/episode_split.json")] = split_receipt.read_text(encoding="utf-8")
+        files[pathlib.Path("receipts/normalizer.json")] = normalizer_receipt.read_text(encoding="utf-8")
     if data_config.norm_stats is None or data_config.asset_id is None:
         raise ValueError("normalization stats and asset_id are required for training")
     files[pathlib.Path("assets") / data_config.asset_id / "norm_stats.json"] = _normalize.serialize_json(
@@ -239,13 +345,24 @@ def _append_metrics(path: pathlib.Path, metrics: dict[str, float | int]) -> None
         os.fsync(stream.fileno())
 
 
-def _mean_action_loss(losses: torch.Tensor, action_mask: torch.Tensor | None) -> torch.Tensor:
+def _action_loss_total(
+    losses: torch.Tensor,
+    action_mask: torch.Tensor | None,
+) -> tuple[torch.Tensor, torch.Tensor]:
     if action_mask is None:
-        return losses.mean()
+        return losses.sum(), losses.new_tensor(losses.numel())
     weights = action_mask.to(device=losses.device, dtype=losses.dtype).sum(dim=-1)
     if weights.shape != losses.shape:
         raise ValueError(f"action loss/mask shape mismatch: {losses.shape} != {weights.shape}")
-    return (losses * weights).sum() / weights.sum()
+    total_weight = weights.sum()
+    if total_weight <= 0:
+        raise ValueError("action loss mask has no supervised dimensions")
+    return (losses * weights).sum(), total_weight
+
+
+def _mean_action_loss(losses: torch.Tensor, action_mask: torch.Tensor | None) -> torch.Tensor:
+    total, weight = _action_loss_total(losses, action_mask)
+    return total / weight
 
 
 def train_step(
@@ -323,6 +440,50 @@ def train_step(
     return metrics
 
 
+@torch.no_grad()
+def evaluate_validation_loss(
+    model: pi0_pytorch.PI0Pytorch,
+    loader: _data.DataLoader,
+    device: torch.device,
+    *,
+    seed: int,
+) -> dict[str, float | int]:
+    rng_state = pytorch_training.capture_rng_state()
+    was_training = model.training
+    started = time.perf_counter()
+    loss_total = torch.zeros((), device=device, dtype=torch.float32)
+    weight_total = torch.zeros((), device=device, dtype=torch.float32)
+    batch_count = 0
+    sample_count = 0
+    try:
+        pytorch_training.seed_everything(seed)
+        model.eval()
+        for cpu_observation, cpu_actions in loader:
+            observation = pytorch_training.move_to_device(cpu_observation, device, non_blocking=True)
+            actions = cpu_actions.to(device=device, dtype=torch.float32, non_blocking=True)
+            losses = model(observation, actions)
+            action_mask = getattr(observation, "action_mask", None)
+            batch_loss, batch_weight = _action_loss_total(losses, action_mask)
+            loss_total += batch_loss
+            weight_total += batch_weight
+            batch_count += 1
+            sample_count += actions.shape[0]
+        if batch_count == 0:
+            raise ValueError("validation loader produced no batches")
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)
+        return {
+            "validation_loss": float((loss_total / weight_total).cpu()),
+            "validation_batches": batch_count,
+            "validation_samples": sample_count,
+            "validation_duration_s": time.perf_counter() - started,
+            "validation_rng_seed": seed,
+        }
+    finally:
+        pytorch_training.restore_rng_state(rng_state)
+        model.train(was_training)
+
+
 def _init_wandb(config: _config.TrainConfig, manifest: dict[str, Any], run_id: str | None):
     if not config.wandb_enabled:
         return None
@@ -351,6 +512,9 @@ def train(config: _config.TrainConfig) -> None:
     base = require_run_receipts(config)
     manifest = config_signature(config)
     loader = _data.create_data_loader(config, framework="pytorch", shuffle=True)
+    validation_loader = None
+    if config.validation_episodes:
+        validation_loader = _data.create_data_loader(config, split="validation", framework="pytorch")
     data_config = loader.data_config()
     extra_files = _checkpoint_files(data_config, manifest)
     model = build_model(config, device)
@@ -379,9 +543,9 @@ def train(config: _config.TrainConfig) -> None:
 
     run = _init_wandb(config, manifest, resume_metadata.get("wandb_run_id"))
     metrics_path = checkpoint_root / "metrics.jsonl"
+    validation_metrics_path = checkpoint_root / "validation_metrics.jsonl"
     iterator = iter(loader)
     model.train()
-    last_log_time = time.monotonic()
     performance_receipt = None
     performance_path = os.environ.get("PARALLELVLA_PERFORMANCE_RECEIPT")
     record_batch_sha256 = os.environ.get("PARALLELVLA_RECORD_BATCH_SHA256") == "1"
@@ -391,6 +555,15 @@ def train(config: _config.TrainConfig) -> None:
             warmup_steps=int(os.environ.get("PARALLELVLA_PERFORMANCE_WARMUP_STEPS", "5")),
             metadata={**manifest, "images_per_sample": 3, "record_batch_sha256": record_batch_sha256},
         )
+
+    if validation_loader is not None and global_step == 0:
+        validation_metrics = evaluate_validation_loss(model, validation_loader, device, seed=config.seed + 1)
+        validation_metrics["step"] = 0
+        _append_metrics(validation_metrics_path, validation_metrics)
+        logger.info("step=0 validation_loss=%.6f", validation_metrics["validation_loss"])
+        if run is not None:
+            run.log(validation_metrics, step=0)
+    last_log_time = time.monotonic()
 
     try:
         while global_step < config.num_train_steps:
@@ -434,9 +607,25 @@ def train(config: _config.TrainConfig) -> None:
                     run.log(metrics, step=global_step)
             logging_ms = (time.perf_counter() - logging_started) * 1000
 
+            validation_started = time.perf_counter()
+            should_validate = validation_loader is not None and (
+                global_step % config.validation_interval == 0 or global_step == config.num_train_steps
+            )
+            if should_validate:
+                validation_metrics = evaluate_validation_loss(model, validation_loader, device, seed=config.seed + 1)
+                validation_metrics["step"] = global_step
+                _append_metrics(validation_metrics_path, validation_metrics)
+                logger.info("step=%d validation_loss=%.6f", global_step, validation_metrics["validation_loss"])
+                if run is not None:
+                    run.log(validation_metrics, step=global_step)
+            validation_ms = (time.perf_counter() - validation_started) * 1000
+
             checkpoint_started = time.perf_counter()
             should_save = global_step % config.save_interval == 0 or global_step == config.num_train_steps
             if should_save:
+                checkpoint_files = dict(extra_files)
+                if validation_metrics_path.is_file():
+                    checkpoint_files[pathlib.Path("validation_metrics.jsonl")] = validation_metrics_path.read_text()
                 metadata = {
                     "config_signature": manifest,
                     "data_loader_state": loader.state_dict(),
@@ -448,7 +637,7 @@ def train(config: _config.TrainConfig) -> None:
                     global_step=global_step,
                     checkpoint_root=checkpoint_root,
                     metadata=metadata,
-                    extra_files=extra_files,
+                    extra_files=checkpoint_files,
                     ema_state=ema_state,
                 )
                 pytorch_training.prune_checkpoints(
@@ -463,6 +652,8 @@ def train(config: _config.TrainConfig) -> None:
                     "data_wait_ms": data_wait_ms,
                     **cuda_timings,
                     "logging_ms": logging_ms,
+                    "validation_ms": validation_ms,
+                    "validation_run": should_validate,
                     "checkpoint_ms": checkpoint_ms,
                     "checkpoint_saved": should_save,
                     "step_total_ms": (time.perf_counter() - step_started) * 1000,

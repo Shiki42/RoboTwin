@@ -5,6 +5,7 @@ will compute the mean and standard deviation of the data in the dataset and save
 to the config assets directory.
 """
 
+from collections.abc import Sequence
 import dataclasses
 
 import numpy as np
@@ -35,11 +36,12 @@ def create_torch_dataloader(
     batch_size: int,
     model_config: _model.BaseModelConfig,
     num_workers: int,
+    episodes: Sequence[int] | None = None,
     max_frames: int | None = None,
 ) -> tuple[_data_loader.Dataset, int]:
     if data_config.repo_id is None:
         raise ValueError("Data config must have a repo_id")
-    dataset = _data_loader.create_torch_dataset(data_config, action_horizon, model_config)
+    dataset = _data_loader.create_torch_dataset(data_config, action_horizon, model_config, episodes=episodes)
     dataset = _data_loader.TransformedDataset(
         dataset,
         [
@@ -49,18 +51,21 @@ def create_torch_dataloader(
             RemoveStrings(),
         ],
     )
+    single_epoch = max_frames is None or max_frames >= len(dataset)
     if max_frames is not None and max_frames < len(dataset):
         num_batches = max_frames // batch_size
         shuffle = True
     else:
-        num_batches = len(dataset) // batch_size
+        num_batches = (len(dataset) + batch_size - 1) // batch_size
         shuffle = False
     data_loader = _data_loader.TorchDataLoader(
         dataset,
         local_batch_size=batch_size,
         num_workers=num_workers,
         shuffle=shuffle,
-        num_batches=num_batches,
+        single_epoch=single_epoch,
+        drop_last=not single_epoch,
+        num_batches=None if single_epoch else num_batches,
     )
     return data_loader, num_batches
 
@@ -94,7 +99,43 @@ def create_rlds_dataloader(
     return data_loader, num_batches
 
 
-def main(config_name: str, max_frames: int | None = None, repo_id: str | None = None):
+def exact_statistics(values: Sequence[np.ndarray]) -> normalize.NormStats:
+    if not values:
+        raise ValueError("cannot compute exact statistics without values")
+    arrays = [np.asarray(value).reshape(-1, np.asarray(value).shape[-1]) for value in values]
+    combined = np.concatenate(arrays, axis=0)
+    if combined.shape[0] < 2:
+        raise ValueError("cannot compute exact statistics from fewer than two vectors")
+    q01, q99 = np.quantile(combined, (0.01, 0.99), axis=0)
+    return normalize.NormStats(
+        mean=combined.mean(axis=0, dtype=np.float64),
+        std=combined.std(axis=0, dtype=np.float64),
+        q01=q01,
+        q99=q99,
+    )
+
+
+def valid_action_values(batch: dict) -> np.ndarray:
+    actions = np.asarray(batch["actions"])
+    action_mask = batch.get("action_mask")
+    if action_mask is None:
+        raise ValueError("exact action statistics require action_is_pad-derived action_mask")
+    mask = np.asarray(action_mask, dtype=np.bool_)
+    if mask.shape != actions.shape:
+        raise ValueError(f"action mask shape mismatch: {mask.shape} != {actions.shape}")
+    valid_steps = mask.any(axis=-1)
+    if not np.all(mask[valid_steps]):
+        raise ValueError("exact action statistics require the same valid dimensions at every supervised step")
+    return actions[valid_steps]
+
+
+def main(
+    config_name: str,
+    max_frames: int | None = None,
+    repo_id: str | None = None,
+    *,
+    exact: bool = False,
+):
     config = _config.get_config(config_name)
     if repo_id is not None:
         config = dataclasses.replace(config, data=dataclasses.replace(config.data, repo_id=repo_id))
@@ -106,17 +147,31 @@ def main(config_name: str, max_frames: int | None = None, repo_id: str | None = 
         )
     else:
         data_loader, num_batches = create_torch_dataloader(
-            data_config, config.model.action_horizon, config.batch_size, config.model, config.num_workers, max_frames
+            data_config,
+            config.model.action_horizon,
+            config.batch_size,
+            config.model,
+            config.num_workers,
+            episodes=config.train_episodes,
+            max_frames=max_frames,
         )
 
-    keys = ["state", "actions"]
+    keys = ("state", "actions")
     stats = {key: normalize.RunningStats() for key in keys}
+    exact_values: dict[str, list[np.ndarray]] = {key: [] for key in keys}
 
     for batch in tqdm.tqdm(data_loader, total=num_batches, desc="Computing stats"):
+        if exact:
+            exact_values["state"].append(np.asarray(batch["state"]))
+            exact_values["actions"].append(valid_action_values(batch))
+            continue
         for key in keys:
             stats[key].update(np.asarray(batch[key]))
 
-    norm_stats = {key: stats.get_statistics() for key, stats in stats.items()}
+    if exact:
+        norm_stats = {key: exact_statistics(values) for key, values in exact_values.items()}
+    else:
+        norm_stats = {key: stats.get_statistics() for key, stats in stats.items()}
 
     output_path = config.assets_dirs / data_config.repo_id
     print(f"Writing stats to: {output_path}")

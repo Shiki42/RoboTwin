@@ -35,6 +35,19 @@ def test_torch_data_loader_infinite():
         _ = next(data_iter)
 
 
+def test_torch_data_loader_single_epoch_keeps_partial_final_batch():
+    dataset = [{"value": index} for index in range(5)]
+    loader = _data_loader.TorchDataLoader(
+        dataset,
+        local_batch_size=2,
+        single_epoch=True,
+        drop_last=False,
+        framework="pytorch",
+    )
+
+    assert [batch["value"].tolist() for batch in loader] == [[0, 1], [2, 3], [4]]
+
+
 def test_pytorch_loader_does_not_call_jax_tree_or_process_api(monkeypatch):
     dataset = [{"nested": {"value": index}} for index in range(4)]
 
@@ -213,8 +226,9 @@ def test_create_torch_dataset_passes_explicit_video_backend(monkeypatch):
     monkeypatch.setattr(_data_loader.lerobot_dataset, "LeRobotDataset", create_dataset)
     data_config = _config.DataConfig(repo_id="owner/dataset", video_backend="pyav")
 
-    dataset = _data_loader.create_torch_dataset(data_config, 2, model_config)
+    dataset = _data_loader.create_torch_dataset(data_config, 2, model_config, episodes=(4, 7))
 
     assert dataset is sentinel
     assert captured["repo_id"] == "owner/dataset"
+    assert captured["episodes"] == [4, 7]
     assert captured["video_backend"] == "pyav"

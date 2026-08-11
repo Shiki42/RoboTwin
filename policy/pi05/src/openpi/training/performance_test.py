@@ -95,6 +95,19 @@ def test_timing_receipt_reports_steady_throughput_without_checkpoint(tmp_path):
     assert summary["checkpoint_rows"] == 1
 
 
+def test_timing_receipt_excludes_validation_from_pure_training_throughput(tmp_path):
+    path = tmp_path / "timings.jsonl"
+    receipt = performance.TimingReceipt(path, warmup_steps=0, metadata={"batch_size": 16})
+    receipt.append({"step_total_ms": 100.0, "checkpoint_saved": False, "validation_run": False})
+    receipt.append({"step_total_ms": 900.0, "checkpoint_saved": False, "validation_run": True})
+
+    summary = json.loads(receipt.close().read_text())
+
+    pure = summary["steady_throughput_without_checkpoint_or_validation"]
+    assert pure["steps_per_second"] == 10.0
+    assert summary["validation_rows"] == 1
+
+
 def test_timing_receipt_rejects_invalid_controls(tmp_path):
     with pytest.raises(ValueError, match="warmup"):
         performance.TimingReceipt(tmp_path / "timings.jsonl", warmup_steps=-1, metadata={})
