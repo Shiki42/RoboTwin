@@ -19,6 +19,7 @@ os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
 import torch
 import wandb
 
+from openpi.models import gemma as _gemma
 from openpi.models import pi0_config
 from openpi.models_pytorch import pi0_pytorch
 from openpi.shared import normalize as _normalize
@@ -35,6 +36,17 @@ def _required_code_commit() -> str:
     if re.fullmatch(r"[0-9a-f]{40}", code_commit) is None:
         raise ValueError("PARALLELVLA_CODE_COMMIT must be a full lowercase Git commit SHA")
     return code_commit
+
+
+def _lora_signature(variant: str) -> dict[str, float | int] | None:
+    adapters = _gemma.get_config(variant).lora_configs
+    if not adapters:
+        return None
+    settings = {(adapter.rank, adapter.alpha) for adapter in adapters.values()}
+    if len(settings) != 1:
+        raise ValueError(f"LoRA settings do not match for {variant}")
+    rank, alpha = settings.pop()
+    return {"rank": rank, "alpha": alpha}
 
 
 def config_signature(config: _config.TrainConfig) -> dict[str, Any]:
@@ -67,7 +79,12 @@ def config_signature(config: _config.TrainConfig) -> dict[str, Any]:
             "action_expert_variant": getattr(model, "action_expert_variant", None),
             "action_dim": model.action_dim,
             "action_horizon": model.action_horizon,
+            "lora": {
+                "paligemma": _lora_signature(model.paligemma_variant),
+                "action_expert": _lora_signature(model.action_expert_variant),
+            },
         },
+        "action_loss_normalization": "valid_dimension_weighted_v1",
         "dataset_repo": config.data.repo_id,
         "dataset_revision": os.environ.get("PARALLELVLA_DATASET_REVISION"),
         "base_sha256": os.environ.get("PI05_BASE_SHA256"),
@@ -92,8 +109,6 @@ def _prepare_checkpoint_root(config: _config.TrainConfig) -> pathlib.Path:
 def build_model(config: _config.TrainConfig, device: torch.device) -> pi0_pytorch.PI0Pytorch:
     if not isinstance(config.model, pi0_config.Pi0Config):
         raise TypeError("PyTorch trainer requires Pi0Config")
-    if "lora" in config.model.paligemma_variant or "lora" in config.model.action_expert_variant:
-        raise ValueError("PyTorch trainer requires full PI0.5 variants; LoRA is not implemented")
     model_config = dataclasses.replace(config.model, dtype=config.pytorch_training_precision)
     model = pi0_pytorch.PI0Pytorch(model_config).to(device)
     model.set_attention_implementation(config.pytorch_attention_implementation)
@@ -106,10 +121,18 @@ def build_model(config: _config.TrainConfig, device: torch.device) -> pi0_pytorc
 
 def configure_trainable_parameters(
     model: torch.nn.Module,
-    scope: Literal["all", "action_expert_and_gate"],
+    scope: Literal["all", "action_expert_and_gate", "lora"],
 ) -> tuple[str, ...]:
+    frozen_lora_prefixes = (
+        "paligemma_with_expert.paligemma.model.language_model.",
+        "paligemma_with_expert.gemma_expert.",
+    )
+    adapter_names = {name for name, _ in model.named_parameters() if name.endswith((".lora_a", ".lora_b"))}
     if scope == "all":
-        prefixes: tuple[str, ...] | None = None
+
+        def selected(name: str) -> bool:
+            return True
+
     elif scope == "action_expert_and_gate":
         prefixes = (
             "paligemma_with_expert.gemma_expert.",
@@ -119,11 +142,22 @@ def configure_trainable_parameters(
             "time_mlp_out.",
             "phase_gate.",
         )
+
+        def selected(name: str) -> bool:
+            return name.startswith(prefixes)
+
+    elif scope == "lora":
+        if not adapter_names:
+            raise ValueError("LoRA trainable scope requires injected adapter parameters")
+
+        def selected(name: str) -> bool:
+            return name in adapter_names or not name.startswith(frozen_lora_prefixes)
+
     else:
         raise ValueError(f"unsupported PyTorch trainable scope: {scope}")
     trainable_names = []
     for name, parameter in model.named_parameters():
-        trainable = prefixes is None or name.startswith(prefixes)
+        trainable = selected(name)
         parameter.requires_grad_(trainable)
         if trainable:
             trainable_names.append(name)
@@ -178,11 +212,12 @@ def require_run_receipts(config: _config.TrainConfig) -> pathlib.Path:
 
 
 def initialize_pretrained(model: pi0_pytorch.PI0Pytorch, base: pathlib.Path) -> None:
-    allowed = ("phase_gate.",) if model.casm_mode == "visual_phase_gate" else ()
+    allowed = ["phase_gate."] if model.casm_mode == "visual_phase_gate" else []
+    allowed.extend(name for name, _ in model.named_parameters() if name.endswith((".lora_a", ".lora_b")))
     missing, unexpected = pytorch_training.load_pretrained(
         model,
         base,
-        allowed_missing_prefixes=allowed,
+        allowed_missing_prefixes=tuple(allowed),
     )
     logger.info("loaded base weights; missing=%s unexpected=%s", missing, unexpected)
 
@@ -202,6 +237,15 @@ def _append_metrics(path: pathlib.Path, metrics: dict[str, float | int]) -> None
         stream.write(json.dumps(metrics, sort_keys=True) + "\n")
         stream.flush()
         os.fsync(stream.fileno())
+
+
+def _mean_action_loss(losses: torch.Tensor, action_mask: torch.Tensor | None) -> torch.Tensor:
+    if action_mask is None:
+        return losses.mean()
+    weights = action_mask.to(device=losses.device, dtype=losses.dtype).sum(dim=-1)
+    if weights.shape != losses.shape:
+        raise ValueError(f"action loss/mask shape mismatch: {losses.shape} != {weights.shape}")
+    return (losses * weights).sum() / weights.sum()
 
 
 def train_step(
@@ -233,10 +277,14 @@ def train_step(
             timer.start("forward")
         if model.casm_mode == "visual_phase_gate":
             losses, auxiliary = model(observation, actions, return_aux=True)
+            loss = losses.mean()
         else:
             losses = model(observation, actions)
             auxiliary = {}
-        loss = losses.mean()
+            action_mask = getattr(observation, "action_mask", None)
+            if config.pytorch_trainable_scope == "lora" and action_mask is None:
+                raise ValueError("LoRA training requires action_is_pad-derived supervision mask")
+            loss = _mean_action_loss(losses, action_mask)
         if not torch.isfinite(loss):
             raise FloatingPointError(f"non-finite loss at step {global_step}: {loss}")
         if timer is not None:
@@ -251,8 +299,9 @@ def train_step(
 
     if timer is not None:
         timer.start("optimizer")
+    parameters_with_grad = (parameter for parameter in model.parameters() if parameter.grad is not None)
     gradient_norm = torch.nn.utils.clip_grad_norm_(
-        model.parameters(),
+        parameters_with_grad,
         config.optimizer.clip_gradient_norm,
         error_if_nonfinite=True,
     )

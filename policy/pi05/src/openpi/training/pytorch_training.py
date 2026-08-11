@@ -124,10 +124,18 @@ def _checkpoint_model(model: nn.Module) -> nn.Module:
     return model
 
 
+def _ema_parameters(model: nn.Module) -> dict[str, nn.Parameter]:
+    parameters = {
+        name: parameter for name, parameter in _checkpoint_model(model).named_parameters() if parameter.requires_grad
+    }
+    if not parameters:
+        raise ValueError("EMA requires at least one trainable parameter")
+    return parameters
+
+
 def initialize_ema(model: nn.Module) -> dict[str, torch.Tensor]:
     return {
-        name: parameter.detach().to(dtype=torch.float32).clone()
-        for name, parameter in _checkpoint_model(model).named_parameters()
+        name: parameter.detach().to(dtype=torch.float32).clone() for name, parameter in _ema_parameters(model).items()
     }
 
 
@@ -139,7 +147,7 @@ def update_ema(
 ) -> None:
     if not 0.0 < decay < 1.0:
         raise ValueError("EMA decay must be between zero and one")
-    parameters = dict(_checkpoint_model(model).named_parameters())
+    parameters = _ema_parameters(model)
     if parameters.keys() != ema_state.keys():
         raise ValueError("EMA state does not match model parameters")
     for name, parameter in parameters.items():
@@ -180,14 +188,14 @@ def save_checkpoint(
         if ema_state is None:
             safetensors.torch.save_model(checkpoint_model, model_path)
         else:
-            parameters = dict(checkpoint_model.named_parameters())
-            if parameters.keys() != ema_state.keys():
+            ema_parameters = _ema_parameters(checkpoint_model)
+            if ema_parameters.keys() != ema_state.keys():
                 raise ValueError("EMA state does not match model parameters")
             training_model_path = temporary_dir / "training_model.safetensors"
             safetensors.torch.save_model(checkpoint_model, training_model_path)
             try:
                 with torch.no_grad():
-                    for name, parameter in parameters.items():
+                    for name, parameter in ema_parameters.items():
                         parameter.copy_(ema_state[name])
                 safetensors.torch.save_model(checkpoint_model, model_path)
             finally:
@@ -272,6 +280,6 @@ def load_checkpoint(
         if not ema_path.is_file():
             raise FileNotFoundError(f"incomplete EMA checkpoint: {checkpoint}")
         ema_state = safetensors.torch.load_file(ema_path, device=str(device))
-        if ema_state.keys() != dict(_checkpoint_model(model).named_parameters()).keys():
+        if ema_state.keys() != _ema_parameters(model).keys():
             raise ValueError("EMA checkpoint does not match model parameters")
     return int(state["global_step"]), dict(state["metadata"]), ema_state

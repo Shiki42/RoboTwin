@@ -9,6 +9,7 @@ import torch.nn.functional as F  # noqa: N812
 
 import openpi.models.gemma as _gemma
 from openpi.models_pytorch import casm_pytorch
+from openpi.models_pytorch import lora_pytorch
 from openpi.models_pytorch.gemma_pytorch import PaliGemmaWithExpertModel
 import openpi.models_pytorch.preprocessing_pytorch as _preprocessing
 
@@ -105,6 +106,19 @@ class PI0Pytorch(nn.Module):
             precision=config.dtype,
         )
 
+        self.lora_replaced_modules = (
+            *self._inject_gemma_lora(
+                self.paligemma_with_expert.paligemma.language_model,
+                paligemma_config,
+                prefix="paligemma",
+            ),
+            *self._inject_gemma_lora(
+                self.paligemma_with_expert.gemma_expert.model,
+                action_expert_config,
+                prefix="action_expert",
+            ),
+        )
+
         self.action_in_proj = nn.Linear(32, action_expert_config.width)
         self.action_out_proj = nn.Linear(action_expert_config.width, 32)
 
@@ -139,6 +153,27 @@ class PI0Pytorch(nn.Module):
                 raise ValueError(msg)
         except ImportError:
             raise ValueError(msg) from None
+
+    @staticmethod
+    def _inject_gemma_lora(module: nn.Module, gemma_config, *, prefix: str) -> tuple[str, ...]:
+        adapters = gemma_config.lora_configs
+        if not adapters:
+            return ()
+        if set(adapters) != {"attn", "ffn"}:
+            raise ValueError(f"{prefix} requires matching attention and FFN LoRA configs")
+        settings = {(adapter.rank, adapter.alpha) for adapter in adapters.values()}
+        if len(settings) != 1:
+            raise ValueError(f"{prefix} attention and FFN LoRA settings must match")
+        rank, alpha = settings.pop()
+        replaced = lora_pytorch.inject_lora(module, rank=rank, alpha=alpha)
+        logging.info(
+            "Injected %s LoRA modules=%d rank=%d alpha=%.1f",
+            prefix,
+            len(replaced),
+            rank,
+            alpha,
+        )
+        return tuple(f"{prefix}.{path}" for path in replaced)
 
     def gradient_checkpointing_enable(self, scope: Literal["full", "vision"] = "full"):
         """Enable an explicit checkpointing scope for memory optimization."""

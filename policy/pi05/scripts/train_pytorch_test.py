@@ -9,6 +9,7 @@ import pytest
 import torch
 from torch import nn
 
+from openpi.models_pytorch import lora_pytorch
 from openpi.shared import normalize as _normalize
 from openpi.training import config as _config
 from scripts import train_pytorch
@@ -39,12 +40,31 @@ class TinyScopedPolicy(nn.Module):
         self.phase_gate = nn.Linear(2, 1)
 
 
+class TinyLoRAScopedPolicy(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.paligemma_with_expert = nn.Module()
+        self.paligemma_with_expert.paligemma = nn.Module()
+        self.paligemma_with_expert.paligemma.model = nn.Module()
+        self.paligemma_with_expert.paligemma.model.language_model = lora_pytorch.LoRALinear(
+            nn.Linear(2, 2), rank=1, alpha=1.0
+        )
+        self.paligemma_with_expert.paligemma.model.vision_tower = nn.Linear(2, 2)
+        self.paligemma_with_expert.gemma_expert = nn.Module()
+        self.paligemma_with_expert.gemma_expert.model = lora_pytorch.LoRALinear(nn.Linear(2, 2), rank=1, alpha=1.0)
+        self.action_in_proj = nn.Linear(2, 2)
+        self.action_out_proj = nn.Linear(2, 2)
+        self.time_mlp_in = nn.Linear(2, 2)
+        self.time_mlp_out = nn.Linear(2, 2)
+
+
 def _tiny_config():
     return SimpleNamespace(
         lr_schedule=SimpleNamespace(warmup_steps=0, peak_lr=0.1, decay_steps=10, decay_lr=0.01),
         optimizer=SimpleNamespace(clip_gradient_norm=1.0),
         gradient_accumulation_steps=1,
         ema_decay=None,
+        pytorch_trainable_scope="all",
     )
 
 
@@ -118,6 +138,40 @@ def test_action_expert_scope_freezes_only_pretrained_paligemma():
         "phase_gate.",
     ):
         assert any(name.startswith(prefix) for name in trainable_names)
+
+
+def test_lora_scope_freezes_gemma_base_but_keeps_adapters_vision_and_action_heads():
+    model = TinyLoRAScopedPolicy()
+
+    trainable_names = train_pytorch.configure_trainable_parameters(model, "lora")
+
+    assert trainable_names
+    assert any(name.endswith(".lora_a") for name in trainable_names)
+    assert any(name.endswith(".lora_b") for name in trainable_names)
+    assert any("vision_tower" in name for name in trainable_names)
+    assert any(name.startswith("action_in_proj.") for name in trainable_names)
+    assert not any(name.endswith(".weight") and "language_model" in name for name in trainable_names)
+    assert not any(name.endswith(".weight") and "gemma_expert" in name for name in trainable_names)
+
+
+def test_action_loss_uses_total_valid_dimension_weight():
+    losses = torch.tensor([[1.0, 3.0]])
+    action_mask = torch.tensor([[[1.0, 1.0], [1.0, 0.0]]])
+
+    loss = train_pytorch._mean_action_loss(losses, action_mask)  # noqa: SLF001
+
+    assert loss == pytest.approx(5.0 / 3.0)
+
+
+def test_lora_signature_records_both_adapter_ranks(monkeypatch):
+    monkeypatch.setenv("PARALLELVLA_CODE_COMMIT", "a" * 40)
+    config = _config.get_config("pi05_robotwin_parallel100_pytorch_lora")
+
+    signature = train_pytorch.config_signature(config)
+
+    assert signature["model"]["lora"]["paligemma"] == {"rank": 16, "alpha": 16.0}
+    assert signature["model"]["lora"]["action_expert"] == {"rank": 32, "alpha": 32.0}
+    assert signature["action_loss_normalization"] == "valid_dimension_weighted_v1"
 
 
 def test_resume_signature_allows_only_training_budget_extension(monkeypatch):

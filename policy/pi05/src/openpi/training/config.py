@@ -30,6 +30,7 @@ import openpi.training.droid_rlds_dataset as droid_rlds_dataset
 import openpi.training.misc.roboarena_config as roboarena_config
 import openpi.training.official_clean_config as official_clean_config
 import openpi.training.optimizer as _optimizer
+import openpi.training.robotwin_lora_config as robotwin_lora_config
 import openpi.training.skillvla_config as skillvla_config
 import openpi.training.weight_loaders as weight_loaders
 import openpi.transforms as _transforms
@@ -482,10 +483,8 @@ class TrainConfig:
     # A weight loader can optionally load (possibly partial) weights from disk after the model is initialized.
     weight_loader: weight_loaders.WeightLoader = dataclasses.field(default_factory=weight_loaders.NoOpWeightLoader)
 
-    # Optional path to a PyTorch checkpoint to load weights from.
     pytorch_weight_path: str | None = None
 
-    # Precision for PyTorch training.
     pytorch_training_precision: Literal["bfloat16", "float32"] = "bfloat16"
     pytorch_attention_implementation: Literal["eager", "sdpa"] = "sdpa"
     pytorch_gradient_checkpointing: bool = True
@@ -493,7 +492,7 @@ class TrainConfig:
     pytorch_fused_optimizer: bool = False
     # Compile the PyTorch module in place while preserving state-dict keys.
     pytorch_compile_mode: Literal["none", "default", "reduce-overhead", "max-autotune"] = "none"
-    pytorch_trainable_scope: Literal["all", "action_expert_and_gate"] = "all"
+    pytorch_trainable_scope: Literal["all", "action_expert_and_gate", "lora"] = "all"
     lr_schedule: _optimizer.LRScheduleConfig = dataclasses.field(default_factory=_optimizer.CosineDecaySchedule)
     optimizer: _optimizer.OptimizerConfig = dataclasses.field(default_factory=_optimizer.AdamW)
     ema_decay: float | None = 0.99
@@ -858,7 +857,7 @@ _CONFIGS = [
     skillvla_config.create_adaptation_variant(_putcab_anchor_adapt_config(
         "skillvla_adaptation_base", "none", "parallelvla-skillvla-probe")),
     official_clean_config.create_config(),
-    official_clean_config.create_pytorch_config(),
+    official_clean_config.create_pytorch_config(), robotwin_lora_config.create_config(),
     _putcab_jax_config("pi05_putcab_casm_visual_phase_gate_jax_full", "visual_phase_gate"),
     _putcab_jax_config("pi05_putcab_jax_matched_full", "none"),
     _putcab_pytorch_config("pi05_putcab_pytorch_matched_full", "none"),

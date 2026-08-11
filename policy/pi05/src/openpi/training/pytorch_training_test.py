@@ -158,6 +158,61 @@ def test_ema_checkpoint_preserves_training_and_inference_weights(tmp_path):
     assert torch.equal(restored_ema["weight"], expected_ema)
 
 
+def _adapter_model() -> nn.ModuleDict:
+    model = nn.ModuleDict(
+        {
+            "frozen": nn.Linear(2, 2, bias=False),
+            "adapter": nn.Linear(2, 1, bias=False),
+        }
+    )
+    model["frozen"].weight.requires_grad = False
+    return model
+
+
+def test_ema_tracks_only_trainable_parameters_and_keeps_frozen_weights(tmp_path):
+    model = _adapter_model()
+    optimizer = torch.optim.AdamW(model["adapter"].parameters(), lr=1e-3)
+    ema_state = pytorch_training.initialize_ema(model)
+    initial_adapter = model["adapter"].weight.detach().clone()
+    with torch.no_grad():
+        model["frozen"].weight.add_(3.0)
+        model["adapter"].weight.add_(2.0)
+    expected_frozen = model["frozen"].weight.detach().clone()
+    expected_training_adapter = model["adapter"].weight.detach().clone()
+    pytorch_training.update_ema(ema_state, model, decay=0.5)
+
+    assert set(ema_state) == {"adapter.weight"}
+    checkpoint = pytorch_training.save_checkpoint(
+        model,
+        optimizer,
+        global_step=4,
+        checkpoint_root=tmp_path,
+        metadata={"run": "adapter-ema"},
+        ema_state=ema_state,
+    )
+
+    inference_model = _adapter_model()
+    safetensors.torch.load_model(inference_model, checkpoint / "model.safetensors", strict=True)
+    assert torch.equal(inference_model["frozen"].weight, expected_frozen)
+    torch.testing.assert_close(inference_model["adapter"].weight, initial_adapter + 1.0)
+    assert torch.equal(model["adapter"].weight, expected_training_adapter)
+
+    restored_model = _adapter_model()
+    restored_optimizer = torch.optim.AdamW(restored_model["adapter"].parameters(), lr=1e-3)
+    step, metadata, restored_ema = pytorch_training.load_checkpoint(
+        restored_model,
+        restored_optimizer,
+        checkpoint,
+        device=torch.device("cpu"),
+        load_ema=True,
+    )
+
+    assert step == 4
+    assert metadata == {"run": "adapter-ema"}
+    assert restored_ema is not None
+    assert set(restored_ema) == {"adapter.weight"}
+
+
 def test_save_checkpoint_is_atomic_and_rejects_duplicate_step(tmp_path):
     model = nn.Linear(2, 1)
     optimizer = torch.optim.AdamW(model.parameters())
