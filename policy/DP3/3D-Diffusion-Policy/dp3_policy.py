@@ -10,6 +10,7 @@ if __name__ == "__main__":
 import os
 import hydra
 from omegaconf import OmegaConf
+import torch
 import pathlib
 import sys
 from train_dp3 import TrainDP3Workspace
@@ -33,6 +34,13 @@ class DP3:
 
     def update_obs(self, observation):
         self.env_runner.update_obs(observation)
+
+    def set_episode_seed(self, seed):
+        if isinstance(seed, bool) or not isinstance(seed, int):
+            raise TypeError("episode seed must be an integer")
+        if seed < 0:
+            raise ValueError("episode seed must be non-negative")
+        torch.manual_seed(seed)
 
     def get_action(self, observation=None):
         action = self.env_runner.get_action(self.policy, observation)

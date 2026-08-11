@@ -1480,6 +1480,10 @@ class Base_Task(gym.Env):
         if self.take_action_cnt == self.step_lim or self.eval_success:
             return
 
+        collision_monitor = getattr(self, "eval_collision_monitor", None)
+        if collision_monitor is not None:
+            collision_monitor.record_action(action)
+
         eval_video_freq = 1  # fixed
         if (self.eval_video_path is not None and self.take_action_cnt % eval_video_freq == 0):
             self.eval_video_ffmpeg.stdin.write(self.now_obs["observation"]["head_camera"]["rgb"].tobytes())
@@ -1652,6 +1656,9 @@ class Base_Task(gym.Env):
                 now_right_id += 1
 
             self.scene.step()
+            collision_monitor = getattr(self, "eval_collision_monitor", None)
+            if collision_monitor is not None:
+                collision_monitor.observe()
             self._update_render()
                 
             if self.check_success():

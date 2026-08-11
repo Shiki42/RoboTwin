@@ -97,10 +97,21 @@ class put_object_cabinet(Base_Task):
         self.add_prohibit_area(self.cabinet, padding=0.01)
         self.prohibited_area.append([-0.15, -0.3, 0.15, 0.3])
 
-    def play_once(self):
+    def prepare_episode_metadata(self):
         arm_tag = ArmTag("right" if self.object.get_pose().p[0] > 0 else "left")
         self.arm_tag = arm_tag
         self.origin_z = self.object.get_pose().p[2]
+        self.info["info"] = {
+            "{A}": f"{self.selected_modelname}/base{self.selected_model_id}",
+            "{B}": "036_cabinet/base0",
+            "{a}": str(arm_tag),
+            "{b}": str(arm_tag.opposite),
+        }
+        return self.info
+
+    def play_once(self):
+        episode_info = self.prepare_episode_metadata()
+        arm_tag = self.arm_tag
 
         # Grasp the object and grasp the drawer bar
         self.move(self.grasp_actor(self.object, arm_tag=arm_tag, pre_grasp_dis=0.1))
@@ -123,13 +134,7 @@ class put_object_cabinet(Base_Task):
             dis=0.1,
         ))
 
-        self.info["info"] = {
-            "{A}": f"{self.selected_modelname}/base{self.selected_model_id}",
-            "{B}": f"036_cabinet/base{0}",
-            "{a}": str(arm_tag),
-            "{b}": str(arm_tag.opposite),
-        }
-        return self.info
+        return episode_info
 
     def check_success(self):
         object_pose = self.object.get_pose().p

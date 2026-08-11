@@ -1,6 +1,9 @@
 import sys
 import os
 import subprocess
+import hashlib
+import json
+import time
 
 sys.path.append("./")
 sys.path.append(f"./policy")
@@ -20,9 +23,60 @@ import argparse
 import pdb
 
 from generate_episode_instructions import *
+from script.eval_instrumentation import InterarmContactMonitor, apply_episode_step_limit
 
 current_file_path = os.path.abspath(__file__)
 parent_directory = os.path.dirname(current_file_path)
+
+
+def compose_instruction(instruction, prefix=""):
+    instruction = str(instruction).strip()
+    prefix = str(prefix or "").strip()
+    if not prefix:
+        return instruction
+    return f"{prefix} {instruction}"
+
+
+def load_seed_table(usr_args, task_name, task_config):
+    path = Path(usr_args["seed_table_path"])
+    serialized = path.read_bytes()
+    actual_sha256 = hashlib.sha256(serialized).hexdigest()
+    expected_sha256 = str(usr_args["seed_table_sha256"]).lower()
+    if actual_sha256 != expected_sha256:
+        raise ValueError(
+            f"seed table SHA-256 mismatch: {actual_sha256} != {expected_sha256}"
+        )
+    table = json.loads(serialized)
+    if table.get("schema_version") != "parallelvla.robotwin_seed_table.v1":
+        raise ValueError("unsupported parallelVLA seed table schema")
+    if table.get("task_name") != task_name or table.get("task_config") != task_config:
+        raise ValueError("seed table task metadata does not match evaluation config")
+    seeds = table.get("seeds")
+    if not isinstance(seeds, list) or not seeds:
+        raise ValueError("seed table must contain a non-empty seed list")
+    index = int(usr_args.get("seed_table_index", 0))
+    if not 0 <= index < len(seeds):
+        raise ValueError(f"seed table index out of range: {index}")
+    seed = seeds[index]
+    if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
+        raise ValueError(f"invalid seed table entry at index {index}: {seed!r}")
+    return seed
+
+
+def reset_and_seed_policy(model, reset_func, *, policy_rng, policy_seed):
+    policy_rng = str(policy_rng)
+    if policy_rng not in {"episode_addressable", "legacy_stream"}:
+        raise ValueError("policy_rng must be 'episode_addressable' or 'legacy_stream'")
+
+    reset_func(model)
+    if policy_rng == "legacy_stream":
+        return
+    set_episode_seed = getattr(model, "set_episode_seed", None)
+    if set_episode_seed is None:
+        raise RuntimeError(
+            "episode-addressable policy RNG requires model.set_episode_seed"
+        )
+    set_episode_seed(int(policy_seed))
 
 
 def class_decorator(task_name):
@@ -77,6 +131,21 @@ def main(usr_args):
 
     with open(f"./task_config/{task_config}.yml", "r", encoding="utf-8") as f:
         args = yaml.load(f.read(), Loader=yaml.FullLoader)
+
+    for runtime_key in (
+        "eval_video_log",
+        "render_freq",
+        "clear_cache_freq",
+        "expert_check",
+        "instruction_prefix",
+        "max_episode_steps",
+        "policy_rng",
+        "policy_seed",
+        "metrics_output",
+        "requested_seed",
+    ):
+        if runtime_key in usr_args:
+            args[runtime_key] = usr_args[runtime_key]
 
     args['task_name'] = task_name
     args["task_config"] = task_config
@@ -155,11 +224,25 @@ def main(usr_args):
     usr_args["left_arm_dim"] = len(args["left_embodiment_config"]["arm_joints_name"][0])
     usr_args["right_arm_dim"] = len(args["right_embodiment_config"]["arm_joints_name"][1])
 
-    seed = usr_args["seed"]
-
-    st_seed = 100000 * (1 + seed)
+    if "seed_table_path" in usr_args:
+        st_seed = load_seed_table(usr_args, task_name, task_config)
+        if "requested_seed" in usr_args:
+            requested_seed = int(usr_args["requested_seed"])
+            if requested_seed != st_seed:
+                raise ValueError(
+                    "requested seed does not match seed table: "
+                    f"{requested_seed} != {st_seed}"
+                )
+    else:
+        seed = int(usr_args["seed"])
+        st_seed = int(usr_args.get("start_seed", 100000 * (1 + seed)))
     suc_nums = []
-    test_num = 100
+    test_num = int(usr_args.get("test_num", 100))
+    start_episode_index = int(usr_args.get("start_episode_index", 0))
+    if test_num < 1:
+        raise ValueError("test_num must be positive")
+    if start_episode_index < 0:
+        raise ValueError("start_episode_index must be non-negative")
     topk = 1
 
     model = get_model(usr_args)
@@ -169,8 +252,10 @@ def main(usr_args):
                                    model,
                                    st_seed,
                                    test_num=test_num,
+                                   start_episode_index=start_episode_index,
                                    video_size=video_size,
-                                   instruction_type=instruction_type)
+                                   instruction_type=instruction_type,
+                                   save_dir=save_dir)
     suc_nums.append(suc_num)
 
     topk_success_rate = sorted(suc_nums, reverse=True)[:topk]
@@ -192,16 +277,18 @@ def eval_policy(task_name,
                 model,
                 st_seed,
                 test_num=100,
+                start_episode_index=0,
                 video_size=None,
-                instruction_type=None):
+                instruction_type=None,
+                save_dir=None):
     print(f"\033[34mTask Name: {args['task_name']}\033[0m")
     print(f"\033[34mPolicy Name: {args['policy_name']}\033[0m")
 
-    expert_check = True
+    expert_check = bool(args.get("expert_check", True))
     TASK_ENV.suc = 0
-    TASK_ENV.test_num = 0
+    TASK_ENV.test_num = int(start_episode_index)
 
-    now_id = 0
+    now_id = int(start_episode_index)
     succ_seed = 0
     suc_test_seed_list = []
 
@@ -254,9 +341,18 @@ def eval_policy(task_name,
         args["render_freq"] = render_freq
 
         TASK_ENV.setup_demo(now_ep_num=now_id, seed=now_seed, is_test=True, **args)
+        apply_episode_step_limit(TASK_ENV, args.get("max_episode_steps"))
+        collision_monitor = InterarmContactMonitor(TASK_ENV)
+        TASK_ENV.eval_collision_monitor = collision_monitor
+        if not expert_check:
+            episode_info = TASK_ENV.prepare_episode_metadata()
         episode_info_list = [episode_info["info"]]
         results = generate_episode_descriptions(args["task_name"], episode_info_list, test_num)
-        instruction = np.random.choice(results[0][instruction_type])
+        instruction = compose_instruction(
+            np.random.choice(results[0][instruction_type]),
+            args.get("instruction_prefix", ""),
+        )
+        print(f"Evaluation instruction: {instruction}")
         TASK_ENV.set_instruction(instruction=instruction)  # set language instruction
 
         if TASK_ENV.eval_video_path is not None:
@@ -289,7 +385,16 @@ def eval_policy(task_name,
             TASK_ENV._set_eval_video_ffmpeg(ffmpeg)
 
         succ = False
-        reset_func(model)
+        episode_start_time = time.time()
+        policy_rng = str(args.get("policy_rng", "legacy_stream"))
+        requested_seed = int(args.get("requested_seed", now_seed))
+        policy_seed = int(args.get("policy_seed", requested_seed))
+        reset_and_seed_policy(
+            model,
+            reset_func,
+            policy_rng=policy_rng,
+            policy_seed=policy_seed,
+        )
         while TASK_ENV.take_action_cnt < TASK_ENV.step_lim:
             observation = TASK_ENV.get_obs()
             eval_func(TASK_ENV, model, observation)
@@ -299,6 +404,61 @@ def eval_policy(task_name,
         # task_total_reward += TASK_ENV.episode_score
         if TASK_ENV.eval_video_path is not None:
             TASK_ENV._del_eval_video_ffmpeg()
+
+        episode_steps = int(TASK_ENV.take_action_cnt)
+        episode_elapsed_sec = time.time() - episode_start_time
+        collision = collision_monitor.summary()
+        action_digest = collision_monitor.episode_action_sha256()
+        action_count = collision_monitor.action_count
+        if action_count != episode_steps:
+            raise RuntimeError(
+                "native executed-action count does not match episode steps: "
+                f"{action_count} != {episode_steps}"
+            )
+        TASK_ENV.eval_collision_monitor = None
+        inference_requests = int(getattr(model, "inference_index", 0))
+
+        metrics_path = args.get("metrics_output")
+        if metrics_path is None and save_dir is not None:
+            metrics_path = Path(save_dir) / "rollout_metrics.jsonl"
+        if metrics_path is not None:
+            metrics_path = Path(metrics_path)
+            metrics_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(metrics_path, "a", encoding="utf-8") as metrics_file:
+                metrics_file.write(
+                    json.dumps(
+                        {
+                            "task_name": task_name,
+                            "policy_name": args["policy_name"],
+                            "task_config": args["task_config"],
+                            "ckpt_setting": args["ckpt_setting"],
+                            "seed": int(now_seed),
+                            "scene_seed": int(now_seed),
+                            "requested_seed": requested_seed,
+                            "policy_seed": policy_seed,
+                            "policy_rng": policy_rng,
+                            "policy_action_sha256": action_digest,
+                            "policy_action_count": action_count,
+                            "policy_inference_requests": inference_requests,
+                            "episode_index": int(TASK_ENV.test_num),
+                            "success": bool(succ),
+                            "episode_steps": episode_steps,
+                            "max_episode_steps": int(TASK_ENV.step_lim),
+                            "elapsed_sec": episode_elapsed_sec,
+                            "collision": collision["collision"],
+                            "collision_summary": collision,
+                            "instruction": instruction,
+                        },
+                        sort_keys=True,
+                    )
+                    + "\n"
+                )
+
+        print(
+            f"Episode metrics: seed={now_seed}, policy_seed={policy_seed}, success={succ}, "
+            f"steps={episode_steps}, collision={collision['collision']}, "
+            f"elapsed_sec={episode_elapsed_sec:.3f}"
+        )
 
         if succ:
             TASK_ENV.suc += 1

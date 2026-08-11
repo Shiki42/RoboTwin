@@ -87,6 +87,13 @@ class place_dual_shoes(Base_Task):
         self.prohibited_area.append([-0.15, -0.25, 0.15, 0.01])
         self.right_shoe_middle_pose = [0.35, -0.05, 0.79, 0, 1, 0, 0]
 
+    def prepare_episode_metadata(self):
+        self.info["info"] = {
+            "{A}": f"041_shoe/base{self.shoe_id}",
+            "{B}": "007_shoe-box/base0",
+        }
+        return self.info
+
     def play_once(self):
         left_arm_tag = ArmTag("left")
         right_arm_tag = ArmTag("right")
@@ -133,13 +140,6 @@ class place_dual_shoes(Base_Task):
         self.delay(3)
 
         return self.prepare_episode_metadata()
-
-    def prepare_episode_metadata(self):
-        self.info["info"] = {
-            "{A}": f"041_shoe/base{self.shoe_id}",
-            "{B}": f"007_shoe-box/base0",
-        }
-        return self.info
 
     def check_success(self):
         left_shoe_pose_p = np.array(self.left_shoe.get_pose().p)
