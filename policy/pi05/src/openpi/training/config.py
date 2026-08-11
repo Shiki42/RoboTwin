@@ -512,6 +512,7 @@ class TrainConfig:
     train_episodes: tuple[int, ...] | None = None
     validation_episodes: tuple[int, ...] = ()
     validation_interval: int = 0
+    validation_num_workers: int = 0
     # Per-microstep batch size. Global batch is batch_size * gradient_accumulation_steps.
     batch_size: int = 32
     gradient_accumulation_steps: int = 1
@@ -570,6 +571,10 @@ class TrainConfig:
             raise ValueError("gradient accumulation steps must be positive")
         if self.validation_interval < 0:
             raise ValueError("validation interval must be non-negative")
+        if self.validation_num_workers < 0:
+            raise ValueError("validation workers must be non-negative")
+        if not self.validation_episodes and self.validation_num_workers != 0:
+            raise ValueError("validation workers require validation episodes")
         if self.validation_episodes and self.validation_interval == 0:
             raise ValueError("validation episodes require a positive validation interval")
         if not self.validation_episodes and self.validation_interval != 0:

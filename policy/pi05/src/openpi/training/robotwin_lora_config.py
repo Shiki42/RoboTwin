@@ -70,6 +70,7 @@ def _create_config(*, lora: bool):
         train_episodes=train_episodes if not lora else None,
         validation_episodes=validation_episodes if not lora else (),
         validation_interval=500 if not lora else 0,
+        validation_num_workers=1 if not lora else 0,
         batch_size=32 if lora else 16,
         gradient_accumulation_steps=1,
         num_workers=4 if not lora else 2,

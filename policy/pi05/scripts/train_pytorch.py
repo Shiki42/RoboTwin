@@ -148,6 +148,7 @@ def config_signature(config: _config.TrainConfig) -> dict[str, Any]:
         "pytorch_training_precision": config.pytorch_training_precision,
         "ema_decay": config.ema_decay,
         "num_workers": config.num_workers,
+        "validation_num_workers": config.validation_num_workers,
         "prefetch_factor": config.prefetch_factor,
         "persistent_workers": config.persistent_workers,
         "pin_memory": config.pin_memory,

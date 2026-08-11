@@ -61,6 +61,7 @@ def test_robotwin_full_config_uses_fixed_episode_split_and_fast_bf16_recipe(monk
     assert train_config.train_episodes == train
     assert train_config.validation_episodes == validation
     assert train_config.validation_interval == 500
+    assert train_config.validation_num_workers == 1
     assert train_config.batch_size == 16
     assert train_config.gradient_accumulation_steps == 1
     assert train_config.num_workers == 4
@@ -73,6 +74,7 @@ def test_robotwin_full_config_uses_fixed_episode_split_and_fast_bf16_recipe(monk
     ("updates", "error"),
     [
         ({"validation_interval": -1}, "non-negative"),
+        ({"validation_num_workers": -1}, "workers"),
         ({"validation_episodes": (2,)}, "positive validation interval"),
         ({"validation_interval": 1}, "requires validation episodes"),
         (
