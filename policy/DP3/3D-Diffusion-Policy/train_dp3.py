@@ -38,6 +38,7 @@ from diffusion_policy_3d.policy.dp3 import DP3
 from diffusion_policy_3d.dataset.base_dataset import BaseDataset
 from diffusion_policy_3d.env_runner.base_runner import BaseRunner
 from diffusion_policy_3d.env_runner.robot_runner import RobotRunner
+from diffusion_policy_3d.common.checkpoint_path import resolve_checkpoint_path
 from diffusion_policy_3d.common.checkpoint_util import TopKCheckpointManager
 from diffusion_policy_3d.common.pytorch_util import dict_apply, optimizer_to
 from diffusion_policy_3d.model.diffusion.ema_model import EMAModel
@@ -314,23 +315,9 @@ class TrainDP3Workspace:
 
         env_runner = RobotRunner(n_obs_steps=n_obs_steps, n_action_steps=n_action_steps)
 
-        if not cfg.policy.use_pc_color:
-            ckpt_file = pathlib.Path(
-                os.path.join(
-                    DP3_ROOT,
-                    f"./checkpoints/{usr_args['task_name']}-{usr_args['ckpt_setting']}-{usr_args['expert_data_num']}_{usr_args['seed']}/{usr_args['checkpoint_num']}.ckpt"
-                ))
-        else:
-            ckpt_file = pathlib.Path(
-                os.path.join(
-                    DP3_ROOT,
-                    f"./checkpoints/{usr_args['task_name']}-{usr_args['ckpt_setting']}-{usr_args['expert_data_num']}_w_rgb_{usr_args['seed']}/{usr_args['checkpoint_num']}.ckpt"
-                ))
-        assert ckpt_file.is_file(), f"ckpt file doesn't exist, {ckpt_file}"
-
-        if ckpt_file.is_file():
-            cprint(f"Resuming from checkpoint {ckpt_file}", "magenta")
-            self.load_checkpoint(path=ckpt_file)
+        ckpt_file = resolve_checkpoint_path(usr_args)
+        cprint(f"Resuming from checkpoint {ckpt_file}", "magenta")
+        self.load_checkpoint(path=ckpt_file)
 
         policy = self.model
         if cfg.training.use_ema:
