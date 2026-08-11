@@ -1,4 +1,5 @@
 from ._base_task import Base_Task
+from .replay_scene import parse_replay_object_identity
 from .utils import *
 import sapien
 import glob
@@ -7,6 +8,7 @@ import glob
 class put_object_cabinet(Base_Task):
 
     def setup_demo(self, **kwags):
+        self.replay_scene_info = kwags.get("replay_scene_info")
         super()._init_task_env_(**kwags, table_static=False)
 
     def load_actors(self):
@@ -64,11 +66,25 @@ class put_object_cabinet(Base_Task):
             "113_coffee-box",
             "107_soap",
         ]
-        self.selected_modelname = np.random.choice(object_list)
-        available_model_ids = get_available_model_ids(self.selected_modelname)
-        if not available_model_ids:
-            raise ValueError(f"No available model_data.json files found for {self.selected_modelname}")
-        self.selected_model_id = np.random.choice(available_model_ids)
+        sampled_modelname = np.random.choice(object_list)
+        sampled_model_ids = get_available_model_ids(sampled_modelname)
+        if not sampled_model_ids:
+            raise ValueError(f"No available model_data.json files found for {sampled_modelname}")
+        sampled_model_id = np.random.choice(sampled_model_ids)
+
+        replay_identity = parse_replay_object_identity(self.replay_scene_info)
+        if replay_identity is None:
+            self.selected_modelname = sampled_modelname
+            self.selected_model_id = sampled_model_id
+        else:
+            self.selected_modelname, self.selected_model_id = replay_identity
+            if self.selected_modelname not in object_list:
+                raise ValueError(f"replay object is not allowed: {self.selected_modelname}")
+            available_model_ids = get_available_model_ids(self.selected_modelname)
+            if self.selected_model_id not in available_model_ids:
+                raise ValueError(
+                    f"replay model id is unavailable: {self.selected_modelname}/base{self.selected_model_id}"
+                )
         self.object = create_actor(
             scene=self,
             pose=rand_pos,
