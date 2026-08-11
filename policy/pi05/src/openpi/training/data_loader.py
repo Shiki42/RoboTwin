@@ -190,6 +190,32 @@ class FakeDataset(Dataset):
         return self._num_samples
 
 
+def _expand_lerobot_episode_data_index(dataset, episodes: Sequence[int]) -> None:
+    """Map compact subset offsets back to the original episode indices used by LeRobot rows."""
+    if len(episodes) != len(set(episodes)):
+        raise ValueError("episode subset cannot contain duplicate indices")
+    total_episodes = dataset.meta.total_episodes
+    if any(index < 0 or index >= total_episodes for index in episodes):
+        raise ValueError("episode subset index is outside the dataset")
+    compact_index = dataset.episode_data_index
+    if set(compact_index) != {"from", "to"}:
+        raise ValueError("unexpected LeRobot episode data index keys")
+    expanded_index = {}
+    episode_tensor = torch.as_tensor(episodes, dtype=torch.long)
+    for key, compact_values in compact_index.items():
+        if compact_values.shape != (len(episodes),):
+            raise ValueError("LeRobot compact episode index length does not match the subset")
+        expanded = torch.full(
+            (total_episodes,),
+            -1,
+            dtype=compact_values.dtype,
+            device=compact_values.device,
+        )
+        expanded[episode_tensor.to(device=compact_values.device)] = compact_values
+        expanded_index[key] = expanded
+    dataset.episode_data_index = expanded_index
+
+
 def create_torch_dataset(
     data_config: _config.DataConfig,
     action_horizon: int,
@@ -213,6 +239,8 @@ def create_torch_dataset(
         },
         video_backend=data_config.video_backend,
     )
+    if episodes is not None:
+        _expand_lerobot_episode_data_index(dataset, episodes)
 
     if data_config.prompt_from_task:
         dataset = TransformedDataset(dataset, [_transforms.PromptFromLeRobotTask(dataset_meta.tasks)])

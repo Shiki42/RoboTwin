@@ -207,11 +207,19 @@ def test_with_real_dataset():
 def test_create_torch_dataset_passes_explicit_video_backend(monkeypatch):
     model_config = pi0_config.Pi0Config(action_dim=24, action_horizon=2, max_token_len=48)
     captured = {}
-    sentinel = object()
 
     class DatasetMetadata:
         fps = 10
 
+    class Dataset:
+        def __init__(self):
+            self.meta = dataclasses.make_dataclass("Meta", [("total_episodes", int)])(100)
+            self.episode_data_index = {
+                "from": torch.tensor([0, 5]),
+                "to": torch.tensor([5, 9]),
+            }
+
+    sentinel = Dataset()
     monkeypatch.setattr(
         _data_loader.lerobot_dataset,
         "LeRobotDatasetMetadata",
@@ -232,3 +240,6 @@ def test_create_torch_dataset_passes_explicit_video_backend(monkeypatch):
     assert captured["repo_id"] == "owner/dataset"
     assert captured["episodes"] == [4, 7]
     assert captured["video_backend"] == "pyav"
+    assert dataset.episode_data_index["from"][[4, 7]].tolist() == [0, 5]
+    assert dataset.episode_data_index["to"][[4, 7]].tolist() == [5, 9]
+    assert dataset.episode_data_index["from"][0] == -1
