@@ -60,8 +60,8 @@ def test_robotwin_full_config_uses_fixed_episode_split_and_fast_bf16_recipe(monk
     assert train_config.pytorch_trainable_scope == "all"
     assert train_config.train_episodes == train
     assert train_config.validation_episodes == validation
-    assert train_config.validation_interval == 500
-    assert train_config.validation_num_workers == 1
+    assert train_config.validation_interval == 2_000
+    assert train_config.validation_num_workers == 2
     assert train_config.batch_size == 16
     assert train_config.gradient_accumulation_steps == 1
     assert train_config.num_workers == 4

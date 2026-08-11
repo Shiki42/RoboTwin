@@ -349,11 +349,13 @@ def create_data_loader(
         single_epoch = True
         drop_last = False
         num_workers = config.validation_num_workers
+        persistent_workers = False
     else:
         episodes = config.train_episodes
         single_epoch = False
         drop_last = True
         num_workers = config.num_workers
+        persistent_workers = config.persistent_workers
 
     if data_config.rlds_data_dir is not None:
         if split != "train":
@@ -381,7 +383,7 @@ def create_data_loader(
         num_batches=num_batches,
         num_workers=num_workers,
         prefetch_factor=config.prefetch_factor,
-        persistent_workers=config.persistent_workers,
+        persistent_workers=persistent_workers,
         pin_memory=config.pin_memory,
         seed=config.seed,
         skip_norm_stats=skip_norm_stats,

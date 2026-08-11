@@ -282,7 +282,7 @@ def test_episode_split_signature_accepts_matching_complete_partition(tmp_path, m
     assert signature["total_episodes"] == 100
     assert signature["train_episodes"] == list(config.train_episodes)
     assert signature["validation_episodes"] == list(config.validation_episodes)
-    assert signature["validation_interval"] == 500
+    assert signature["validation_interval"] == 2_000
     assert len(signature["receipt_sha256"]) == 64
 
 
