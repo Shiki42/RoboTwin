@@ -1,9 +1,12 @@
-import time
+from pathlib import Path
+import sys
 
-from .pi_model import PI0
+import numpy as np
+
+_CURRENT_DIR = Path(__file__).resolve().parent
+sys.path.append(str(_CURRENT_DIR))
 
 
-# Encode observation for the model
 def encode_obs(observation):
     input_rgb_arr = [
         observation["observation"]["head_camera"]["rgb"],
@@ -11,71 +14,67 @@ def encode_obs(observation):
         observation["observation"]["left_camera"]["rgb"],
     ]
     input_state = observation["joint_action"]["vector"]
-
     return input_rgb_arr, input_state
 
 
+def encode_state(task_env):
+    left = task_env.robot.get_left_arm_jointState()
+    right = task_env.robot.get_right_arm_jointState()
+    return np.asarray(left + right)
+
+
 def get_model(usr_args):
-    pi0_step = int(usr_args["pi0_step"])
-    async_steps = int(usr_args.get("async_scene_context_steps", 0))
-    server_host = str(usr_args["policy_server_host"])
-    server_port = int(usr_args["policy_server_port"])
-    boundary_observation = bool(usr_args.get("pi05_boundary_observation", False))
+    remote_port = int(usr_args.get("remote_policy_port", 0))
+    if remote_port:
+        from robotwin_remote_model import RobotwinRemoteModel
+
+        return RobotwinRemoteModel(
+            host=usr_args.get("remote_policy_host", "127.0.0.1"),
+            port=remote_port,
+        )
+
+    from pi_model import PI0
+
+    checkpoint_dir = (
+        _CURRENT_DIR
+        / "checkpoints"
+        / usr_args["train_config_name"]
+        / usr_args["model_name"]
+        / str(usr_args["checkpoint_id"])
+    )
     return PI0(
-        server_host,
-        server_port,
-        pi0_step,
-        async_steps,
-        boundary_observation,
-        visual_phase_gate=bool(usr_args.get("visual_phase_gate", False)),
+        usr_args["train_config_name"],
+        checkpoint_dir,
+        usr_args["pi0_step"],
+        async_phase_steps=int(usr_args.get("async_phase_steps", 0)),
         sync_action_chunk_steps=int(usr_args.get("sync_action_chunk_steps", 10)),
-        gate_sync_threshold=float(usr_args.get("gate_sync_threshold", 0.5)),
-        gate_sync_confirmations=int(usr_args.get("gate_sync_confirmations", 2)),
+        phase_prompt_conditioning=bool(int(usr_args.get("phase_prompt_conditioning", 1))),
+        boundary_phase_steps=int(usr_args.get("boundary_phase_steps", 20)),
     )
 
 
-def eval(task_env, model, observation):
+def eval(TASK_ENV, model, observation):  # noqa: N803
     if model.observation_window is None:
-        instruction = task_env.get_instruction()
-        model.set_language(instruction)
+        model.set_language(TASK_ENV.get_instruction())
 
     input_rgb_arr, input_state = encode_obs(observation)
-    model.update_observation_window(input_rgb_arr, input_state)
-
-    # ======== Get Action ========
-
+    model.update_observation_window(input_rgb_arr, input_state, action_executed=False)
     actions = model.get_action()[: model.execution_steps()]
-    model.record_chunk(len(actions))
+    executed_actions = 0
 
     for action in actions:
-        previous_step = task_env.take_action_cnt
-        action_started = time.perf_counter()
-        task_env.take_action(action)
-        model.profile_action_s += time.perf_counter() - action_started
-        model.profile_action_calls += 1
-        if task_env.take_action_cnt == previous_step:
+        previous_step = TASK_ENV.take_action_cnt
+        TASK_ENV.take_action(action)
+        if TASK_ENV.take_action_cnt == previous_step:
             break
         model.record_action(action, input_state)
-        recorder = getattr(task_env, "rollout_episode_recorder", None)
-        if recorder is not None:
-            capture_observation = task_env.get_obs()
-            recorder.record(
-                capture_observation,
-                action,
-                async_phase=model.main_camera_router.async_phase,
-                async_probability=getattr(model.main_camera_router, "latest_async_probability", None),
-                inference_index=model.inference_index - 1,
-            )
         model.advance_after_action()
-        if model.boundary_observation:
-            if task_env.eval_success or task_env.take_action_cnt >= task_env.step_lim:
-                break
-            continue
-        observation = task_env.get_obs()
-        input_rgb_arr, input_state = encode_obs(observation)
-        model.update_observation_window(input_rgb_arr, input_state)
+        input_state = encode_state(TASK_ENV)
+        executed_actions += 1
+        if TASK_ENV.eval_success or TASK_ENV.take_action_cnt >= TASK_ENV.step_lim:
+            break
 
-    # ============================
+    model.record_chunk(executed_actions)
 
 
 def reset_model(model):
