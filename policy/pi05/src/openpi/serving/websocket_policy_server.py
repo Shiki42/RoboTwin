@@ -50,6 +50,7 @@ class WebsocketPolicyServer:
 
     async def _handler(self, websocket: _server.ServerConnection):
         logger.info(f"Connection from {websocket.remote_address} opened")
+        session_id = id(websocket)
         packer = msgpack_numpy.Packer()
 
         await websocket.send(packer.pack(self._metadata))
@@ -61,7 +62,7 @@ class WebsocketPolicyServer:
                 obs = msgpack_numpy.unpackb(await websocket.recv())
 
                 infer_time = time.monotonic()
-                action = await self._infer(obs)
+                action = await self._infer(obs, session_id)
                 infer_time = time.monotonic() - infer_time
 
                 action["server_timing"] = {
@@ -76,24 +77,35 @@ class WebsocketPolicyServer:
 
             except websockets.ConnectionClosed:
                 logger.info(f"Connection from {websocket.remote_address} closed")
+                await asyncio.to_thread(self._close_session_serialized, session_id)
                 break
             except Exception:
                 await websocket.send(traceback.format_exc())
+                await asyncio.to_thread(self._close_session_serialized, session_id)
                 await websocket.close(
                     code=websockets.frames.CloseCode.INTERNAL_ERROR,
                     reason="Internal server error. Traceback included in previous frame.",
                 )
                 raise
 
-    async def _infer(self, obs):
-        # Yield the event loop for keepalives while keeping the JAX policy single-threaded.
-        return await asyncio.to_thread(self._infer_serialized, obs)
+    async def _infer(self, obs, session_id=0):
+        # Yield the event loop for keepalives while keeping the policy single-threaded.
+        return await asyncio.to_thread(self._infer_serialized, obs, session_id)
 
-    def _infer_serialized(self, obs):
+    def _infer_serialized(self, obs, session_id):
         # A cancelled coroutine cannot stop its worker thread. Keep serialization in that
-        # thread so the next request cannot overlap the still-running JAX inference.
+        # thread so the next request cannot overlap the still-running inference.
         with self._inference_lock:
+            infer_session = getattr(self._policy, "infer_session", None)
+            if infer_session is not None:
+                return infer_session(session_id, obs)
             return self._policy.infer(obs)
+
+    def _close_session_serialized(self, session_id):
+        with self._inference_lock:
+            close_session = getattr(self._policy, "close_session", None)
+            if close_session is not None:
+                close_session(session_id)
 
 
 def _health_check(connection: _server.ServerConnection, request: _server.Request) -> _server.Response | None:

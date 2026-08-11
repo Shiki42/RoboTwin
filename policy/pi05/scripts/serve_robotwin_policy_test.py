@@ -1,134 +1,136 @@
-import hashlib
-import json
+from __future__ import annotations
+
+import copy
+import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
+import torch
 
-from robotwin_image_transport import encode_images
-from scripts.serve_robotwin_policy import RobotwinPolicyService
-from scripts.serve_robotwin_policy import validate_checkpoint_inventory
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import serve_robotwin_policy as server_module
 
 
-class FakeModel:
+class _Router:
     def __init__(self):
+        self.step = 0
+
+    def reset(self):
+        self.step = 0
+
+
+class _Metrics:
+    def __init__(self):
+        self.chunks = []
+
+    def reset(self):
+        self.chunks = []
+
+
+class _FakeModel:
+    def __init__(self):
+        self.policy = object()
+        self.main_camera_router = _Router()
+        self.activity_metrics = _Metrics()
+        self.base_instruction = None
         self.observation_window = None
-        self.calls = []
+        self.semantic_subtask_history = []
 
     def reset_obsrvationwindows(self):
-        self.calls.append(("reset",))
+        self.base_instruction = None
         self.observation_window = None
-
-    def rollout_metrics(self):
-        return {"chunk_count": 1}
-
-    def record_action(self, action, state):
-        self.calls.append(("record_action", action, state))
-
-    def advance_after_action(self):
-        self.calls.append(("advance",))
-
-    def update_observation_window(self, images, state, *, action_executed):
-        self.calls.append(("update", action_executed))
-        self.observation_window = {"images": images, "state": state}
-
-    def set_language(self, instruction):
-        self.calls.append(("language", instruction))
-
-    def get_action(self):
-        return np.ones((5, 14), dtype=np.float32)
-
-    def execution_steps(self):
-        return 3
-
-    def record_chunk(self, length):
-        self.calls.append(("chunk", length))
+        self.main_camera_router.reset()
+        self.activity_metrics.reset()
 
     def set_episode_seed(self, seed):
-        self.calls.append(("seed", seed))
+        torch.manual_seed(seed)
 
+    def set_language(self, instruction):
+        self.base_instruction = instruction
 
-def test_service_dispatches_infer_observe_metrics_and_reset():
-    model = FakeModel()
-    service = RobotwinPolicyService(model)
-    raw_images = [np.zeros((2, 2, 3), dtype=np.uint8)] * 3
-    observation = {"images": encode_images(raw_images), "state": np.zeros(14)}
+    def update_observation_window(self, images, state, *, action_executed):
+        del images, action_executed
+        self.observation_window = copy.deepcopy(state)
 
-    assert service.infer({"command": "seed", "seed": 100008}) == {"ok": True}
-    response = service.infer({"command": "infer", "instruction": "task", **observation})
-    assert response["actions"].shape == (3, 14)
-    assert ("seed", 100008) in model.calls
-    assert ("language", "task") in model.calls
-    assert ("chunk", 3) in model.calls
-    assert all(
-        np.array_equal(image, expected)
-        for image, expected in zip(
-            model.observation_window["images"],
-            raw_images,
-            strict=True,
-        )
-    )
+    def get_action(self):
+        self.main_camera_router.step += 1
+        return torch.rand((2, 3)).numpy()
 
-    service.infer(
-        {
-            "command": "observe",
-            "action": np.ones(14),
-            "previous_state": np.zeros(14),
+    def execution_steps(self):
+        return 2
+
+    def record_chunk(self, length):
+        self.activity_metrics.chunks.append(length)
+
+    def record_action(self, action, state):
+        del action, state
+
+    def advance_after_action(self):
+        self.main_camera_router.step += 1
+
+    def rollout_metrics(self):
+        return {
+            "executed_chunk_lengths": self.activity_metrics.chunks.copy(),
+            "router_step": self.main_camera_router.step,
         }
-    )
-    assert ("advance",) in model.calls
-    assert ("update", True) not in model.calls
-    metrics = service.infer({"command": "metrics"})["metrics"]
-    assert metrics["chunk_count"] == 1
-    assert metrics["server_policy_inference_requests"] == 1
-    assert len(metrics["server_policy_action_sha256"]) == 64
-    assert service.infer({"command": "reset"}) == {"ok": True}
 
 
-def test_checkpoint_inventory_binds_real_files(tmp_path: Path):
-    checkpoint = tmp_path / "checkpoint"
-    asset = checkpoint / "assets/repo/norm_stats.json"
-    asset.parent.mkdir(parents=True)
-    asset.write_bytes(b"norm")
-    model = checkpoint / "model.safetensors"
-    model.write_bytes(b"model")
-    files = [
-        {
-            "path": "assets/repo/norm_stats.json",
-            "size_bytes": asset.stat().st_size,
-            "sha256": hashlib.sha256(asset.read_bytes()).hexdigest(),
-        },
-        {
-            "path": "model.safetensors",
-            "size_bytes": model.stat().st_size,
-            "sha256": hashlib.sha256(model.read_bytes()).hexdigest(),
-        },
-    ]
-    canonical = "".join(f"{item['sha256']}  {item['size_bytes']}  {item['path']}\n" for item in files).encode()
-    tree_sha256 = hashlib.sha256(canonical).hexdigest()
-    inventory = tmp_path / "inventory.json"
-    inventory.write_text(
-        json.dumps(
-            {
-                "status": "complete",
-                "artifact_type": "inference_checkpoint_package",
-                "config_name": "pi05_putcab_spline_field_pytorch",
-                "producer_code_commit": "9" * 40,
-                "checkpoint_step": 30000,
-                "file_count": len(files),
-                "total_bytes": sum(item["size_bytes"] for item in files),
-                "tree_sha256": tree_sha256,
-                "files": files,
-            }
-        )
-    )
+def _request(command, **kwargs):
+    return {"command": command, **kwargs}
 
-    metadata = validate_checkpoint_inventory(
-        checkpoint,
-        inventory,
-        expected_tree_sha256=tree_sha256,
-        expected_producer_code_commit="9" * 40,
-        train_config_name="pi05_putcab_spline_field_pytorch",
-    )
 
-    assert metadata["checkpoint_tree_sha256"] == tree_sha256
-    assert metadata["checkpoint_file_count"] == 2
+def _infer_request():
+    return _request("infer", images=[], state=[0.0], instruction="put object")
+
+
+def test_interleaved_sessions_keep_rng_trace_and_router_state_isolated(monkeypatch):
+    monkeypatch.setattr(server_module, "decode_images", lambda images: images)
+    service = server_module.RobotwinPolicyService(_FakeModel())
+
+    for session_id, seed in ((11, 101), (22, 202)):
+        service.infer_session(session_id, _request("reset"))
+        service.infer_session(session_id, _request("seed", seed=seed))
+
+    action_11_first = service.infer_session(11, _infer_request())["actions"]
+    action_22_first = service.infer_session(22, _infer_request())["actions"]
+    action_11_second = service.infer_session(11, _infer_request())["actions"]
+
+    expected = server_module.RobotwinPolicyService(_FakeModel())
+    expected.infer_session(1, _request("reset"))
+    expected.infer_session(1, _request("seed", seed=101))
+    expected_11_first = expected.infer_session(1, _infer_request())["actions"]
+    expected_11_second = expected.infer_session(1, _infer_request())["actions"]
+    expected.infer_session(2, _request("reset"))
+    expected.infer_session(2, _request("seed", seed=202))
+    expected_22_first = expected.infer_session(2, _infer_request())["actions"]
+
+    np.testing.assert_array_equal(action_11_first, expected_11_first)
+    np.testing.assert_array_equal(action_11_second, expected_11_second)
+    np.testing.assert_array_equal(action_22_first, expected_22_first)
+
+    metrics_11 = service.infer_session(11, _request("metrics"))["metrics"]
+    metrics_22 = service.infer_session(22, _request("metrics"))["metrics"]
+    assert metrics_11["server_policy_inference_requests"] == 2
+    assert metrics_22["server_policy_inference_requests"] == 1
+    assert metrics_11["executed_chunk_lengths"] == [2, 2]
+    assert metrics_22["executed_chunk_lengths"] == [2]
+    assert metrics_11["router_step"] == 2
+    assert metrics_22["router_step"] == 1
+    assert metrics_11["server_policy_action_sha256"] != metrics_22["server_policy_action_sha256"]
+
+
+def test_reset_requires_a_new_episode_seed(monkeypatch):
+    monkeypatch.setattr(server_module, "decode_images", lambda images: images)
+    service = server_module.RobotwinPolicyService(_FakeModel())
+    service.infer_session(11, _request("reset"))
+    with pytest.raises(RuntimeError, match="seed must be set"):
+        service.infer_session(11, _infer_request())
+
+
+def test_close_session_discards_mutable_state():
+    service = server_module.RobotwinPolicyService(_FakeModel())
+    service.infer_session(11, _request("reset"))
+    assert 11 in service._sessions
+    service.close_session(11)
+    assert 11 not in service._sessions

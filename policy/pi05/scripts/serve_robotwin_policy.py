@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import copy
 import dataclasses
 import hashlib
 import json
@@ -9,6 +10,7 @@ from pathlib import Path
 import sys
 
 import numpy as np
+import torch
 import tyro
 
 from openpi.serving import websocket_policy_server
@@ -21,60 +23,125 @@ from robotwin_image_transport import ROBOTWIN_POLICY_PROTOCOL  # noqa: E402
 from robotwin_image_transport import decode_images  # noqa: E402
 
 
+@dataclasses.dataclass
+class _SessionState:
+    model: PI0
+    action_hasher: object = dataclasses.field(default_factory=hashlib.sha256)
+    inference_requests: int = 0
+    cpu_rng_state: torch.Tensor | None = None
+    cuda_rng_states: list[torch.Tensor] | None = None
+
+    def reset_trace(self):
+        self.action_hasher = hashlib.sha256()
+        self.inference_requests = 0
+
+
 class RobotwinPolicyService:
-    """Stateful RPC adapter around PI0 for native RoboTwin rollouts."""
+    """Connection-isolated RPC adapter sharing one read-only PI0 weight set."""
 
     def __init__(self, model: PI0):
-        self._model = model
-        self._reset_episode_trace()
+        self._model_template = model
+        self._sessions: dict[int, _SessionState] = {}
 
-    def _reset_episode_trace(self):
-        self._action_hasher = hashlib.sha256()
-        self._inference_requests = 0
+    def _new_session(self) -> _SessionState:
+        model = copy.copy(self._model_template)
+        model.main_camera_router = copy.deepcopy(self._model_template.main_camera_router)
+        model.activity_metrics = copy.deepcopy(self._model_template.activity_metrics)
+        model.base_instruction = None
+        model.observation_window = None
+        model.semantic_subtask_history = []
+        return _SessionState(model=model)
 
-    def _record_actions(self, actions):
+    def _session(self, session_id: int) -> _SessionState:
+        session = self._sessions.get(session_id)
+        if session is None:
+            session = self._new_session()
+            self._sessions[session_id] = session
+        return session
+
+    @staticmethod
+    def _cuda_devices() -> list[int]:
+        if not torch.cuda.is_available():
+            return []
+        return list(range(torch.cuda.device_count()))
+
+    def _seed_session(self, session: _SessionState, seed: int):
+        devices = self._cuda_devices()
+        with torch.random.fork_rng(devices=devices):
+            session.model.set_episode_seed(seed)
+            session.cpu_rng_state = torch.get_rng_state()
+            session.cuda_rng_states = torch.cuda.get_rng_state_all() if devices else []
+
+    def _infer_with_session_rng(self, session: _SessionState, callback):
+        if session.cpu_rng_state is None or session.cuda_rng_states is None:
+            raise RuntimeError("episode policy seed must be set before inference")
+        devices = self._cuda_devices()
+        with torch.random.fork_rng(devices=devices):
+            torch.set_rng_state(session.cpu_rng_state)
+            if devices:
+                torch.cuda.set_rng_state_all(session.cuda_rng_states)
+            result = callback()
+            session.cpu_rng_state = torch.get_rng_state()
+            session.cuda_rng_states = torch.cuda.get_rng_state_all() if devices else []
+        return result
+
+    @staticmethod
+    def _record_actions(session: _SessionState, actions):
         contiguous = np.ascontiguousarray(actions)
-        self._action_hasher.update(contiguous.dtype.str.encode("ascii"))
-        self._action_hasher.update(np.asarray(contiguous.shape, dtype=np.int64).tobytes())
-        self._action_hasher.update(contiguous.tobytes())
-        self._inference_requests += 1
+        session.action_hasher.update(contiguous.dtype.str.encode("ascii"))
+        session.action_hasher.update(np.asarray(contiguous.shape, dtype=np.int64).tobytes())
+        session.action_hasher.update(contiguous.tobytes())
+        session.inference_requests += 1
 
     def infer(self, request):
+        return self.infer_session(0, request)
+
+    def infer_session(self, session_id: int, request):
+        session = self._session(session_id)
+        model = session.model
         command = request["command"]
         if command == "reset":
-            self._model.reset_obsrvationwindows()
-            self._reset_episode_trace()
+            model.reset_obsrvationwindows()
+            session.reset_trace()
+            session.cpu_rng_state = None
+            session.cuda_rng_states = None
             return {"ok": True}
         if command == "metrics":
-            metrics = dict(self._model.rollout_metrics())
-            metrics["server_policy_action_sha256"] = self._action_hasher.hexdigest()
-            metrics["server_policy_inference_requests"] = self._inference_requests
+            metrics = dict(model.rollout_metrics())
+            metrics["server_policy_action_sha256"] = session.action_hasher.hexdigest()
+            metrics["server_policy_inference_requests"] = session.inference_requests
             return {"metrics": metrics}
         if command == "seed":
-            self._model.set_episode_seed(int(request["seed"]))
-            self._reset_episode_trace()
+            self._seed_session(session, int(request["seed"]))
+            session.reset_trace()
             return {"ok": True}
         if command == "observe":
-            self._model.record_action(request["action"], request["previous_state"])
-            self._model.advance_after_action()
+            model.record_action(request["action"], request["previous_state"])
+            model.advance_after_action()
             return {"ok": True}
         if command == "infer":
-            if self._model.observation_window is None:
-                self._model.set_language(request["instruction"])
-            self._update_observation(request, action_executed=False)
-            actions = np.asarray(self._model.get_action()[: self._model.execution_steps()])
-            self._model.record_chunk(len(actions))
-            self._record_actions(actions)
+            def infer_actions():
+                if model.observation_window is None:
+                    model.set_language(request["instruction"])
+                self._update_observation(model, request, action_executed=False)
+                return np.asarray(model.get_action()[: model.execution_steps()])
+
+            actions = self._infer_with_session_rng(session, infer_actions)
+            model.record_chunk(len(actions))
+            self._record_actions(session, actions)
             return {"actions": actions}
         raise ValueError(f"unknown command: {command}")
 
-    def _update_observation(self, request, *, action_executed: bool):
-        self._model.update_observation_window(
+    def close_session(self, session_id: int):
+        self._sessions.pop(session_id, None)
+
+    @staticmethod
+    def _update_observation(model: PI0, request, *, action_executed: bool):
+        model.update_observation_window(
             decode_images(request["images"]),
             request["state"],
             action_executed=action_executed,
         )
-
 
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
