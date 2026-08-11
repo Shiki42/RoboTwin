@@ -132,6 +132,9 @@ class place_dual_shoes(Base_Task):
 
         self.delay(3)
 
+        return self.prepare_episode_metadata()
+
+    def prepare_episode_metadata(self):
         self.info["info"] = {
             "{A}": f"041_shoe/base{self.shoe_id}",
             "{B}": f"007_shoe-box/base0",
