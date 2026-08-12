@@ -104,8 +104,6 @@ class RobotwinPolicyService:
         if command == "reset":
             model.reset_obsrvationwindows()
             session.reset_trace()
-            session.cpu_rng_state = None
-            session.cuda_rng_states = None
             return {"ok": True}
         if command == "metrics":
             metrics = dict(model.rollout_metrics())
