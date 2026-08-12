@@ -669,6 +669,26 @@ def _putcab_anchor_adapt_config(name: str, mode: casm.CasmMode, project_name: st
         ema_decay=None, strict_checkpoint=True, freeze_vision=freeze_vision,
     )
 
+def _putcab_spline_anchor_adapt_config() -> TrainConfig:
+    base = _putcab_anchor_adapt_config(
+        "pi05_putcab_spline_field_anchor_adapt_matched_lora",
+        "none",
+        "parallelvla-pi05-spline-matched",
+    )
+    return dataclasses.replace(
+        base,
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+            spline_field=True,
+            action_horizon=16,
+            control_horizon=50,
+            spline_control_points=16,
+        ),
+    )
+
+
 def _putcab_pytorch_config(name: str, mode: Literal["none", "visual_phase_gate"]) -> TrainConfig:
     model = pi0_config.Pi0Config(
         pi05=True,
@@ -899,6 +919,7 @@ _CONFIGS = [
     ),
     _putcab_anchor_adapt_config("pi05_putcab_casm_visual_phase_gate_pi05_anchor_adapt_lora", "visual_phase_gate", "parallelvla-casm"),
     _putcab_anchor_adapt_config("pi05_putcab_pi05_anchor_adapt_matched_lora", "none", "parallelvla-pi05-matched"),
+    _putcab_spline_anchor_adapt_config(),
     _putcab_anchor_adapt_config(
         "pi05_putcab_pi05_anchor_adapt_vision_frozen_lora", "none", "parallelvla-pi05-vision-frozen", freeze_vision=True,
     ),
