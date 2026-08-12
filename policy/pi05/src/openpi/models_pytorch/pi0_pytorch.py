@@ -1,16 +1,21 @@
+from collections.abc import Sequence
 import logging
 import math
 from typing import Literal
 
+import numpy as np
 import torch
 from torch import Tensor
 from torch import nn
 import torch.nn.functional as F  # noqa: N812
 
+from openpi.models import tokenizer as _tokenizer
 import openpi.models.gemma as _gemma
 from openpi.models_pytorch import casm_pytorch
 from openpi.models_pytorch import lora_pytorch
 from openpi.models_pytorch.gemma_pytorch import PaliGemmaWithExpertModel
+from openpi.models_pytorch.online_subtask import OnlineSubtaskLoss
+from openpi.models_pytorch.online_subtask import next_token_cross_entropy
 import openpi.models_pytorch.preprocessing_pytorch as _preprocessing
 
 
@@ -90,6 +95,11 @@ class PI0Pytorch(nn.Module):
         self.config = config
         self.pi05 = config.pi05
         self.casm_mode = config.casm_mode
+        self.online_subtask_prediction = config.online_subtask_prediction
+        self.lambda_subtask = config.lambda_subtask
+        self.subtask_tokenizer = (
+            _tokenizer.PaligemmaTokenizer(config.subtask_max_token_len) if self.online_subtask_prediction else None
+        )
         if self.casm_mode not in {"none", "visual_phase_gate"}:
             raise ValueError(
                 f"PyTorch PI0 does not implement CASM mode {self.casm_mode!r}; "
@@ -222,8 +232,11 @@ class PI0Pytorch(nn.Module):
         return torch.where(att_2d_masks_4d, 0.0, -2.3819763e38)
 
     def _preprocess_observation(self, observation, *, train=True):
-        """Helper method to preprocess observation."""
-        return _preprocessing.preprocess_observation_pytorch(observation, train=train)
+        """Return the standard PI0 action-policy input tuple."""
+        return _preprocessing.preprocess_observation_pytorch(
+            observation,
+            train=train,
+        )
 
     def sample_noise(self, shape, device):
         return torch.normal(
@@ -240,7 +253,12 @@ class PI0Pytorch(nn.Module):
         return time.to(dtype=torch.float32, device=device)
 
     def embed_prefix(
-        self, images, img_masks, lang_tokens, lang_masks
+        self,
+        images,
+        img_masks,
+        lang_tokens,
+        lang_masks,
+        lang_att_masks=None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Embed images with SigLIP and language tokens with embedding layer to prepare
         for PaliGemma transformer processing.
@@ -273,17 +291,19 @@ class PI0Pytorch(nn.Module):
         embs.append(lang_emb)
         pad_masks.append(lang_masks)
 
-        # full attention between image and language inputs
+        # Standard action prompts use full attention. Subtask targets may be causal.
         num_lang_embs = lang_emb.shape[1]
-        att_masks += [0] * num_lang_embs
-
         embs = torch.cat(embs, dim=1)
         pad_masks = torch.cat(pad_masks, dim=1)
-        att_masks = torch.tensor(att_masks, dtype=torch.bool, device=pad_masks.device)
-
-        # Get batch size from the first dimension of the concatenated tensors
         bsize = pad_masks.shape[0]
-        att_masks = att_masks[None, :].expand(bsize, len(att_masks))
+        image_att_masks = torch.tensor(att_masks, dtype=torch.bool, device=pad_masks.device)[None, :].expand(
+            bsize, len(att_masks)
+        )
+        if lang_att_masks is None:
+            language_att_masks = torch.zeros(bsize, num_lang_embs, dtype=torch.bool, device=pad_masks.device)
+        else:
+            language_att_masks = lang_att_masks.to(dtype=torch.bool, device=pad_masks.device)
+        att_masks = torch.cat([image_att_masks, language_att_masks], dim=1)
 
         presence = torch.stack(visual_presence, dim=1)
         summaries = torch.stack(visual_summaries, dim=1)
@@ -359,9 +379,24 @@ class PI0Pytorch(nn.Module):
 
         return embs, pad_masks, att_masks, adarms_cond
 
-    def forward(self, observation, actions, noise=None, time=None, *, return_aux=False):
-        """Run a training forward pass and return per-action-step loss."""
-        images, img_masks, lang_tokens, lang_masks, state = self._preprocess_observation(observation, train=True)
+    def _action_loss(
+        self,
+        observation,
+        actions,
+        noise=None,
+        time=None,
+        *,
+        return_aux=False,
+        preprocessed: tuple[tuple[Tensor, ...], tuple[Tensor, ...]] | None = None,
+    ):
+        """Run the unchanged standard flow-matching action path."""
+        if preprocessed is None:
+            images, img_masks, lang_tokens, lang_masks, state = self._preprocess_observation(observation, train=True)
+        else:
+            images, img_masks = preprocessed
+            lang_tokens = observation.tokenized_prompt
+            lang_masks = observation.tokenized_prompt_mask
+            state = observation.state
 
         if noise is None:
             noise = self.sample_noise(actions.shape, actions.device)
@@ -422,6 +457,308 @@ class PI0Pytorch(nn.Module):
             gate_positive_weight=self.gate_positive_weight,
         )
         return (loss.total, loss.metrics) if return_aux else loss.total
+
+    def _reduce_action_objective(
+        self,
+        action_loss: Tensor,
+        action_mask: Tensor | None,
+    ) -> Tensor:
+        if action_mask is None:
+            return action_loss.mean()
+        weights = action_mask.to(
+            device=action_loss.device,
+            dtype=action_loss.dtype,
+        ).sum(dim=-1)
+        if weights.shape != action_loss.shape:
+            raise ValueError(f"action loss/mask shape mismatch: {action_loss.shape} != {weights.shape}")
+        total_weight = weights.sum()
+        if torch.compiler.is_compiling():
+            torch._assert_async(total_weight > 0, "action loss mask is empty")  # noqa: SLF001
+        elif total_weight.item() <= 0:
+            raise ValueError("action loss mask has no supervised dimensions")
+        return (action_loss * weights).sum() / total_weight
+
+    def _subtask_ce(
+        self,
+        observation,
+        images: tuple[Tensor, ...],
+        image_masks: tuple[Tensor, ...],
+    ) -> Tensor:
+        required = (
+            observation.tokenized_subtask_prompt,
+            observation.tokenized_subtask_prompt_mask,
+            observation.subtask_ar_mask,
+            observation.subtask_loss_mask,
+        )
+        if any(value is None for value in required):
+            raise ValueError("online subtask training fields are missing")
+        tokens = observation.tokenized_subtask_prompt
+        token_masks = observation.tokenized_subtask_prompt_mask
+        prefix_embs, pad_masks, att_masks, _ = self.embed_prefix(
+            images,
+            image_masks,
+            tokens,
+            token_masks,
+            observation.subtask_ar_mask,
+        )
+        attention = self._prepare_attention_masks_4d(make_att_2d_masks(pad_masks, att_masks)).to(
+            dtype=prefix_embs.dtype
+        )
+        position_ids = torch.cumsum(pad_masks, dim=1) - 1
+        (prefix_out, _), _ = self.paligemma_with_expert.forward(
+            attention_mask=attention,
+            position_ids=position_ids,
+            past_key_values=None,
+            inputs_embeds=[prefix_embs, None],
+            use_cache=False,
+        )
+        language_hidden = prefix_out[:, -tokens.shape[1] :]
+        logits = self.paligemma_with_expert.language_logits(language_hidden[:, :-1])
+        return next_token_cross_entropy(
+            logits,
+            tokens,
+            observation.subtask_loss_mask,
+        )
+
+    def forward(
+        self,
+        observation,
+        actions,
+        noise=None,
+        time=None,
+        *,
+        return_aux=False,
+    ):
+        if not self.online_subtask_prediction:
+            return self._action_loss(
+                observation,
+                actions,
+                noise=noise,
+                time=time,
+                return_aux=return_aux,
+            )
+        if return_aux:
+            raise ValueError("online subtask prediction does not use CASM auxiliary loss")
+        if self.casm_mode != "none":
+            raise ValueError("online subtask prediction requires standard PI0.5 action loss")
+        if observation.tokenized_action_prompt is None or observation.tokenized_action_prompt_mask is None:
+            raise ValueError("teacher-forced action prompt is missing")
+        action_observation = observation.replace(
+            tokenized_prompt=observation.tokenized_action_prompt,
+            tokenized_prompt_mask=observation.tokenized_action_prompt_mask,
+        )
+        images, image_masks, _, _, _ = self._preprocess_observation(
+            action_observation,
+            train=True,
+        )
+        action_elementwise = self._action_loss(
+            action_observation,
+            actions,
+            noise=noise,
+            time=time,
+            preprocessed=(images, image_masks),
+        )
+        action_loss = self._reduce_action_objective(
+            action_elementwise,
+            observation.action_mask,
+        )
+        subtask_ce = self._subtask_ce(observation, images, image_masks)
+        return OnlineSubtaskLoss(
+            total=action_loss + self.lambda_subtask * subtask_ce,
+            action=action_loss,
+            subtask_ce=subtask_ce,
+            action_elementwise=action_elementwise,
+        )
+
+    def _normalize_tasks(
+        self,
+        task: str | Sequence[str],
+        batch_size: int,
+    ) -> list[str]:
+        if isinstance(task, str):
+            return [task] * batch_size
+        tasks = list(task)
+        if len(tasks) != batch_size or not all(isinstance(item, str) for item in tasks):
+            raise ValueError("task batch does not match the observation batch")
+        return tasks
+
+    def _tokenized_inference_observation(
+        self,
+        observation,
+        tasks: list[str],
+    ):
+        if self.subtask_tokenizer is None:
+            raise ValueError("online subtask prediction is disabled")
+        states = observation.state.detach().to(torch.float32).cpu().numpy()
+        tokenized = [
+            self.subtask_tokenizer.tokenize_subtask(task, state) for task, state in zip(tasks, states, strict=True)
+        ]
+        tokens = torch.as_tensor(
+            np.stack([item[0] for item in tokenized]),
+            dtype=torch.long,
+            device=observation.state.device,
+        )
+        masks = torch.as_tensor(
+            np.stack([item[1] for item in tokenized]),
+            dtype=torch.bool,
+            device=observation.state.device,
+        )
+        return observation.replace(
+            tokenized_prompt=tokens,
+            tokenized_prompt_mask=masks,
+        )
+
+    @torch.no_grad()
+    def predict_subtask(
+        self,
+        observation,
+        task: str | Sequence[str],
+        *,
+        max_new_tokens: int = 32,
+    ) -> str | list[str]:
+        if not self.online_subtask_prediction:
+            raise ValueError("online subtask prediction is disabled")
+        if max_new_tokens <= 0:
+            raise ValueError("max_new_tokens must be positive")
+        batch_size = observation.state.shape[0]
+        tasks = self._normalize_tasks(task, batch_size)
+        prediction_observation = self._tokenized_inference_observation(
+            observation,
+            tasks,
+        )
+        images, image_masks, tokens, token_masks, _ = self._preprocess_observation(prediction_observation, train=False)
+        prefix_embs, prefix_masks, prefix_att_masks, _ = self.embed_prefix(
+            images,
+            image_masks,
+            tokens,
+            token_masks,
+        )
+        prefix_attention = self._prepare_attention_masks_4d(make_att_2d_masks(prefix_masks, prefix_att_masks)).to(
+            dtype=prefix_embs.dtype
+        )
+        position_ids = torch.cumsum(prefix_masks, dim=1) - 1
+        (prefix_out, _), cache = self.paligemma_with_expert.forward(
+            attention_mask=prefix_attention,
+            position_ids=position_ids,
+            past_key_values=None,
+            inputs_embeds=[prefix_embs, None],
+            use_cache=True,
+        )
+        batch_indices = torch.arange(batch_size, device=prefix_out.device)
+        current_hidden = prefix_out[
+            batch_indices,
+            prefix_masks.sum(dim=1) - 1,
+        ]
+        generated = []
+        generated_masks = []
+        finished = torch.zeros(
+            batch_size,
+            dtype=torch.bool,
+            device=prefix_out.device,
+        )
+        for step in range(max_new_tokens):
+            logits = self.paligemma_with_expert.language_logits(current_hidden)
+            next_token = torch.argmax(logits, dim=-1)
+            next_token = torch.where(
+                finished,
+                torch.full_like(
+                    next_token,
+                    self.subtask_tokenizer.eos_token_id,
+                ),
+                next_token,
+            )
+            generated.append(next_token)
+            finished |= next_token == self.subtask_tokenizer.eos_token_id
+            token_emb = self.paligemma_with_expert.embed_language_tokens(next_token[:, None])
+            token_emb *= math.sqrt(token_emb.shape[-1])
+            generated_masks.append(
+                torch.ones(
+                    batch_size,
+                    1,
+                    dtype=torch.bool,
+                    device=token_emb.device,
+                )
+            )
+            full_mask = torch.cat(
+                [prefix_masks, *generated_masks],
+                dim=1,
+            )
+            attention = self._prepare_attention_masks_4d(full_mask[:, None, :]).to(dtype=token_emb.dtype)
+            token_positions = prefix_masks.sum(dim=1, keepdim=True) + step
+            (token_out, _), cache = self.paligemma_with_expert.forward(
+                attention_mask=attention,
+                position_ids=token_positions,
+                past_key_values=cache,
+                inputs_embeds=[token_emb, None],
+                use_cache=True,
+            )
+            current_hidden = token_out[:, -1]
+
+        generated_tokens = torch.stack(generated, dim=1).cpu().numpy()
+        predictions = [self.subtask_tokenizer.decode_subtask(row) for row in generated_tokens]
+        for prediction in predictions:
+            self._validate_generated_subtask(prediction)
+        if isinstance(task, str) and batch_size == 1:
+            return predictions[0]
+        return predictions
+
+    def _validate_generated_subtask(self, subtask: str) -> None:
+        if self.subtask_tokenizer is None:
+            raise ValueError("online subtask prediction is disabled")
+        self.subtask_tokenizer.validate_subtask_text(subtask)
+
+    @torch.no_grad()
+    def sample_actions_with_subtask(
+        self,
+        observation,
+        task: str | Sequence[str],
+        noise=None,
+        num_steps=10,
+    ) -> tuple[Tensor, str | list[str]]:
+        if self.subtask_tokenizer is None:
+            raise ValueError("online subtask prediction is disabled")
+        device = observation.state.device
+        tasks = self._normalize_tasks(task, observation.state.shape[0])
+        generated = self.predict_subtask(observation, task)
+        subtasks = [generated] if isinstance(generated, str) else generated
+        states = observation.state.detach().to(torch.float32).cpu().numpy()
+        tokenized = [
+            self.subtask_tokenizer.tokenize_action_prompt(
+                current_task,
+                state,
+                subtask,
+                self.config.subtask_action_prompt_format,
+            )
+            for current_task, state, subtask in zip(
+                tasks,
+                states,
+                subtasks,
+                strict=True,
+            )
+        ]
+        action_tokens = torch.as_tensor(
+            np.stack([item[0] for item in tokenized]),
+            dtype=torch.long,
+            device=observation.state.device,
+        )
+        action_masks = torch.as_tensor(
+            np.stack([item[1] for item in tokenized]),
+            dtype=torch.bool,
+            device=observation.state.device,
+        )
+        action_observation = observation.replace(
+            tokenized_prompt=action_tokens,
+            tokenized_prompt_mask=action_masks,
+        )
+        actions = self.sample_actions(
+            device,
+            action_observation,
+            noise=noise,
+            num_steps=num_steps,
+        )
+        if isinstance(task, str) and len(subtasks) == 1:
+            return actions, subtasks[0]
+        return actions, subtasks
 
     @torch.no_grad()
     def predict_async_probability(self, observation) -> Tensor:

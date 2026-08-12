@@ -2,6 +2,7 @@ import jax.numpy as jnp
 import numpy as np
 from openpi_client import action_chunk_broker
 import pytest
+import torch
 
 from openpi import transforms
 from openpi.policies import aloha_policy
@@ -146,3 +147,51 @@ def test_casm_lan_latched_sync_phase_cannot_revert_prompt(monkeypatch):
     assert outputs["semantic_phase_is_async"] is False
     assert outputs["semantic_subtask_id"] == 5
     assert "Left arm: carry and place the target object" in outputs["semantic_subtask_prompt"]
+
+
+class _OnlineSubtaskTransform(transforms.DataTransformFn):
+    def __call__(self, data):
+        data.pop("prompt")
+        return {
+            "image": data["image"],
+            "image_mask": data["image_mask"],
+            "state": data["state"],
+            "tokenized_prompt": np.array([1], dtype=np.int32),
+            "tokenized_prompt_mask": np.array([True]),
+        }
+
+
+class _FakeOnlineSubtaskModel(torch.nn.Module):
+    online_subtask_prediction = True
+
+    def sample_actions(self, device, observation, **kwargs):
+        raise AssertionError("standard sample_actions must not run for feature-on inference")
+
+    def sample_actions_with_subtask(self, observation, task, **kwargs):
+        del kwargs
+        assert task == "put the target object in the drawer"
+        assert observation.state.shape == (1, 14)
+        actions = torch.zeros((1, 2, 14), device=observation.state.device)
+        subtask = "Left arm: hold object; Right arm: open drawer."
+        return actions, subtask
+
+
+def test_online_subtask_policy_predicts_before_each_action_chunk():
+    policy = policy_module.Policy(
+        _FakeOnlineSubtaskModel(),
+        transforms=(_OnlineSubtaskTransform(),),
+        is_pytorch=True,
+    )
+    image = np.zeros((2, 2, 3), dtype=np.uint8)
+
+    outputs = policy.infer(
+        {
+            "image": {"base_0_rgb": image},
+            "image_mask": {"base_0_rgb": np.True_},
+            "state": np.zeros(14, dtype=np.float32),
+            "prompt": "put the target object in the drawer",
+        }
+    )
+
+    assert outputs["actions"].shape == (2, 14)
+    assert outputs["subtask"] == "Left arm: hold object; Right arm: open drawer."

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 import pathlib
 import random
@@ -12,6 +13,7 @@ import torch
 from torch import nn
 
 from openpi.models_pytorch import lora_pytorch
+from openpi.models_pytorch import online_subtask
 from openpi.shared import normalize as _normalize
 from openpi.training import config as _config
 from openpi.training import pytorch_training
@@ -29,6 +31,26 @@ class TinyPolicy(nn.Module):
     def forward(self, observation, actions):
         del observation
         return (self.weight - actions) ** 2
+
+
+class TinyOnlineSubtaskPolicy(nn.Module):
+    casm_mode = "none"
+    online_subtask_prediction = True
+
+    def __init__(self):
+        super().__init__()
+        self.weight = nn.Parameter(torch.tensor(0.0))
+
+    def forward(self, observation, actions):
+        del observation
+        action = ((self.weight - actions) ** 2).mean()
+        subtask_ce = (self.weight - 2.0) ** 2
+        return online_subtask.OnlineSubtaskLoss(
+            total=action + 0.1 * subtask_ce,
+            action=action,
+            subtask_ce=subtask_ce,
+            action_elementwise=(self.weight - actions) ** 2,
+        )
 
 
 class TinyScopedPolicy(nn.Module):
@@ -87,6 +109,24 @@ def test_train_step_updates_torch_model_and_reports_finite_metrics():
     assert model.weight.detach() > 0
     assert metrics["loss"] == pytest.approx(1.0)
     assert np.isfinite(metrics["gradient_norm"])
+
+
+def test_train_step_reports_joint_online_subtask_metrics():
+    model = TinyOnlineSubtaskPolicy()
+    optimizer = torch.optim.AdamW(model.parameters(), lr=0.1)
+
+    metrics = train_pytorch.train_step(
+        model,
+        optimizer,
+        batches=[(None, torch.ones(2, 3))],
+        config=_tiny_config(),
+        global_step=0,
+    )
+
+    assert metrics["loss"] == pytest.approx(1.4)
+    assert metrics["action_loss"] == pytest.approx(1.0)
+    assert metrics["subtask_ce"] == pytest.approx(4.0)
+    assert model.weight.detach() > 0
 
 
 def test_train_step_accumulation_matches_one_global_batch():
@@ -221,6 +261,28 @@ def test_config_signature_requires_full_lowercase_code_commit(monkeypatch, code_
 
     with pytest.raises(ValueError, match="PARALLELVLA_CODE_COMMIT"):
         train_pytorch.config_signature(config)
+
+
+def test_require_run_receipts_verifies_base_sha256(tmp_path, monkeypatch):
+    base = tmp_path / "base"
+    base.mkdir()
+    model_path = base / "model.safetensors"
+    model_path.write_bytes(b"pi05-base")
+    dataset_receipt = tmp_path / "dataset.json"
+    dataset_receipt.write_text("{}")
+    config = dataclasses.replace(
+        _config.get_config("pi05_putcab_pytorch_matched_full"),
+        pytorch_weight_path=str(base),
+    )
+    monkeypatch.setenv("PI05_BASE_SHA256", train_pytorch._sha256(model_path))  # noqa: SLF001
+    monkeypatch.setenv("PARALLELVLA_DATASET_REVISION", "dataset")
+    monkeypatch.setenv("PARALLELVLA_DATASET_RECEIPT", str(dataset_receipt))
+
+    assert train_pytorch.require_run_receipts(config) == base
+
+    monkeypatch.setenv("PI05_BASE_SHA256", "f" * 64)
+    with pytest.raises(ValueError, match="base model SHA-256"):
+        train_pytorch.require_run_receipts(config)
 
 
 def test_checkpoint_files_include_normalizer_and_manifest():
@@ -370,3 +432,60 @@ def test_normalizer_signature_binds_train_split_inventory_and_exact_file(tmp_pat
     assert signature["normalizer_sha256"] == train_pytorch._sha256(normalizer_path)  # noqa: SLF001
     assert signature["input_inventory_sha256"] == "b" * 64
     assert signature["statistics"] == "exact_concat_train_only_valid_action_steps_v1"
+
+
+def test_subtask_annotation_signature_binds_manifest_content(
+    monkeypatch,
+    tmp_path,
+):
+    revision_payload = {
+        "schema_version": "parallelvla.putcab_pi05_subtask_supervision.v1",
+        "task": "put_object_cabinet",
+        "text_format": "Left arm: <semantic>; Right arm: <semantic>.",
+        "supervision_contract": "fixture contract",
+        "source_annotation_revision": "f" * 64,
+        "sources": [],
+        "episode_counts": {"train": 50},
+        "frame_count": 100,
+        "paired_text_frame_counts": {},
+        "episodes": [],
+    }
+    encoded = json.dumps(
+        revision_payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    revision = hashlib.sha256(encoded).hexdigest()
+    manifest = {**revision_payload, "data_revision": revision}
+    annotation_dir = tmp_path / "annotations"
+    annotation_dir.mkdir()
+    (annotation_dir / "manifest.json").write_text(json.dumps(manifest))
+    monkeypatch.setenv(
+        "PARALLELVLA_SUBTASK_ANNOTATION_DIR",
+        str(annotation_dir),
+    )
+    monkeypatch.setenv("PARALLELVLA_SUBTASK_ANNOTATION_REVISION", revision)
+    monkeypatch.setenv("PARALLELVLA_CODE_COMMIT", "a" * 40)
+    monkeypatch.setenv("PARALLELVLA_DATASET_REVISION", "dataset")
+    monkeypatch.setenv("PI05_BASE_SHA256", "base")
+    monkeypatch.setenv(
+        "PARALLELVLA_TRAIN_EPISODES",
+        ",".join(str(index) for index in range(50)),
+    )
+    monkeypatch.setenv("PARALLELVLA_VALIDATION_EPISODES", "50,51,52")
+    from openpi.training import putcab_online_subtask_config
+
+    config = putcab_online_subtask_config.create_config()
+
+    signature = train_pytorch._subtask_annotation_signature(config)  # noqa: SLF001
+
+    assert signature["revision"] == revision
+    assert signature["schema_version"] == revision_payload["schema_version"]
+    assert signature["supervision_contract"] == "fixture contract"
+    assert signature["source_annotation_revision"] == "f" * 64
+
+    manifest["supervision_contract"] = "drifted"
+    (annotation_dir / "manifest.json").write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match="content hash"):
+        train_pytorch._subtask_annotation_signature(config)  # noqa: SLF001

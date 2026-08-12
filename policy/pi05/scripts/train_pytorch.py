@@ -126,6 +126,51 @@ def _normalizer_signature(
     }
 
 
+def _subtask_annotation_signature(
+    config: _config.TrainConfig,
+) -> dict[str, Any] | None:
+    model = config.model
+    if not getattr(model, "online_subtask_prediction", False):
+        return None
+    root_value = os.environ.get("PARALLELVLA_SUBTASK_ANNOTATION_DIR")
+    revision = os.environ.get("PARALLELVLA_SUBTASK_ANNOTATION_REVISION")
+    if not root_value or not revision:
+        raise ValueError("online subtask prediction requires annotation environment")
+    if revision != model.subtask_annotation_revision:
+        raise ValueError("subtask annotation revision does not match model config")
+    manifest_path = pathlib.Path(root_value) / "manifest.json"
+    if not manifest_path.is_file():
+        raise FileNotFoundError(manifest_path)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if manifest.get("data_revision") != revision:
+        raise ValueError("subtask annotation manifest revision does not match run")
+    if manifest.get("text_format") != model.subtask_text_format:
+        raise ValueError("subtask annotation text format does not match model")
+    schema = manifest.get("schema_version")
+    contract = manifest.get("supervision_contract")
+    source_revision = manifest.get("source_annotation_revision")
+    if not all(isinstance(value, str) and value for value in (schema, contract, source_revision)):
+        raise ValueError("subtask annotation manifest provenance is incomplete")
+    revision_payload = dict(manifest)
+    revision_payload.pop("data_revision")
+    encoded = json.dumps(
+        revision_payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    if hashlib.sha256(encoded).hexdigest() != revision:
+        raise ValueError("subtask annotation manifest content hash does not match")
+    return {
+        "revision": revision,
+        "manifest_sha256": _sha256(manifest_path),
+        "schema_version": schema,
+        "text_format": manifest["text_format"],
+        "supervision_contract": contract,
+        "source_annotation_revision": source_revision,
+    }
+
+
 def _lora_signature(variant: str) -> dict[str, float | int] | None:
     adapters = _gemma.get_config(variant).lora_configs
     if not adapters:
@@ -140,6 +185,7 @@ def _lora_signature(variant: str) -> dict[str, float | int] | None:
 def config_signature(config: _config.TrainConfig) -> dict[str, Any]:
     model = config.model
     episode_split = _episode_split_signature(config)
+    subtask_annotation = _subtask_annotation_signature(config)
     return {
         "config_name": config.name,
         "batch_size": config.batch_size * config.gradient_accumulation_steps,
@@ -162,11 +208,18 @@ def config_signature(config: _config.TrainConfig) -> dict[str, Any]:
         "seed": config.seed,
         "episode_split": episode_split,
         "normalizer": _normalizer_signature(config, episode_split),
+        "subtask_annotation": subtask_annotation,
         "inactive_action_weight": config.data.inactive_action_weight,
         "lr_schedule": dataclasses.asdict(config.lr_schedule),
         "optimizer": dataclasses.asdict(config.optimizer),
         "model": {
             "pi05": getattr(model, "pi05", False),
+            "online_subtask_prediction": getattr(model, "online_subtask_prediction", False),
+            "lambda_subtask": getattr(model, "lambda_subtask", 0.0),
+            "subtask_max_token_len": getattr(model, "subtask_max_token_len", None),
+            "subtask_text_format": getattr(model, "subtask_text_format", None),
+            "subtask_action_prompt_format": getattr(model, "subtask_action_prompt_format", None),
+            "subtask_annotation_revision": getattr(model, "subtask_annotation_revision", None),
             "casm_mode": getattr(model, "casm_mode", "none"),
             "paligemma_variant": getattr(model, "paligemma_variant", None),
             "action_expert_variant": getattr(model, "action_expert_variant", None),
@@ -295,6 +348,15 @@ def require_run_receipts(config: _config.TrainConfig) -> pathlib.Path:
         "PARALLELVLA_DATASET_REVISION",
         "PARALLELVLA_DATASET_RECEIPT",
     ]
+    if config.model.online_subtask_prediction:
+        required_environment.extend(
+            (
+                "PARALLELVLA_SUBTASK_ANNOTATION_DIR",
+                "PARALLELVLA_SUBTASK_ANNOTATION_REVISION",
+                "PARALLELVLA_TRAIN_EPISODES",
+                "PARALLELVLA_VALIDATION_EPISODES",
+            )
+        )
     if config.train_episodes is not None:
         required_environment.extend(
             (
@@ -305,6 +367,11 @@ def require_run_receipts(config: _config.TrainConfig) -> pathlib.Path:
     missing = [name for name in required_environment if not os.environ.get(name)]
     if missing:
         raise ValueError(f"missing run receipt environment: {missing}")
+    expected_base_sha256 = os.environ["PI05_BASE_SHA256"]
+    if re.fullmatch(r"[0-9a-f]{64}", expected_base_sha256) is None:
+        raise ValueError("PI05_BASE_SHA256 must be a lowercase SHA-256")
+    if _sha256(base / "model.safetensors") != expected_base_sha256:
+        raise ValueError("PI0.5 base model SHA-256 does not match")
     dataset_receipt = pathlib.Path(os.environ["PARALLELVLA_DATASET_RECEIPT"])
     if not dataset_receipt.is_file():
         raise FileNotFoundError(dataset_receipt)
@@ -327,6 +394,9 @@ def initialize_pretrained(model: pi0_pytorch.PI0Pytorch, base: pathlib.Path) -> 
 
 def _checkpoint_files(data_config: _config.DataConfig, manifest: dict[str, Any]) -> dict[pathlib.Path, str]:
     files = {pathlib.Path("run_manifest.json"): json.dumps(manifest, indent=2, sort_keys=True)}
+    if manifest.get("subtask_annotation") is not None:
+        annotation_manifest = pathlib.Path(os.environ["PARALLELVLA_SUBTASK_ANNOTATION_DIR"]) / "manifest.json"
+        files[pathlib.Path("receipts/subtask_annotations.json")] = annotation_manifest.read_text(encoding="utf-8")
     if manifest.get("episode_split") is not None:
         split_receipt = pathlib.Path(os.environ["PARALLELVLA_SPLIT_RECEIPT"])
         normalizer_receipt = pathlib.Path(os.environ["PARALLELVLA_NORM_STATS_RECEIPT"])
@@ -394,7 +464,14 @@ def train_step(
     for observation, actions in batches:
         if timer is not None:
             timer.start("forward")
-        if model.casm_mode == "visual_phase_gate":
+        if getattr(model, "online_subtask_prediction", False):
+            output = model(observation, actions)
+            loss = output.total
+            auxiliary = {
+                "action_loss": output.action,
+                "subtask_ce": output.subtask_ce,
+            }
+        elif model.casm_mode == "visual_phase_gate":
             losses, auxiliary = model(observation, actions, return_aux=True)
             loss = losses.mean()
         else:
@@ -463,9 +540,13 @@ def evaluate_validation_loss(
         for cpu_observation, cpu_actions in loader:
             observation = pytorch_training.move_to_device(cpu_observation, device, non_blocking=True)
             actions = cpu_actions.to(device=device, dtype=torch.float32, non_blocking=True)
-            losses = model(observation, actions)
+            output = model(observation, actions)
             action_mask = getattr(observation, "action_mask", None)
-            batch_loss, batch_weight = _action_loss_total(losses, action_mask)
+            if getattr(model, "online_subtask_prediction", False):
+                batch_loss = output.total * actions.shape[0]
+                batch_weight = output.total.new_tensor(actions.shape[0])
+            else:
+                batch_loss, batch_weight = _action_loss_total(output, action_mask)
             loss_total += batch_loss
             weight_total += batch_weight
             batch_count += 1

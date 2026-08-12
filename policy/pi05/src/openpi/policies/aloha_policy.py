@@ -125,8 +125,9 @@ class AlohaInputs(transforms.DataTransformFn):
             semantic_id = np.asarray(data["semantic_subtask_id"], dtype=np.int32).reshape(1)
             inputs["semantic_subtask_id"] = semantic_id
 
-        if "prompt" in data:
-            inputs["prompt"] = data["prompt"]
+        for text_field in ("prompt", "subtask"):
+            if text_field in data:
+                inputs[text_field] = data[text_field]
 
         return inputs
 

@@ -19,7 +19,11 @@ class PaligemmaTokenizer:
         with path.open("rb") as f:
             self._tokenizer = sentencepiece.SentencePieceProcessor(model_proto=f.read())
 
-    def tokenize(self, prompt: str, state: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
+    def tokenize(
+        self,
+        prompt: str,
+        state: np.ndarray | None = None,
+    ) -> tuple[np.ndarray, np.ndarray]:
         cleaned_text = prompt.strip().replace("_", " ").replace("\n", " ")
         if state is not None:
             # This is the Pi05 format, where the state is part of the discrete language input.
@@ -46,6 +50,91 @@ class PaligemmaTokenizer:
             mask = [True] * self._max_len
 
         return np.asarray(tokens), np.asarray(mask)
+
+    def tokenize_subtask(
+        self,
+        prompt: str,
+        state: np.ndarray,
+        subtask: str | None = None,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        cleaned_task = prompt.strip().replace("_", " ").replace("\n", " ")
+        discretized_state = np.digitize(state, bins=np.linspace(-1, 1, 256 + 1)[:-1]) - 1
+        state_str = " ".join(map(str, discretized_state))
+        prefix = f"Task: {cleaned_task}, State: {state_str};\nSubtask: "
+        prefix_tokens = self._tokenizer.encode(prefix, add_bos=True)
+        target_tokens: list[int] = []
+        if subtask is not None:
+            self.validate_subtask_text(subtask)
+            target_tokens = self._tokenizer.encode(subtask)
+            target_tokens.append(self._tokenizer.eos_id())
+
+        tokens = prefix_tokens + target_tokens
+        if len(tokens) > self._max_len:
+            raise ValueError(f"Subtask sequence length ({len(tokens)}) exceeds {self._max_len}")
+        padding_len = self._max_len - len(tokens)
+        token_mask = [True] * len(tokens) + [False] * padding_len
+        ar_mask = [False] * len(prefix_tokens) + [True] * len(target_tokens)
+        loss_mask = [False] * len(prefix_tokens) + [True] * len(target_tokens)
+        tokens += [0] * padding_len
+        ar_mask += [False] * padding_len
+        loss_mask += [False] * padding_len
+        return (
+            np.asarray(tokens),
+            np.asarray(token_mask),
+            np.asarray(ar_mask),
+            np.asarray(loss_mask),
+        )
+
+    def tokenize_action_prompt(
+        self,
+        task: str,
+        state: np.ndarray,
+        subtask: str,
+        prompt_format: str = "{task}\nCurrent subtask: {subtask}",
+    ) -> tuple[np.ndarray, np.ndarray]:
+        self.validate_subtask_text(subtask)
+        combined = prompt_format.format(task=task.strip(), subtask=subtask)
+        return self.tokenize_pi05_text(combined, state)
+
+    @staticmethod
+    def validate_subtask_text(subtask: str) -> None:
+        if "\n" in subtask or "_" in subtask or subtask != subtask.strip():
+            raise ValueError("subtask must already use the canonical text format")
+        left, separator, right = subtask.partition("; Right arm:")
+        if not separator or not left.startswith("Left arm:"):
+            raise ValueError("subtask must cover left and right arms")
+        left_semantic = left.removeprefix("Left arm:").strip()
+        right_semantic = right.strip()
+        if not left_semantic or not right_semantic:
+            raise ValueError("subtask contains an empty arm semantic")
+        if not right_semantic.endswith(".") or "." in left_semantic:
+            raise ValueError("subtask punctuation does not match the canonical format")
+
+    def tokenize_pi05_text(
+        self,
+        text: str,
+        state: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        cleaned_text = text.strip().replace("_", " ").replace("\n", " ")
+        discretized_state = np.digitize(state, bins=np.linspace(-1, 1, 256 + 1)[:-1]) - 1
+        state_str = " ".join(map(str, discretized_state))
+        full_prompt = f"Task: {cleaned_text}, State: {state_str};\nAction: "
+        tokens = self._tokenizer.encode(full_prompt, add_bos=True)
+        if len(tokens) > self._max_len:
+            raise ValueError(f"Prompt token length ({len(tokens)}) exceeds {self._max_len}")
+        mask = [True] * len(tokens) + [False] * (self._max_len - len(tokens))
+        tokens += [False] * (self._max_len - len(tokens))
+        return np.asarray(tokens), np.asarray(mask)
+
+    @property
+    def eos_token_id(self) -> int:
+        return int(self._tokenizer.eos_id())
+
+    def decode_subtask(self, tokens: np.ndarray | list[int]) -> str:
+        token_list = [int(token) for token in tokens]
+        if self.eos_token_id in token_list:
+            token_list = token_list[: token_list.index(self.eos_token_id)]
+        return self._tokenizer.decode(token_list).strip()
 
 
 class FASTTokenizer:

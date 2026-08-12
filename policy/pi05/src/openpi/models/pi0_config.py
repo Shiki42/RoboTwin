@@ -48,6 +48,13 @@ class Pi0Config(_model.BaseModelConfig):
     # This config option is not used directly by the model, but it is read by the ModelTransformFactory.
     discrete_state_input: bool = None  # type: ignore
 
+    online_subtask_prediction: bool = False
+    lambda_subtask: float = 0.0
+    subtask_max_token_len: int = 200
+    subtask_text_format: str = "Left arm: <semantic>; Right arm: <semantic>."
+    subtask_action_prompt_format: str = "{task}\nCurrent subtask: {subtask}"
+    subtask_annotation_revision: str | None = None
+
     def __post_init__(self):
         if self.casm_mode not in casm.VALID_CASM_MODES:
             raise ValueError(f"unknown CASM mode: {self.casm_mode}")
@@ -77,6 +84,31 @@ class Pi0Config(_model.BaseModelConfig):
             object.__setattr__(self, "max_token_len", 200 if self.pi05 else 48)
         if self.discrete_state_input is None:
             object.__setattr__(self, "discrete_state_input", self.pi05)
+        if not self.online_subtask_prediction:
+            if self.lambda_subtask != 0:
+                raise ValueError("lambda_subtask must be zero when online subtask prediction is disabled")
+            if self.subtask_annotation_revision is not None:
+                raise ValueError("subtask annotation revision requires online subtask prediction")
+            return
+        if not self.pi05:
+            raise ValueError("online subtask prediction is implemented only for PI0.5")
+        if self.casm_mode != "none":
+            raise ValueError("online subtask prediction requires the standard PI0.5 action path")
+        if self.semantic_subtask_prediction:
+            raise ValueError("online textual and semantic-class subtask prediction cannot both be enabled")
+        if self.lambda_subtask <= 0:
+            raise ValueError("lambda_subtask must be positive")
+        if self.subtask_max_token_len < 160:
+            raise ValueError("subtask_max_token_len must be at least 160")
+        revision = self.subtask_annotation_revision
+        if revision is None or len(revision) != 64:
+            raise ValueError("subtask_annotation_revision must be a full SHA-256")
+        if any(character not in "0123456789abcdef" for character in revision):
+            raise ValueError("subtask_annotation_revision must be lowercase hexadecimal")
+        if self.subtask_text_format != "Left arm: <semantic>; Right arm: <semantic>.":
+            raise ValueError("subtask_text_format does not match the annotation schema")
+        if self.subtask_action_prompt_format != "{task}\nCurrent subtask: {subtask}":
+            raise ValueError("subtask_action_prompt_format does not match the training contract")
 
     @property
     @override
@@ -111,6 +143,36 @@ class Pi0Config(_model.BaseModelConfig):
                 state=jax.ShapeDtypeStruct([batch_size, self.action_dim], jnp.float32),
                 tokenized_prompt=jax.ShapeDtypeStruct([batch_size, self.max_token_len], jnp.int32),
                 tokenized_prompt_mask=jax.ShapeDtypeStruct([batch_size, self.max_token_len], bool),
+                tokenized_action_prompt=(
+                    jax.ShapeDtypeStruct([batch_size, self.max_token_len], jnp.int32)
+                    if self.online_subtask_prediction
+                    else None
+                ),
+                tokenized_action_prompt_mask=(
+                    jax.ShapeDtypeStruct([batch_size, self.max_token_len], bool)
+                    if self.online_subtask_prediction
+                    else None
+                ),
+                tokenized_subtask_prompt=(
+                    jax.ShapeDtypeStruct([batch_size, self.subtask_max_token_len], jnp.int32)
+                    if self.online_subtask_prediction
+                    else None
+                ),
+                tokenized_subtask_prompt_mask=(
+                    jax.ShapeDtypeStruct([batch_size, self.subtask_max_token_len], bool)
+                    if self.online_subtask_prediction
+                    else None
+                ),
+                subtask_ar_mask=(
+                    jax.ShapeDtypeStruct([batch_size, self.subtask_max_token_len], bool)
+                    if self.online_subtask_prediction
+                    else None
+                ),
+                subtask_loss_mask=(
+                    jax.ShapeDtypeStruct([batch_size, self.subtask_max_token_len], bool)
+                    if self.online_subtask_prediction
+                    else None
+                ),
             )
         action_spec = jax.ShapeDtypeStruct([batch_size, self.action_horizon, self.action_dim], jnp.float32)
 

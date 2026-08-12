@@ -267,6 +267,52 @@ class TokenizePrompt(DataTransformFn):
 
 
 @dataclasses.dataclass(frozen=True)
+class TokenizePromptAndSubtask(DataTransformFn):
+    action_tokenizer: _tokenizer.PaligemmaTokenizer
+    subtask_tokenizer: _tokenizer.PaligemmaTokenizer
+    action_prompt_format: str
+
+    def __call__(self, data: DataDict) -> DataDict:
+        if (prompt := data.pop("prompt", None)) is None:
+            raise ValueError("Prompt is required")
+        subtask = data.pop("subtask", None)
+        if (state := data.get("state")) is None:
+            raise ValueError("State is required")
+        if not isinstance(prompt, str):
+            prompt = prompt.item()
+        prompt_tokens, prompt_mask = self.action_tokenizer.tokenize(prompt, state)
+        if subtask is None:
+            return {
+                **data,
+                "tokenized_prompt": prompt_tokens,
+                "tokenized_prompt_mask": prompt_mask,
+            }
+        if not isinstance(subtask, str):
+            subtask = subtask.item()
+
+        action_tokens, action_mask = self.action_tokenizer.tokenize_action_prompt(
+            prompt,
+            state,
+            subtask,
+            self.action_prompt_format,
+        )
+        subtask_tokens, subtask_mask, ar_mask, loss_mask = self.subtask_tokenizer.tokenize_subtask(
+            prompt, state, subtask
+        )
+        return {
+            **data,
+            "tokenized_prompt": prompt_tokens,
+            "tokenized_prompt_mask": prompt_mask,
+            "tokenized_action_prompt": action_tokens,
+            "tokenized_action_prompt_mask": action_mask,
+            "tokenized_subtask_prompt": subtask_tokens,
+            "tokenized_subtask_prompt_mask": subtask_mask,
+            "subtask_ar_mask": ar_mask,
+            "subtask_loss_mask": loss_mask,
+        }
+
+
+@dataclasses.dataclass(frozen=True)
 class TokenizeFASTInputs(DataTransformFn):
     tokenizer: _tokenizer.FASTTokenizer
 

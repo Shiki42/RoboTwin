@@ -15,6 +15,8 @@ import torch
 import openpi.models.model as _model
 import openpi.training.config as _config
 from openpi.training.droid_rlds_dataset import DroidRldsDataset
+from openpi.training.subtask_dataset import AnnotatedSubtaskDataset
+from openpi.training.subtask_dataset import SubtaskAnnotationIndex
 import openpi.transforms as _transforms
 
 T_co = TypeVar("T_co", covariant=True)
@@ -222,6 +224,7 @@ def create_torch_dataset(
     model_config: _model.BaseModelConfig,
     *,
     episodes: Sequence[int] | None = None,
+    annotation_split: Literal["train", "heldout"] = "train",
 ) -> Dataset:
     """Create a dataset for training."""
     repo_id = data_config.repo_id
@@ -241,6 +244,31 @@ def create_torch_dataset(
     )
     if episodes is not None:
         _expand_lerobot_episode_data_index(dataset, episodes)
+
+    annotation_fields = (
+        data_config.subtask_annotation_dir,
+        data_config.subtask_annotation_revision,
+    )
+    if getattr(model_config, "online_subtask_prediction", False):
+        if any(value is None for value in annotation_fields):
+            raise ValueError("online subtask prediction requires annotation directory and revision")
+        if episodes is None:
+            raise ValueError("online subtask prediction requires explicit episode indices")
+        if data_config.subtask_annotation_revision != model_config.subtask_annotation_revision:
+            raise ValueError("model and data annotation revisions differ")
+        annotations = SubtaskAnnotationIndex(
+            data_config.subtask_annotation_dir,
+            expected_revision=data_config.subtask_annotation_revision,
+            expected_text_format=model_config.subtask_text_format,
+        )
+        annotations.validate_dataset_coverage(
+            dataset,
+            episodes,
+            expected_split=annotation_split,
+        )
+        dataset = AnnotatedSubtaskDataset(dataset, annotations)
+    elif any(value is not None for value in annotation_fields):
+        raise ValueError("subtask annotations require online subtask prediction")
 
     if data_config.prompt_from_task:
         dataset = TransformedDataset(dataset, [_transforms.PromptFromLeRobotTask(dataset_meta.tasks)])
@@ -388,6 +416,7 @@ def create_data_loader(
         seed=config.seed,
         skip_norm_stats=skip_norm_stats,
         framework=framework,
+        annotation_split="heldout" if split == "validation" else "train",
     )
 
 
@@ -410,6 +439,7 @@ def create_torch_data_loader(
     pin_memory: bool = False,
     seed: int = 0,
     framework: str = "jax",
+    annotation_split: Literal["train", "heldout"] = "train",
 ) -> DataLoader[tuple[_model.Observation, _model.Actions]]:
     """Create a data loader for training.
 
@@ -428,7 +458,13 @@ def create_torch_data_loader(
             execute in the main process.
         seed: The seed to use for shuffling the data.
     """
-    dataset = create_torch_dataset(data_config, action_horizon, model_config, episodes=episodes)
+    dataset = create_torch_dataset(
+        data_config,
+        action_horizon,
+        model_config,
+        episodes=episodes,
+        annotation_split=annotation_split,
+    )
     dataset = transform_dataset(dataset, data_config, skip_norm_stats=skip_norm_stats)
 
     # Use TorchDataLoader for both frameworks

@@ -30,6 +30,7 @@ import openpi.training.droid_rlds_dataset as droid_rlds_dataset
 import openpi.training.misc.roboarena_config as roboarena_config
 import openpi.training.official_clean_config as official_clean_config
 import openpi.training.optimizer as _optimizer
+import openpi.training.putcab_online_subtask_config as putcab_online_subtask_config
 import openpi.training.robotwin_lora_config as robotwin_lora_config
 import openpi.training.skillvla_config as skillvla_config
 import openpi.training.weight_loaders as weight_loaders
@@ -74,6 +75,9 @@ class DataConfig:
     repo_id: str | None = None
     # Directory within the assets directory containing the data assets.
     asset_id: str | None = None
+    # Strict per-frame textual-subtask annotations, enabled only by PI0.5 config.
+    subtask_annotation_dir: str | None = None
+    subtask_annotation_revision: str | None = None
     # Contains precomputed normalization stats. If None, normalization will not be performed.
     norm_stats: dict[str, _transforms.NormStats] | None = None
     # Used to adopt the inputs from a dataset specific format to a common format
@@ -130,14 +134,22 @@ class ModelTransformFactory(GroupFactory):
                 )
             case _model.ModelType.PI05:
                 assert isinstance(model_config, pi0_config.Pi0Config)
+                if model_config.online_subtask_prediction:
+                    tokenize_prompt = _transforms.TokenizePromptAndSubtask(
+                        _tokenizer.PaligemmaTokenizer(model_config.max_token_len),
+                        _tokenizer.PaligemmaTokenizer(model_config.subtask_max_token_len),
+                        model_config.subtask_action_prompt_format,
+                    )
+                else:
+                    tokenize_prompt = _transforms.TokenizePrompt(
+                        _tokenizer.PaligemmaTokenizer(model_config.max_token_len),
+                        discrete_state_input=model_config.discrete_state_input,
+                    )
                 return _transforms.Group(
                     inputs=[
                         _transforms.InjectDefaultPrompt(self.default_prompt),
                         _transforms.ResizeImages(224, 224),
-                        _transforms.TokenizePrompt(
-                            _tokenizer.PaligemmaTokenizer(model_config.max_token_len),
-                            discrete_state_input=model_config.discrete_state_input,
-                        ),
+                        tokenize_prompt,
                         _transforms.PadStatesAndActions(model_config.action_dim),
                     ],
                 )
@@ -884,6 +896,7 @@ _CONFIGS = [
     official_clean_config.create_pytorch_config(),
     robotwin_lora_config.create_config(),
     robotwin_lora_config.create_full_config(),
+    putcab_online_subtask_config.create_config(),
     _putcab_jax_config("pi05_putcab_casm_visual_phase_gate_jax_full", "visual_phase_gate"),
     _putcab_jax_config("pi05_putcab_jax_matched_full", "none"),
     _putcab_pytorch_config("pi05_putcab_pytorch_matched_full", "none"),

@@ -110,6 +110,14 @@ class Observation(Generic[ArrayT]):
     # Joint semantic class: object-arm role x async/sync stage.
     semantic_subtask_id: at.Int[ArrayT, "*b p"] | None = None
 
+    # Optional PI0.5 autoregressive textual-subtask supervision.
+    tokenized_action_prompt: at.Int[ArrayT, "*b l"] | None = None
+    tokenized_action_prompt_mask: at.Bool[ArrayT, "*b l"] | None = None
+    tokenized_subtask_prompt: at.Int[ArrayT, "*b sl"] | None = None
+    tokenized_subtask_prompt_mask: at.Bool[ArrayT, "*b sl"] | None = None
+    subtask_ar_mask: at.Bool[ArrayT, "*b sl"] | None = None
+    subtask_loss_mask: at.Bool[ArrayT, "*b sl"] | None = None
+
     # Tokenized prompt.
     tokenized_prompt: at.Int[ArrayT, "*b l"] | None = None
     # Tokenized prompt mask.
@@ -128,6 +136,17 @@ class Observation(Generic[ArrayT]):
         # Ensure that tokenized_prompt and tokenized_prompt_mask are provided together.
         if ("tokenized_prompt" in data) != ("tokenized_prompt_mask" in data):
             raise ValueError("tokenized_prompt and tokenized_prompt_mask must be provided together.")
+        optional_pairs = (
+            ("tokenized_action_prompt", "tokenized_action_prompt_mask"),
+            ("tokenized_subtask_prompt", "tokenized_subtask_prompt_mask"),
+        )
+        for tokens_key, mask_key in optional_pairs:
+            if (tokens_key in data) != (mask_key in data):
+                raise ValueError(f"{tokens_key} and {mask_key} must be provided together.")
+        subtask_fields = ("tokenized_subtask_prompt", "subtask_ar_mask", "subtask_loss_mask")
+        present = [field in data for field in subtask_fields]
+        if any(present) and not all(present):
+            raise ValueError("all tokenized subtask fields must be provided together")
         return cls(
             images=convert_uint8_images(data["image"]),
             image_masks=data["image_mask"],
@@ -139,6 +158,12 @@ class Observation(Generic[ArrayT]):
             tokenized_prompt_mask=data.get("tokenized_prompt_mask"),
             token_ar_mask=data.get("token_ar_mask"),
             token_loss_mask=data.get("token_loss_mask"),
+            tokenized_action_prompt=data.get("tokenized_action_prompt"),
+            tokenized_action_prompt_mask=data.get("tokenized_action_prompt_mask"),
+            tokenized_subtask_prompt=data.get("tokenized_subtask_prompt"),
+            tokenized_subtask_prompt_mask=data.get("tokenized_subtask_prompt_mask"),
+            subtask_ar_mask=data.get("subtask_ar_mask"),
+            subtask_loss_mask=data.get("subtask_loss_mask"),
         )
 
     def to_dict(self) -> at.PyTree[ArrayT]:
@@ -221,6 +246,12 @@ def preprocess_observation(
         tokenized_prompt_mask=observation.tokenized_prompt_mask,
         token_ar_mask=observation.token_ar_mask,
         token_loss_mask=observation.token_loss_mask,
+        tokenized_action_prompt=observation.tokenized_action_prompt,
+        tokenized_action_prompt_mask=observation.tokenized_action_prompt_mask,
+        tokenized_subtask_prompt=observation.tokenized_subtask_prompt,
+        tokenized_subtask_prompt_mask=observation.tokenized_subtask_prompt_mask,
+        subtask_ar_mask=observation.subtask_ar_mask,
+        subtask_loss_mask=observation.subtask_loss_mask,
     )
 
 

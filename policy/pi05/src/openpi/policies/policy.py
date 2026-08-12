@@ -58,11 +58,16 @@ class Policy(BasePolicy):
         self._pytorch_device = pytorch_device
         self._predict_async_probability = None
         self._predict_casm_language = None
+        self._sample_actions_with_subtask = None
+        if getattr(model, "online_subtask_prediction", False) and not self._is_pytorch_model:
+            raise ValueError("online subtask prediction is implemented only for PyTorch policies")
 
         if self._is_pytorch_model:
             self._model = self._model.to(pytorch_device)
             self._model.eval()
             self._sample_actions = model.sample_actions
+            if getattr(model, "online_subtask_prediction", False):
+                self._sample_actions_with_subtask = model.sample_actions_with_subtask
         else:
             # JAX model setup
             self._sample_actions = nnx_utils.module_jit(model.sample_actions)
@@ -134,9 +139,21 @@ class Policy(BasePolicy):
             sample_kwargs["noise"] = noise
 
         observation = _model.Observation.from_dict(inputs)
+        if self._sample_actions_with_subtask is None:
+            actions = self._sample_actions(sample_rng_or_pytorch_device, observation, **sample_kwargs)
+            generated_subtask = None
+        else:
+            task = action_obs.get("prompt")
+            if not isinstance(task, str):
+                raise ValueError("online subtask policy requires the original task text")
+            actions, generated_subtask = self._sample_actions_with_subtask(
+                observation,
+                task,
+                **sample_kwargs,
+            )
         outputs = {
             "state": inputs["state"],
-            "actions": self._sample_actions(sample_rng_or_pytorch_device, observation, **sample_kwargs),
+            "actions": actions,
         }
         if semantic_async_probability is not None:
             outputs["async_probability"] = semantic_async_probability
@@ -149,6 +166,8 @@ class Policy(BasePolicy):
             outputs = jax.tree.map(lambda x: np.asarray(x[0, ...]), outputs)
 
         outputs = self._output_transform(outputs)
+        if generated_subtask is not None:
+            outputs["subtask"] = generated_subtask
         outputs.update(semantic_metadata)
         outputs["policy_timing"] = {
             "infer_ms": model_time * 1000,

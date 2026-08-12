@@ -127,6 +127,9 @@ class PaliGemmaWithExpertModel(nn.Module):
     def embed_language_tokens(self, tokens: torch.Tensor):
         return self.paligemma.language_model.embed_tokens(tokens)
 
+    def language_logits(self, hidden_states: torch.Tensor):
+        return self.paligemma.lm_head(hidden_states)
+
     def forward(
         self,
         attention_mask: torch.Tensor | None = None,
