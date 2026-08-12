@@ -27,8 +27,9 @@ def reduce_action_loss(
     mask = jnp.asarray(action_mask, dtype=squared_error.dtype)
     if mask.shape != squared_error.shape:
         raise ValueError(f"action mask shape mismatch: {mask.shape} != {squared_error.shape}")
-    denominator = jnp.maximum(jnp.sum(mask, axis=-1), 1.0)
-    return jnp.sum(squared_error * mask, axis=-1) / denominator
+    denominator = jnp.maximum(jnp.sum(mask, axis=(-2, -1)), 1.0)
+    weighted_error = jnp.sum(squared_error * mask, axis=-1)
+    return weighted_error * squared_error.shape[-2] / denominator[..., None]
 
 
 def make_attn_mask(input_mask, mask_ar):

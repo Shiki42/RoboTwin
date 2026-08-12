@@ -89,6 +89,7 @@ def encode_actions(
     control_points: int,
     degree: int = 3,
     regularization: float = 1e-6,
+    valid_timestep_mask: np.ndarray | None = None,
 ) -> np.ndarray:
     """Fit spline coefficients to arrays shaped [..., control_horizon, action_dim]."""
     values = np.asarray(actions)
@@ -96,9 +97,54 @@ def encode_actions(
         raise ValueError(f"expected action horizon {control_horizon}, got {values.shape}")
     if not np.all(np.isfinite(values)):
         raise ValueError("actions contain non-finite values")
-    _, projector = spline_matrices(control_horizon, control_points, degree, regularization)
-    coefficients = np.einsum("mn,...nd->...md", projector, values, optimize=True)
+    basis, projector = spline_matrices(control_horizon, control_points, degree, regularization)
+    if valid_timestep_mask is None:
+        coefficients = np.einsum("mn,...nd->...md", projector, values, optimize=True)
+        return coefficients.astype(values.dtype, copy=False)
+
+    mask = np.asarray(valid_timestep_mask, dtype=np.float64)
+    expected_shape = values.shape[:-1]
+    if mask.shape != expected_shape:
+        raise ValueError(f"expected valid timestep mask {expected_shape}, got {mask.shape}")
+    if not np.all(np.isfinite(mask)) or np.any(mask < 0.0) or np.any(mask > 1.0):
+        raise ValueError("valid timestep mask must be finite and lie in [0, 1]")
+    if np.any(np.sum(mask, axis=-1) == 0.0):
+        raise ValueError("each action chunk must contain at least one valid timestep")
+    if np.all(mask == 1.0):
+        coefficients = np.einsum("mn,...nd->...md", projector, values, optimize=True)
+        return coefficients.astype(values.dtype, copy=False)
+
+    flat_values = values.reshape((-1, control_horizon, values.shape[-1]))
+    flat_mask = mask.reshape((-1, control_horizon))
+    second_difference = np.diff(np.eye(control_points, dtype=np.float64), n=2, axis=0)
+    smoothness = regularization * second_difference.T @ second_difference
+    ridge = max(regularization, np.finfo(np.float64).eps) * np.eye(control_points, dtype=np.float64)
+    systems = np.einsum("ni,bn,nj->bij", basis, flat_mask, basis, optimize=True) + smoothness + ridge
+    right_hand_side = np.einsum("ni,bn,bnd->bid", basis, flat_mask, flat_values, optimize=True)
+    coefficients = np.linalg.solve(systems, right_hand_side).reshape(
+        (*values.shape[:-2], control_points, values.shape[-1])
+    )
     return coefficients.astype(values.dtype, copy=False)
+
+
+def coefficient_supervision_weights(
+    timestep_dimension_weights: np.ndarray,
+    *,
+    control_horizon: int,
+    control_points: int,
+    degree: int = 3,
+) -> np.ndarray:
+    """Map timestep/dimension supervision weights to Spline coefficients by basis energy."""
+    weights = np.asarray(timestep_dimension_weights, dtype=np.float64)
+    if weights.ndim < 2 or weights.shape[-2] != control_horizon:
+        raise ValueError(f"expected timestep weights ending in horizon {control_horizon}, got {weights.shape}")
+    if not np.all(np.isfinite(weights)) or np.any(weights < 0.0) or np.any(weights > 1.0):
+        raise ValueError("timestep weights must be finite and lie in [0, 1]")
+    times = np.linspace(0.0, 1.0, control_horizon, dtype=np.float64)
+    basis_energy = np.square(evaluate_basis(times, control_points, degree))
+    total_energy = np.sum(basis_energy, axis=0)
+    coefficient_weights = np.einsum("nm,...nd->...md", basis_energy, weights, optimize=True) / total_energy[:, None]
+    return coefficient_weights.astype(np.float32, copy=False)
 
 
 def decode_actions(

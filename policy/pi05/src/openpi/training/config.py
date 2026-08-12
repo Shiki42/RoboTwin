@@ -251,6 +251,8 @@ class LeRobotAlohaDataConfig(DataConfigFactory):
     adapt_to_pi: bool = True
     # Weight assigned to demonstrator-inactive arm labels.
     inactive_action_weight: float = 0.0
+    # Require LeRobot sequence padding flags and propagate them to action supervision.
+    require_action_padding_mask: bool = False
 
     # Repack transforms.
     repack_transforms: tyro.conf.Suppress[_transforms.Group] = dataclasses.field(
@@ -271,13 +273,17 @@ class LeRobotAlohaDataConfig(DataConfigFactory):
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        input_transforms = []
+        if self.require_action_padding_mask:
+            input_transforms.append(_transforms.RequireActionPaddingMask(control_horizon=model_config.control_horizon))
+        input_transforms.append(
+            aloha_policy.AlohaInputs(
+                adapt_to_pi=self.adapt_to_pi,
+                inactive_action_weight=self.inactive_action_weight,
+            )
+        )
         data_transforms = _transforms.Group(
-            inputs=[
-                aloha_policy.AlohaInputs(
-                    adapt_to_pi=self.adapt_to_pi,
-                    inactive_action_weight=self.inactive_action_weight,
-                )
-            ],
+            inputs=input_transforms,
             outputs=[aloha_policy.AlohaOutputs(adapt_to_pi=self.adapt_to_pi)],
         )
         if self.use_delta_joint_actions:
@@ -582,24 +588,33 @@ class TrainConfig:
             raise ValueError("Cannot resume and overwrite at the same time.")
 
 
-def _putcab_casm_data(repo_id: str, *, inactive_action_weight: float = 0.0) -> LeRobotAlohaDataConfig:
+def _putcab_casm_data(
+    repo_id: str,
+    *,
+    inactive_action_weight: float = 0.0,
+    require_action_padding_mask: bool = False,
+) -> LeRobotAlohaDataConfig:
+    repack_structure = {
+        "images": {
+            "cam_high": "observation.images.cam_high",
+            "cam_left_wrist": "observation.images.cam_left_wrist",
+            "cam_right_wrist": "observation.images.cam_right_wrist",
+        },
+        "state": "observation.state",
+        "actions": "action",
+        "action_mask": "observation.arm_active_mask",
+        "action_phase": "observation.phase_one_hot",
+        "prompt": "prompt",
+    }
+    if require_action_padding_mask:
+        repack_structure["action_is_pad"] = "action_is_pad"
     return LeRobotAlohaDataConfig(
         repo_id=repo_id,
         inactive_action_weight=inactive_action_weight,
+        require_action_padding_mask=require_action_padding_mask,
         adapt_to_pi=False,
         repack_transforms=_transforms.Group(inputs=[
-            _transforms.RepackTransform({
-                "images": {
-                    "cam_high": "observation.images.cam_high",
-                    "cam_left_wrist": "observation.images.cam_left_wrist",
-                    "cam_right_wrist": "observation.images.cam_right_wrist",
-                },
-                "state": "observation.state",
-                "actions": "action",
-                "action_mask": "observation.arm_active_mask",
-                "action_phase": "observation.phase_one_hot",
-                "prompt": "prompt",
-            })
+            _transforms.RepackTransform(repack_structure)
         ]),
         base_config=DataConfig(prompt_from_task=True, video_backend="pyav"),
         action_sequence_keys=(
@@ -686,6 +701,26 @@ def _putcab_spline_anchor_adapt_config() -> TrainConfig:
             control_horizon=50,
             spline_control_points=16,
         ),
+    )
+
+
+def _putcab_spline_masked_anchor_adapt_config() -> TrainConfig:
+    base = _putcab_spline_anchor_adapt_config()
+    data = dataclasses.replace(
+        base.data,
+        require_action_padding_mask=True,
+        repack_transforms=_transforms.Group(inputs=[
+            _transforms.RepackTransform({
+                **base.data.repack_transforms.inputs[0].structure,
+                "action_is_pad": "action_is_pad",
+            }),
+        ]),
+    )
+    return dataclasses.replace(
+        base,
+        name="pi05_putcab_spline_field_masked_anchor_adapt_matched_lora",
+        project_name="parallelvla-pi05-spline-masked-matched",
+        data=data,
     )
 
 
@@ -920,6 +955,7 @@ _CONFIGS = [
     _putcab_anchor_adapt_config("pi05_putcab_casm_visual_phase_gate_pi05_anchor_adapt_lora", "visual_phase_gate", "parallelvla-casm"),
     _putcab_anchor_adapt_config("pi05_putcab_pi05_anchor_adapt_matched_lora", "none", "parallelvla-pi05-matched"),
     _putcab_spline_anchor_adapt_config(),
+    _putcab_spline_masked_anchor_adapt_config(),
     _putcab_anchor_adapt_config(
         "pi05_putcab_pi05_anchor_adapt_vision_frozen_lora", "none", "parallelvla-pi05-vision-frozen", freeze_vision=True,
     ),

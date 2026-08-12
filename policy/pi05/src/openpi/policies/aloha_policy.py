@@ -108,6 +108,9 @@ class AlohaInputs(transforms.DataTransformFn):
                 axis=-1,
             )
 
+        if "action_valid_timestep_mask" in data:
+            inputs["action_valid_timestep_mask"] = np.asarray(data["action_valid_timestep_mask"], dtype=np.float32)
+
         if "phase_id" in data and "phase_id" not in inputs:
             phase_id = np.asarray(data["phase_id"], dtype=np.int32).reshape(1)
             inputs["phase_id"] = phase_id

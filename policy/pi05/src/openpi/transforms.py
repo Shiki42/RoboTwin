@@ -341,6 +341,24 @@ class PadStatesAndActions(DataTransformFn):
 
 
 @dataclasses.dataclass(frozen=True)
+class RequireActionPaddingMask(DataTransformFn):
+    """Convert LeRobot padding flags into valid-timestep weights."""
+
+    control_horizon: int
+
+    def __call__(self, data: DataDict) -> DataDict:
+        if "actions" not in data:
+            return data
+        if "action_is_pad" not in data:
+            raise ValueError("action_is_pad is required for sequence action supervision")
+        is_pad = np.asarray(data.pop("action_is_pad"))
+        if is_pad.shape != (self.control_horizon,):
+            raise ValueError(f"expected action_is_pad shape {(self.control_horizon,)}, got {is_pad.shape}")
+        data["action_valid_timestep_mask"] = np.logical_not(is_pad).astype(np.float32)
+        return data
+
+
+@dataclasses.dataclass(frozen=True)
 class SplineFieldTargets(DataTransformFn):
     """Replace a normalized action trajectory with compact B-spline coefficients."""
 
@@ -352,20 +370,32 @@ class SplineFieldTargets(DataTransformFn):
     def __call__(self, data: DataDict) -> DataDict:
         if "actions" not in data:
             return data
+        if "action_valid_timestep_mask" not in data:
+            raise ValueError("action_valid_timestep_mask is required for spline targets")
+        valid_timestep_mask = np.asarray(data["action_valid_timestep_mask"], dtype=np.float32)
+        if valid_timestep_mask.shape != (self.control_horizon,):
+            raise ValueError(
+                f"expected valid timestep mask shape {(self.control_horizon,)}, got {valid_timestep_mask.shape}"
+            )
         data["actions"] = spline_field.encode_actions(
             data["actions"],
             control_horizon=self.control_horizon,
             control_points=self.control_points,
             degree=self.degree,
             regularization=self.regularization,
+            valid_timestep_mask=valid_timestep_mask,
         )
         if "action_mask" in data:
             action_mask = np.asarray(data["action_mask"])
             expected_shape = (self.control_horizon, data["actions"].shape[-1])
             if action_mask.shape[-2:] != expected_shape:
                 raise ValueError(f"expected action mask suffix {expected_shape}, got {action_mask.shape}")
-            dimension_mask = np.min(action_mask, axis=-2, keepdims=True)
-            data["action_mask"] = np.repeat(dimension_mask, self.control_points, axis=-2)
+            data["action_mask"] = spline_field.coefficient_supervision_weights(
+                action_mask * valid_timestep_mask[:, None],
+                control_horizon=self.control_horizon,
+                control_points=self.control_points,
+                degree=self.degree,
+            )
         return data
 
 
