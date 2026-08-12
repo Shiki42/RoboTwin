@@ -128,6 +128,22 @@ def test_reset_requires_a_new_episode_seed(monkeypatch):
         service.infer_session(11, _infer_request())
 
 
+def test_service_applies_seed_even_when_model_seed_hook_is_a_noop(monkeypatch):
+    monkeypatch.setattr(server_module, "decode_images", lambda images: images)
+    model = _FakeModel()
+    model.set_episode_seed = lambda seed: None
+    service = server_module.RobotwinPolicyService(model)
+
+    service.infer_session(11, _request("reset"))
+    service.infer_session(11, _request("seed", seed=101))
+    actual = service.infer_session(11, _infer_request())["actions"]
+
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(101)
+        expected = torch.rand((2, 3)).numpy()
+    np.testing.assert_array_equal(actual, expected)
+
+
 def test_close_session_discards_mutable_state():
     service = server_module.RobotwinPolicyService(_FakeModel())
     service.infer_session(11, _request("reset"))

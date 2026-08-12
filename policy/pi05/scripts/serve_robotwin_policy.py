@@ -68,6 +68,7 @@ class RobotwinPolicyService:
     def _seed_session(self, session: _SessionState, seed: int):
         devices = self._cuda_devices()
         with torch.random.fork_rng(devices=devices):
+            torch.manual_seed(seed)
             session.model.set_episode_seed(seed)
             session.cpu_rng_state = torch.get_rng_state()
             session.cuda_rng_states = torch.cuda.get_rng_state_all() if devices else []
