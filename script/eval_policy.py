@@ -462,7 +462,14 @@ def eval_policy(task_name,
         episode_steps = int(TASK_ENV.take_action_cnt)
         episode_elapsed_sec = time.time() - episode_start_time
         collision = collision_monitor.summary()
-        action_digest = getattr(model, "episode_action_sha256", lambda: None)()
+        action_digest = collision_monitor.episode_action_sha256()
+        action_count = collision_monitor.action_count
+        if action_count != episode_steps:
+            raise RuntimeError(
+                "native executed-action count does not match episode steps: "
+                f"{action_count} != {episode_steps}"
+            )
+        TASK_ENV.eval_collision_monitor = None
         inference_requests = int(getattr(model, "inference_index", 0))
 
         metrics_path = args.get("metrics_output")
@@ -481,6 +488,7 @@ def eval_policy(task_name,
                     "policy_seed": policy_seed,
                     "policy_rng": policy_rng,
                     "policy_action_sha256": action_digest,
+                    "policy_action_count": action_count,
                     "policy_inference_requests": inference_requests,
                     "episode_index": int(TASK_ENV.test_num),
                     "success": bool(succ),
