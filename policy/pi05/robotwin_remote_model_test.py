@@ -3,6 +3,14 @@ import pytest
 
 from robotwin_image_transport import ROBOTWIN_POLICY_PROTOCOL
 from robotwin_image_transport import decode_images
+import deploy_policy
+
+
+def test_deploy_policy_has_policy_agnostic_recovery_hook():
+    assert "UPVLA_RECOVERY_CHECKPOINT" in deploy_policy.get_model.__code__.co_consts
+    assert "correct_actions" in deploy_policy.eval.__code__.co_names
+
+
 import robotwin_remote_model
 
 

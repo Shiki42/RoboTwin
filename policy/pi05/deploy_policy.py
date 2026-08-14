@@ -1,5 +1,7 @@
+import os
 from pathlib import Path
 import sys
+
 
 import numpy as np
 
@@ -27,6 +29,11 @@ def get_model(usr_args):
     remote_port = int(usr_args.get("remote_policy_port", 0))
     if remote_port:
         from robotwin_remote_model import RobotwinRemoteModel
+
+        if "UPVLA_RECOVERY_CHECKPOINT" in os.environ:
+            from precision_adapter.deployment.robotwin_recovery import RecoveryPi05Model
+
+            return RecoveryPi05Model.from_environment(usr_args)
 
         return RobotwinRemoteModel(
             host=usr_args.get("remote_policy_host", "127.0.0.1"),
@@ -61,6 +68,8 @@ def eval(TASK_ENV, model, observation):  # noqa: N803
     model.update_observation_window(input_rgb_arr, input_state, action_executed=False)
     actions = model.get_action()[: model.execution_steps()]
     executed_actions = 0
+    if hasattr(model, "correct_actions"):
+        actions = model.correct_actions(TASK_ENV, observation, actions)
 
     for action in actions:
         previous_step = TASK_ENV.take_action_cnt
