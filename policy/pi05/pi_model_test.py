@@ -174,7 +174,7 @@ def test_visual_gate_uses_dynamic_main_camera_during_async_phase():
     )
 
 
-def test_local_websocket_client_disables_keepalive():
+def test_local_sync_websocket_client_uses_supported_connect_arguments():
     source = (
         Path(__file__).parent
         / "packages"
@@ -184,4 +184,4 @@ def test_local_websocket_client_disables_keepalive():
         / "websocket_client_policy.py"
     ).read_text(encoding="utf-8")
 
-    assert "ping_interval=None" in source
+    assert "ping_interval" not in source
