@@ -4,7 +4,10 @@ import asyncio
 import concurrent.futures as futures
 import dataclasses
 import logging
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
+
+if TYPE_CHECKING:
+    import openpi.training.data_loader as _data_loader
 
 from etils import epath
 import jax
@@ -13,7 +16,6 @@ import orbax.checkpoint as ocp
 
 from openpi.shared import array_typing as at
 import openpi.shared.normalize as _normalize
-import openpi.training.data_loader as _data_loader
 import openpi.training.utils as training_utils
 
 _CHECKPOINT_CONCURRENT_GB = 6
