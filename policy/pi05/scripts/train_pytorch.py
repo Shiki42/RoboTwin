@@ -160,6 +160,11 @@ def config_signature(config: _config.TrainConfig) -> dict[str, Any]:
         "pytorch_gradient_checkpointing": config.pytorch_gradient_checkpointing,
         "pytorch_gradient_checkpointing_scope": config.pytorch_gradient_checkpointing_scope,
         "pytorch_trainable_scope": config.pytorch_trainable_scope,
+        "training_objective": (
+            "detached_subtask_ce_only_v1"
+            if config.pytorch_trainable_scope == "subtask_head"
+            else "action_policy_v1"
+        ),
         "seed": config.seed,
         "episode_split": episode_split,
         "normalizer": _normalizer_signature(config, episode_split),
@@ -428,18 +433,27 @@ def train_step(
     for observation, actions in batches:
         if timer is not None:
             timer.start("forward")
-        losses, auxiliary = forward_losses(model, observation, actions, config)
-        if model.casm_mode == "visual_phase_gate":
-            loss = losses.mean()
+        if config.pytorch_trainable_scope == "subtask_head":
+            with torch.autocast(
+                device_type=actions.device.type,
+                dtype=torch.bfloat16,
+                enabled=config.pytorch_compute_precision == "bfloat16",
+            ):
+                auxiliary = model(observation, subtask_only=True)
+                loss = model.aux_subtask_loss_weight * auxiliary["subtask_loss"]
         else:
-            action_mask = getattr(observation, "action_mask", None)
-            if config.pytorch_trainable_scope == "lora" and action_mask is None:
-                raise ValueError("LoRA training requires action_is_pad-derived supervision mask")
-            loss = _mean_action_loss(losses, action_mask)
+            losses, auxiliary = forward_losses(model, observation, actions, config)
+            if model.casm_mode == "visual_phase_gate":
+                loss = losses.mean()
+            else:
+                action_mask = getattr(observation, "action_mask", None)
+                if config.pytorch_trainable_scope == "lora" and action_mask is None:
+                    raise ValueError("LoRA training requires action_is_pad-derived supervision mask")
+                loss = _mean_action_loss(losses, action_mask)
+                if getattr(model, "aux_subtask_classes", 0):
+                    auxiliary = {**auxiliary, "action_loss": loss.detach()}
             if getattr(model, "aux_subtask_classes", 0):
-                auxiliary = {**auxiliary, "action_loss": loss.detach()}
-        if getattr(model, "aux_subtask_classes", 0):
-            loss = loss + model.aux_subtask_loss_weight * auxiliary["subtask_loss"]
+                loss = loss + model.aux_subtask_loss_weight * auxiliary["subtask_loss"]
         if not torch.isfinite(loss):
             raise FloatingPointError(f"non-finite loss at step {global_step}: {loss}")
         if timer is not None:

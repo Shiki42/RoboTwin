@@ -1,7 +1,11 @@
+from types import SimpleNamespace
+
 import pytest
 import torch
+from torch import nn
 
 from openpi.models_pytorch import casm_pytorch
+from openpi.models_pytorch import pi0_pytorch
 
 
 def test_reduce_action_loss_applies_mask_and_ignores_fully_masked_step():
@@ -132,3 +136,36 @@ def test_subtask_classification_loss_reports_cross_entropy_and_accuracy():
 def test_subtask_classification_loss_rejects_out_of_range_target():
     with pytest.raises(ValueError, match="outside"):
         casm_pytorch.subtask_classification_loss(torch.zeros(1, 2), torch.tensor([[2]]))
+
+
+def test_pi0_subtask_only_forward_does_not_require_actions(monkeypatch):
+    model = pi0_pytorch.PI0Pytorch.__new__(pi0_pytorch.PI0Pytorch)
+    nn.Module.__init__(model)
+    model.aux_subtask_classes = 2
+    model.aux_subtask_state_dim = 3
+    model.subtask_head = casm_pytorch.VisualProprioceptionClassifier(
+        visual_dim=4,
+        state_dim=3,
+        hidden_dim=5,
+        classes=2,
+        stop_gradient=True,
+    )
+    visual = torch.randn(2, 4)
+    state = torch.randn(2, 5)
+    observation = SimpleNamespace(semantic_subtask_id=torch.tensor([[0], [1]]))
+
+    monkeypatch.setattr(
+        model,
+        "_preprocess_observation",
+        lambda unused, train: ([None], [None], None, None, state),
+    )
+    monkeypatch.setattr(
+        model,
+        "embed_prefix",
+        lambda images, img_masks, lang_tokens, lang_masks: (None, None, None, visual),
+    )
+
+    metrics = model(observation, subtask_only=True)
+
+    assert torch.isfinite(metrics["subtask_loss"])
+    assert metrics["subtask_accuracy"] >= 0

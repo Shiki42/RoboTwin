@@ -358,8 +358,36 @@ class PI0Pytorch(nn.Module):
 
         return embs, pad_masks, att_masks, adarms_cond
 
-    def forward(self, observation, actions, noise=None, time=None, *, return_aux=False):
+    def forward_subtask(self, observation) -> dict[str, Tensor]:
+        """Run only the detached visual/state classifier used by head-only probes."""
+        if not self.aux_subtask_classes:
+            raise ValueError("subtask-only forward requires an auxiliary subtask head")
+        if observation.semantic_subtask_id is None:
+            raise ValueError("auxiliary subtask prediction requires semantic_subtask_id")
+        images, img_masks, lang_tokens, lang_masks, state = self._preprocess_observation(observation, train=True)
+        _, _, _, visual_summary = self.embed_prefix(images, img_masks, lang_tokens, lang_masks)
+        return casm_pytorch.subtask_classification_loss(
+            self.subtask_head(visual_summary, state[:, : self.aux_subtask_state_dim]),
+            observation.semantic_subtask_id,
+        ).metrics
+
+    def forward(
+        self,
+        observation,
+        actions=None,
+        noise=None,
+        time=None,
+        *,
+        return_aux=False,
+        subtask_only=False,
+    ):
         """Run a training forward pass and return per-action-step loss."""
+        if subtask_only:
+            if return_aux or noise is not None or time is not None:
+                raise ValueError("subtask-only forward does not accept action-forward options")
+            return self.forward_subtask(observation)
+        if actions is None:
+            raise ValueError("actions are required for an action forward pass")
         images, img_masks, lang_tokens, lang_masks, state = self._preprocess_observation(observation, train=True)
 
         if noise is None:

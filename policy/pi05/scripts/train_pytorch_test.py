@@ -86,14 +86,18 @@ class TinyAuxPolicy(nn.Module):
     def __init__(self):
         super().__init__()
         self.subtask_head = nn.Parameter(torch.tensor(0.0))
+        self.action_forward_called = False
 
-    def forward(self, observation, actions, *, return_aux=False):
+    def forward(self, observation, actions=None, *, return_aux=False, subtask_only=False):
         del observation, actions
-        losses = torch.tensor([[1.0, 3.0]])
         auxiliary = {
             "subtask_loss": (self.subtask_head - 1.0).square(),
             "subtask_accuracy": torch.tensor(0.5),
         }
+        if subtask_only:
+            return auxiliary
+        self.action_forward_called = True
+        losses = torch.tensor([[1.0, 3.0]])
         return (losses, auxiliary) if return_aux else losses
 
 
@@ -218,7 +222,7 @@ def test_subtask_head_scope_freezes_every_other_parameter():
     assert all(parameter.requires_grad == (name in trainable_names) for name, parameter in model.named_parameters())
 
 
-def test_aux_training_keeps_action_loss_masking_separate_from_subtask_loss():
+def test_subtask_head_training_skips_action_forward():
     model = TinyAuxPolicy()
     optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
     config = _tiny_config()
@@ -236,9 +240,10 @@ def test_aux_training_keeps_action_loss_masking_separate_from_subtask_loss():
     )
 
     assert model.subtask_head.detach() > 0
-    assert metrics["action_loss"] == pytest.approx(5.0 / 3.0)
+    assert not model.action_forward_called
+    assert "action_loss" not in metrics
     assert metrics["subtask_loss"] == pytest.approx(1.0)
-    assert metrics["loss"] == pytest.approx(5.0 / 3.0 + 0.5)
+    assert metrics["loss"] == pytest.approx(0.5)
 
 
 def test_lora_scope_freezes_gemma_base_but_keeps_adapters_vision_and_action_heads():
