@@ -42,6 +42,7 @@ class TinyScopedPolicy(nn.Module):
         self.time_mlp_in = nn.Linear(2, 2)
         self.time_mlp_out = nn.Linear(2, 2)
         self.phase_gate = nn.Linear(2, 1)
+        self.subtask_head = nn.Linear(2, 2)
 
 
 class TinyLoRAScopedPolicy(nn.Module):
@@ -75,6 +76,25 @@ class TinyPrecisionPolicy(nn.Module):
         output = self.linear(actions)
         self.last_output_dtype = output.dtype
         return output.square()
+
+
+class TinyAuxPolicy(nn.Module):
+    casm_mode = "none"
+    aux_subtask_classes = 2
+    aux_subtask_loss_weight = 0.5
+
+    def __init__(self):
+        super().__init__()
+        self.subtask_head = nn.Parameter(torch.tensor(0.0))
+
+    def forward(self, observation, actions, *, return_aux=False):
+        del observation, actions
+        losses = torch.tensor([[1.0, 3.0]])
+        auxiliary = {
+            "subtask_loss": (self.subtask_head - 1.0).square(),
+            "subtask_accuracy": torch.tensor(0.5),
+        }
+        return (losses, auxiliary) if return_aux else losses
 
 
 def _tiny_config():
@@ -186,6 +206,39 @@ def test_action_expert_scope_freezes_only_pretrained_paligemma():
         "phase_gate.",
     ):
         assert any(name.startswith(prefix) for name in trainable_names)
+
+
+def test_subtask_head_scope_freezes_every_other_parameter():
+    model = TinyScopedPolicy()
+
+    trainable_names = train_pytorch.configure_trainable_parameters(model, "subtask_head")
+
+    assert trainable_names
+    assert all(name.startswith("subtask_head.") for name in trainable_names)
+    assert all(parameter.requires_grad == (name in trainable_names) for name, parameter in model.named_parameters())
+
+
+def test_aux_training_keeps_action_loss_masking_separate_from_subtask_loss():
+    model = TinyAuxPolicy()
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    config = _tiny_config()
+    config.pytorch_trainable_scope = "subtask_head"
+    observation = SimpleNamespace(
+        action_mask=torch.tensor([[[1.0, 1.0], [1.0, 0.0]]]),
+    )
+
+    metrics = train_pytorch.train_step(
+        model,
+        optimizer,
+        [(observation, torch.zeros(1, 2, 2))],
+        config,
+        global_step=0,
+    )
+
+    assert model.subtask_head.detach() > 0
+    assert metrics["action_loss"] == pytest.approx(5.0 / 3.0)
+    assert metrics["subtask_loss"] == pytest.approx(1.0)
+    assert metrics["loss"] == pytest.approx(5.0 / 3.0 + 0.5)
 
 
 def test_lora_scope_freezes_gemma_base_but_keeps_adapters_vision_and_action_heads():

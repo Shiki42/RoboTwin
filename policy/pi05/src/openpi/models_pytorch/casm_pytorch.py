@@ -57,6 +57,57 @@ class VisualProprioceptionGate(nn.Module):
         return self.output(F.gelu(self.fusion(fused)))[..., 0]
 
 
+class VisualProprioceptionClassifier(nn.Module):
+    """Predict a closed-set subtask without changing the action pathway."""
+
+    def __init__(
+        self,
+        visual_dim: int,
+        state_dim: int,
+        hidden_dim: int,
+        classes: int,
+        *,
+        stop_gradient: bool,
+    ):
+        super().__init__()
+        if min(visual_dim, state_dim, hidden_dim, classes) < 1:
+            raise ValueError("classifier dimensions must be positive")
+        self.visual_norm = nn.LayerNorm(visual_dim)
+        self.state_norm = nn.LayerNorm(state_dim)
+        self.visual_proj = nn.Linear(visual_dim, hidden_dim)
+        self.state_proj = nn.Linear(state_dim, hidden_dim)
+        self.fusion = nn.Linear(2 * hidden_dim, hidden_dim)
+        self.output = nn.Linear(hidden_dim, classes)
+        self.stop_gradient = stop_gradient
+
+    def forward(self, visual_features: Tensor, state: Tensor) -> Tensor:
+        if self.stop_gradient:
+            visual_features = visual_features.detach()
+            state = state.detach()
+        visual = F.gelu(self.visual_proj(self.visual_norm(visual_features.to(self.visual_norm.weight))))
+        proprioception = F.gelu(self.state_proj(self.state_norm(state.to(self.state_norm.weight))))
+        return self.output(F.gelu(self.fusion(torch.cat([visual, proprioception], dim=-1))))
+
+
+@dataclass(frozen=True)
+class SubtaskClassificationLoss:
+    per_sample: Tensor
+    metrics: dict[str, Tensor]
+
+
+def subtask_classification_loss(logits: Tensor, target: Tensor) -> SubtaskClassificationLoss:
+    target = target.to(device=logits.device, dtype=torch.long).reshape(-1)
+    if logits.ndim != 2 or logits.shape[0] != target.shape[0]:
+        raise ValueError(f"subtask logits/target shape mismatch: {logits.shape} != {target.shape}")
+    if target.numel() and (target.min() < 0 or target.max() >= logits.shape[1]):
+        raise ValueError(f"subtask target is outside [0, {logits.shape[1]})")
+    loss = F.cross_entropy(logits.float(), target, reduction="none")
+    return SubtaskClassificationLoss(
+        per_sample=loss,
+        metrics={"subtask_loss": loss.mean(), "subtask_accuracy": logits.argmax(-1).eq(target).float().mean()},
+    )
+
+
 @dataclass(frozen=True)
 class VisualPhaseGateLoss:
     total: Tensor

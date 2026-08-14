@@ -93,3 +93,42 @@ def test_visual_phase_gate_loss_rejects_invalid_positive_weight(positive_weight)
             gate_loss_weight=0.2,
             gate_positive_weight=positive_weight,
         )
+
+
+def test_subtask_classifier_detaches_inputs_but_updates_head():
+    classifier = casm_pytorch.VisualProprioceptionClassifier(
+        visual_dim=4,
+        state_dim=3,
+        hidden_dim=5,
+        classes=3,
+        stop_gradient=True,
+    )
+    visual = torch.randn(2, 4, requires_grad=True)
+    state = torch.randn(2, 3, requires_grad=True)
+
+    result = casm_pytorch.subtask_classification_loss(
+        classifier(visual, state),
+        torch.tensor([[0], [2]]),
+    )
+    result.per_sample.mean().backward()
+
+    assert visual.grad is None
+    assert state.grad is None
+    assert classifier.output.weight.grad is not None
+    assert torch.isfinite(result.per_sample).all()
+
+
+def test_subtask_classification_loss_reports_cross_entropy_and_accuracy():
+    logits = torch.tensor([[4.0, 0.0], [0.0, 4.0]])
+
+    result = casm_pytorch.subtask_classification_loss(logits, torch.tensor([[0], [0]]))
+
+    expected = torch.nn.functional.cross_entropy(logits, torch.tensor([0, 0]), reduction="none")
+    assert torch.allclose(result.per_sample, expected)
+    assert result.metrics["subtask_loss"] == pytest.approx(expected.mean())
+    assert result.metrics["subtask_accuracy"] == pytest.approx(0.5)
+
+
+def test_subtask_classification_loss_rejects_out_of_range_target():
+    with pytest.raises(ValueError, match="outside"):
+        casm_pytorch.subtask_classification_loss(torch.zeros(1, 2), torch.tensor([[2]]))

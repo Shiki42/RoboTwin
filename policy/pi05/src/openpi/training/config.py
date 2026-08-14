@@ -32,6 +32,7 @@ import openpi.training.official_clean_config as official_clean_config
 import openpi.training.optimizer as _optimizer
 import openpi.training.robotwin_lora_config as robotwin_lora_config
 import openpi.training.skillvla_config as skillvla_config
+import openpi.training.subtask_aux_config as subtask_aux_config
 import openpi.training.weight_loaders as weight_loaders
 import openpi.transforms as _transforms
 
@@ -493,7 +494,7 @@ class TrainConfig:
     pytorch_fused_optimizer: bool = False
     # Compile the PyTorch module in place while preserving state-dict keys.
     pytorch_compile_mode: Literal["none", "default", "reduce-overhead", "max-autotune"] = "none"
-    pytorch_trainable_scope: Literal["all", "action_expert_and_gate", "lora"] = "all"
+    pytorch_trainable_scope: Literal["all", "action_expert_and_gate", "lora", "subtask_head"] = "all"
     lr_schedule: _optimizer.LRScheduleConfig = dataclasses.field(default_factory=_optimizer.CosineDecaySchedule)
     optimizer: _optimizer.OptimizerConfig = dataclasses.field(default_factory=_optimizer.AdamW)
     ema_decay: float | None = 0.99
@@ -891,6 +892,7 @@ _CONFIGS = [
     _putcab_jax_config("pi05_putcab_jax_matched_full", "none"),
     _putcab_pytorch_config("pi05_putcab_pytorch_matched_full", "none"),
     _putcab_pytorch_config("pi05_putcab_casm_visual_phase_gate_pytorch_full", "visual_phase_gate"),
+    subtask_aux_config.create(_putcab_pytorch_config("putcab_subtask_aux_base", "none")),
     TrainConfig(
         name="pi0_base_aloha_robotwin_lora",
         model=pi0_config.Pi0Config(paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"),

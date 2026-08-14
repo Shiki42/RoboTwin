@@ -126,6 +126,18 @@ class PI0Pytorch(nn.Module):
             self.gate_loss_weight = config.gate_loss_weight
             self.gate_positive_weight = config.gate_positive_weight
 
+        self.aux_subtask_classes = config.pytorch_aux_subtask_classes
+        self.aux_subtask_state_dim = config.pytorch_aux_subtask_state_dim
+        self.aux_subtask_loss_weight = config.pytorch_aux_subtask_loss_weight
+        if self.aux_subtask_classes:
+            self.subtask_head = casm_pytorch.VisualProprioceptionClassifier(
+                paligemma_config.width,
+                self.aux_subtask_state_dim,
+                config.pytorch_aux_subtask_hidden_dim,
+                self.aux_subtask_classes,
+                stop_gradient=config.pytorch_aux_subtask_stop_gradient,
+            )
+
         torch.set_float32_matmul_precision("high")
         self.sample_actions = torch.compile(self.sample_actions, mode="max-autotune")
 
@@ -396,19 +408,29 @@ class PI0Pytorch(nn.Module):
 
         squared_error = F.mse_loss(u_t, v_t, reduction="none")
         action_loss = casm_pytorch.reduce_action_loss(squared_error, observation.action_mask)
-        if self.casm_mode == "none":
-            return action_loss
-        if observation.phase_id is None:
-            raise ValueError("visual-phase-gate CASM requires phase_id during training")
-        gate_logits = self.phase_gate(visual_summary, state)
-        loss = casm_pytorch.visual_phase_gate_loss(
-            action_loss,
-            gate_logits,
-            observation.phase_id,
-            gate_loss_weight=self.gate_loss_weight,
-            gate_positive_weight=self.gate_positive_weight,
-        )
-        return (loss.total, loss.metrics) if return_aux else loss.total
+        total = action_loss
+        metrics = {"action_loss": action_loss.mean()}
+        if self.casm_mode == "visual_phase_gate":
+            if observation.phase_id is None:
+                raise ValueError("visual-phase-gate CASM requires phase_id during training")
+            gate = casm_pytorch.visual_phase_gate_loss(
+                action_loss,
+                self.phase_gate(visual_summary, state),
+                observation.phase_id,
+                gate_loss_weight=self.gate_loss_weight,
+                gate_positive_weight=self.gate_positive_weight,
+            )
+            total = gate.total
+            metrics.update(gate.metrics)
+        if self.aux_subtask_classes:
+            if observation.semantic_subtask_id is None:
+                raise ValueError("auxiliary subtask prediction requires semantic_subtask_id")
+            subtask = casm_pytorch.subtask_classification_loss(
+                self.subtask_head(visual_summary, state[:, : self.aux_subtask_state_dim]),
+                observation.semantic_subtask_id,
+            )
+            metrics.update(subtask.metrics)
+        return (total, metrics) if return_aux else total
 
     @torch.no_grad()
     def predict_async_probability(self, observation) -> Tensor:

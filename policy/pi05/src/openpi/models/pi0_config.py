@@ -45,6 +45,11 @@ class Pi0Config(_model.BaseModelConfig):
     semantic_role_loss_weight: float = 0.2
     semantic_stage_loss_weight: float = 0.2
     semantic_stage_class_weights: tuple[float, ...] = (13.81, 1.13, 0.93, 13.81, 3.78, 0.78)
+    pytorch_aux_subtask_classes: int = 0
+    pytorch_aux_subtask_hidden_dim: int = 512
+    pytorch_aux_subtask_state_dim: int = 14
+    pytorch_aux_subtask_loss_weight: float = 1.0
+    pytorch_aux_subtask_stop_gradient: bool = True
     # This config option is not used directly by the model, but it is read by the ModelTransformFactory.
     discrete_state_input: bool = None  # type: ignore
 
@@ -73,6 +78,14 @@ class Pi0Config(_model.BaseModelConfig):
             raise ValueError("semantic stage class weights must be positive")
         if self.semantic_subtask_prediction and self.casm_mode != "visual_phase_gate":
             raise ValueError("semantic subtask prediction requires visual-phase-gate CASM")
+        if self.pytorch_aux_subtask_classes < 0:
+            raise ValueError("PyTorch auxiliary subtask class count must be non-negative")
+        if self.pytorch_aux_subtask_hidden_dim < 1:
+            raise ValueError("PyTorch auxiliary subtask hidden dimension must be positive")
+        if self.pytorch_aux_subtask_classes and not 1 <= self.pytorch_aux_subtask_state_dim <= self.action_dim:
+            raise ValueError("PyTorch auxiliary subtask state dimension must fit the action dimension")
+        if self.pytorch_aux_subtask_loss_weight < 0:
+            raise ValueError("PyTorch auxiliary subtask loss weight must be non-negative")
         if self.max_token_len is None:
             object.__setattr__(self, "max_token_len", 200 if self.pi05 else 48)
         if self.discrete_state_input is None:

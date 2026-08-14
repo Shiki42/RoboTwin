@@ -173,6 +173,13 @@ def config_signature(config: _config.TrainConfig) -> dict[str, Any]:
             "action_expert_variant": getattr(model, "action_expert_variant", None),
             "action_dim": model.action_dim,
             "action_horizon": model.action_horizon,
+            "aux_subtask": {
+                "classes": getattr(model, "pytorch_aux_subtask_classes", 0),
+                "hidden_dim": getattr(model, "pytorch_aux_subtask_hidden_dim", None),
+                "state_dim": getattr(model, "pytorch_aux_subtask_state_dim", None),
+                "loss_weight": getattr(model, "pytorch_aux_subtask_loss_weight", None),
+                "stop_gradient": getattr(model, "pytorch_aux_subtask_stop_gradient", None),
+            },
             "lora": {
                 "paligemma": _lora_signature(model.paligemma_variant),
                 "action_expert": _lora_signature(model.action_expert_variant),
@@ -217,7 +224,7 @@ def build_model(config: _config.TrainConfig, device: torch.device) -> pi0_pytorc
 
 def configure_trainable_parameters(
     model: torch.nn.Module,
-    scope: Literal["all", "action_expert_and_gate", "lora"],
+    scope: Literal["all", "action_expert_and_gate", "lora", "subtask_head"],
 ) -> tuple[str, ...]:
     frozen_lora_prefixes = (
         "paligemma_with_expert.paligemma.model.language_model.",
@@ -248,6 +255,11 @@ def configure_trainable_parameters(
 
         def selected(name: str) -> bool:
             return name in adapter_names or not name.startswith(frozen_lora_prefixes)
+
+    elif scope == "subtask_head":
+
+        def selected(name: str) -> bool:
+            return name.startswith("subtask_head.")
 
     else:
         raise ValueError(f"unsupported PyTorch trainable scope: {scope}")
@@ -319,6 +331,8 @@ def require_run_receipts(config: _config.TrainConfig) -> pathlib.Path:
 
 def initialize_pretrained(model: pi0_pytorch.PI0Pytorch, base: pathlib.Path) -> None:
     allowed = ["phase_gate."] if model.casm_mode == "visual_phase_gate" else []
+    if getattr(model, "aux_subtask_classes", 0):
+        allowed.append("subtask_head.")
     allowed.extend(name for name, _ in model.named_parameters() if name.endswith((".lora_a", ".lora_b")))
     missing, unexpected = pytorch_training.load_pretrained(
         model,
@@ -382,7 +396,7 @@ def forward_losses(
         dtype=torch.bfloat16,
         enabled=use_autocast,
     ):
-        if getattr(model, "casm_mode", "none") == "visual_phase_gate":
+        if getattr(model, "casm_mode", "none") == "visual_phase_gate" or getattr(model, "aux_subtask_classes", 0):
             return model(observation, actions, return_aux=True)
         return model(observation, actions), {}
 
@@ -422,6 +436,10 @@ def train_step(
             if config.pytorch_trainable_scope == "lora" and action_mask is None:
                 raise ValueError("LoRA training requires action_is_pad-derived supervision mask")
             loss = _mean_action_loss(losses, action_mask)
+            if getattr(model, "aux_subtask_classes", 0):
+                auxiliary = {**auxiliary, "action_loss": loss.detach()}
+        if getattr(model, "aux_subtask_classes", 0):
+            loss = loss + model.aux_subtask_loss_weight * auxiliary["subtask_loss"]
         if not torch.isfinite(loss):
             raise FloatingPointError(f"non-finite loss at step {global_step}: {loss}")
         if timer is not None:
