@@ -379,6 +379,17 @@ def test_joint_action_policy_signature_records_factorized_prompt_contract(monkey
     assert signature["training_objective"] == "teacher_forced_factorized_action_plus_subtask_action_policy_v1"
 
 
+def test_task_only_joint_action_policy_signature_records_control_contract(monkeypatch):
+    monkeypatch.setenv("PARALLELVLA_CODE_COMMIT", "a" * 40)
+    config = _config.get_config("pi05_putcab_factorized_anchor_subtask_joint_action_policy_task_only_pytorch")
+
+    signature = train_pytorch.config_signature(config)
+
+    assert signature["pytorch_trainable_scope"] == "subtask_head_and_action_policy"
+    assert signature["pytorch_action_prompt_mode"] == "task_only"
+    assert signature["training_objective"] == "factorized_action_plus_subtask_action_policy_task_only_v1"
+
+
 def test_resume_signature_allows_only_training_budget_extension(monkeypatch):
     monkeypatch.setenv("PARALLELVLA_DATASET_REVISION", "revision")
     monkeypatch.setenv("PI05_BASE_SHA256", "sha")

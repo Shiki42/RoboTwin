@@ -931,6 +931,16 @@ _CONFIGS = [
         factorized_action_loss=True,
         teacher_forced_action_prompt=True,
     ),
+    subtask_aux_config.create(
+        _putcab_pytorch_config("putcab_subtask_aux_joint_action_policy_task_only_base", "none"),
+        name="pi05_putcab_factorized_anchor_subtask_joint_action_policy_task_only_pytorch",
+        stop_gradient=True,
+        trainable_scope="subtask_head_and_action_policy",
+        loss_weight=0.01,
+        peak_lr=1e-5,
+        decay_lr=1e-6,
+        factorized_action_loss=True,
+    ),
     TrainConfig(
         name="pi0_base_aloha_robotwin_lora",
         model=pi0_config.Pi0Config(paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"),

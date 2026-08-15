@@ -171,7 +171,11 @@ def config_signature(config: _config.TrainConfig) -> dict[str, Any]:
                 if config.pytorch_action_prompt_mode == "teacher_forced_joint_subtask"
                 else "action_plus_subtask_shared_projector_v1"
             ),
-            "subtask_head_and_action_policy": "teacher_forced_factorized_action_plus_subtask_action_policy_v1",
+            "subtask_head_and_action_policy": (
+                "teacher_forced_factorized_action_plus_subtask_action_policy_v1"
+                if config.pytorch_action_prompt_mode == "teacher_forced_joint_subtask"
+                else "factorized_action_plus_subtask_action_policy_task_only_v1"
+            ),
         }[config.pytorch_trainable_scope],
         "seed": config.seed,
         "episode_split": episode_split,
