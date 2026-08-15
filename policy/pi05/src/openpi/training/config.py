@@ -893,6 +893,11 @@ _CONFIGS = [
     _putcab_pytorch_config("pi05_putcab_pytorch_matched_full", "none"),
     _putcab_pytorch_config("pi05_putcab_casm_visual_phase_gate_pytorch_full", "visual_phase_gate"),
     subtask_aux_config.create(_putcab_pytorch_config("putcab_subtask_aux_base", "none")),
+    subtask_aux_config.create(
+        _putcab_pytorch_config("putcab_subtask_aux_sqrt_balanced_base", "none"),
+        name="pi05_putcab_factorized_anchor_subtask_head_sqrt_balanced_pytorch",
+        class_weights=subtask_aux_config.SQRT_BALANCED_CLASS_WEIGHTS,
+    ),
     TrainConfig(
         name="pi0_base_aloha_robotwin_lora",
         model=pi0_config.Pi0Config(paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"),

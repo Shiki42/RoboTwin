@@ -1,4 +1,5 @@
 import dataclasses
+import math
 from typing import TYPE_CHECKING
 
 import flax.nnx as nnx
@@ -49,6 +50,7 @@ class Pi0Config(_model.BaseModelConfig):
     pytorch_aux_subtask_hidden_dim: int = 512
     pytorch_aux_subtask_state_dim: int = 14
     pytorch_aux_subtask_loss_weight: float = 1.0
+    pytorch_aux_subtask_class_weights: tuple[float, ...] | None = None
     pytorch_aux_subtask_stop_gradient: bool = True
     # This config option is not used directly by the model, but it is read by the ModelTransformFactory.
     discrete_state_input: bool = None  # type: ignore
@@ -86,6 +88,13 @@ class Pi0Config(_model.BaseModelConfig):
             raise ValueError("PyTorch auxiliary subtask state dimension must fit the action dimension")
         if self.pytorch_aux_subtask_loss_weight < 0:
             raise ValueError("PyTorch auxiliary subtask loss weight must be non-negative")
+        if self.pytorch_aux_subtask_class_weights is not None:
+            if len(self.pytorch_aux_subtask_class_weights) != self.pytorch_aux_subtask_classes:
+                raise ValueError("PyTorch auxiliary subtask class weights must cover every class")
+            if any(
+                not math.isfinite(weight) or weight <= 0 for weight in self.pytorch_aux_subtask_class_weights
+            ):
+                raise ValueError("PyTorch auxiliary subtask class weights must be finite and positive")
         if self.max_token_len is None:
             object.__setattr__(self, "max_token_len", 200 if self.pi05 else 48)
         if self.discrete_state_input is None:

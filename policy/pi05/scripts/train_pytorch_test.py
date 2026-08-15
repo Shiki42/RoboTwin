@@ -16,6 +16,7 @@ from openpi.shared import normalize as _normalize
 from openpi.training import config as _config
 from openpi.training import pytorch_training
 from openpi.training import robotwin_lora_config
+from openpi.training import subtask_aux_config
 from scripts import train_pytorch
 
 
@@ -278,6 +279,17 @@ def test_lora_signature_records_both_adapter_ranks(monkeypatch):
     assert signature["model"]["lora"]["paligemma"] == {"rank": 16, "alpha": 16.0}
     assert signature["model"]["lora"]["action_expert"] == {"rank": 32, "alpha": 32.0}
     assert signature["action_loss_normalization"] == "valid_dimension_weighted_v1"
+
+
+def test_subtask_signature_records_class_weights(monkeypatch):
+    monkeypatch.setenv("PARALLELVLA_CODE_COMMIT", "a" * 40)
+    config = _config.get_config("pi05_putcab_factorized_anchor_subtask_head_sqrt_balanced_pytorch")
+
+    signature = train_pytorch.config_signature(config)
+
+    assert signature["model"]["aux_subtask"]["class_weights"] == (
+        subtask_aux_config.SQRT_BALANCED_CLASS_WEIGHTS
+    )
 
 
 def test_resume_signature_allows_only_training_budget_extension(monkeypatch):

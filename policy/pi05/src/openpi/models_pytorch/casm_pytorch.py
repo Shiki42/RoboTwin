@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 
 import torch
 from torch import Tensor
@@ -95,16 +96,35 @@ class SubtaskClassificationLoss:
     metrics: dict[str, Tensor]
 
 
-def subtask_classification_loss(logits: Tensor, target: Tensor) -> SubtaskClassificationLoss:
+def subtask_classification_loss(
+    logits: Tensor,
+    target: Tensor,
+    class_weights: tuple[float, ...] | None = None,
+) -> SubtaskClassificationLoss:
     target = target.to(device=logits.device, dtype=torch.long).reshape(-1)
     if logits.ndim != 2 or logits.shape[0] != target.shape[0]:
         raise ValueError(f"subtask logits/target shape mismatch: {logits.shape} != {target.shape}")
     if target.numel() and (target.min() < 0 or target.max() >= logits.shape[1]):
         raise ValueError(f"subtask target is outside [0, {logits.shape[1]})")
-    loss = F.cross_entropy(logits.float(), target, reduction="none")
+    negative_log_likelihood = F.cross_entropy(logits.float(), target, reduction="none")
+    if class_weights is None:
+        selected_weights = torch.ones_like(negative_log_likelihood)
+    else:
+        if len(class_weights) != logits.shape[1]:
+            raise ValueError("subtask class weights must cover every logit class")
+        if any(not math.isfinite(weight) or weight <= 0 for weight in class_weights):
+            raise ValueError("subtask class weights must be finite and positive")
+        weights = logits.new_tensor(class_weights, dtype=torch.float32)
+        selected_weights = weights[target]
+    weighted_loss = negative_log_likelihood * selected_weights
+    normalized_loss = weighted_loss.sum() / selected_weights.sum()
     return SubtaskClassificationLoss(
-        per_sample=loss,
-        metrics={"subtask_loss": loss.mean(), "subtask_accuracy": logits.argmax(-1).eq(target).float().mean()},
+        per_sample=weighted_loss,
+        metrics={
+            "subtask_loss": normalized_loss,
+            "subtask_unweighted_loss": negative_log_likelihood.mean(),
+            "subtask_accuracy": logits.argmax(-1).eq(target).float().mean(),
+        },
     )
 
 

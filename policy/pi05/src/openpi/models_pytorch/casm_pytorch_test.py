@@ -133,6 +133,20 @@ def test_subtask_classification_loss_reports_cross_entropy_and_accuracy():
     assert result.metrics["subtask_accuracy"] == pytest.approx(0.5)
 
 
+def test_subtask_classification_loss_normalizes_by_selected_class_weight():
+    logits = torch.tensor([[2.0, 0.0], [0.0, 2.0], [1.0, 0.0]])
+    target = torch.tensor([0, 1, 1])
+
+    result = casm_pytorch.subtask_classification_loss(logits, target, class_weights=(0.5, 2.0))
+
+    negative_log_likelihood = torch.nn.functional.cross_entropy(logits, target, reduction="none")
+    selected_weights = torch.tensor([0.5, 2.0, 2.0])
+    expected_per_sample = negative_log_likelihood * selected_weights
+    assert torch.allclose(result.per_sample, expected_per_sample)
+    assert result.metrics["subtask_loss"] == pytest.approx(expected_per_sample.sum() / selected_weights.sum())
+    assert result.metrics["subtask_unweighted_loss"] == pytest.approx(negative_log_likelihood.mean())
+
+
 def test_subtask_classification_loss_rejects_out_of_range_target():
     with pytest.raises(ValueError, match="outside"):
         casm_pytorch.subtask_classification_loss(torch.zeros(1, 2), torch.tensor([[2]]))
@@ -143,6 +157,7 @@ def test_pi0_subtask_only_forward_does_not_require_actions(monkeypatch):
     nn.Module.__init__(model)
     model.aux_subtask_classes = 2
     model.aux_subtask_state_dim = 3
+    model.aux_subtask_class_weights = None
     model.subtask_head = casm_pytorch.VisualProprioceptionClassifier(
         visual_dim=4,
         state_dim=3,

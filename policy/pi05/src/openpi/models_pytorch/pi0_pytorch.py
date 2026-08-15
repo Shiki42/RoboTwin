@@ -129,6 +129,7 @@ class PI0Pytorch(nn.Module):
         self.aux_subtask_classes = config.pytorch_aux_subtask_classes
         self.aux_subtask_state_dim = config.pytorch_aux_subtask_state_dim
         self.aux_subtask_loss_weight = config.pytorch_aux_subtask_loss_weight
+        self.aux_subtask_class_weights = config.pytorch_aux_subtask_class_weights
         if self.aux_subtask_classes:
             self.subtask_head = casm_pytorch.VisualProprioceptionClassifier(
                 paligemma_config.width,
@@ -369,6 +370,7 @@ class PI0Pytorch(nn.Module):
         return casm_pytorch.subtask_classification_loss(
             self.subtask_head(visual_summary, state[:, : self.aux_subtask_state_dim]),
             observation.semantic_subtask_id,
+            self.aux_subtask_class_weights,
         ).metrics
 
     def forward(
@@ -456,6 +458,7 @@ class PI0Pytorch(nn.Module):
             subtask = casm_pytorch.subtask_classification_loss(
                 self.subtask_head(visual_summary, state[:, : self.aux_subtask_state_dim]),
                 observation.semantic_subtask_id,
+                self.aux_subtask_class_weights,
             )
             metrics.update(subtask.metrics)
         return (total, metrics) if return_aux else total

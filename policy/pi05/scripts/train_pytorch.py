@@ -183,6 +183,7 @@ def config_signature(config: _config.TrainConfig) -> dict[str, Any]:
                 "hidden_dim": getattr(model, "pytorch_aux_subtask_hidden_dim", None),
                 "state_dim": getattr(model, "pytorch_aux_subtask_state_dim", None),
                 "loss_weight": getattr(model, "pytorch_aux_subtask_loss_weight", None),
+                "class_weights": getattr(model, "pytorch_aux_subtask_class_weights", None),
                 "stop_gradient": getattr(model, "pytorch_aux_subtask_stop_gradient", None),
             },
             "lora": {
