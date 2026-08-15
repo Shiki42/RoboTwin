@@ -27,6 +27,8 @@ def test_subtask_aux_config_preserves_pi05_action_contract(config_name):
     assert train_config.batch_size == 16
     assert train_config.gradient_accumulation_steps == 1
     assert train_config.ema_decay is None
+    assert train_config.pytorch_action_prompt_mode == "task_only"
+    assert len(train_config.data.repack_transforms.inputs) == 1
 
 
 def test_shared_projector_config_preserves_native_action_contract():
@@ -49,6 +51,9 @@ def test_shared_projector_config_preserves_native_action_contract():
     assert train_config.batch_size == 16
     assert train_config.gradient_accumulation_steps == 1
     assert train_config.ema_decay is None
+    assert train_config.pytorch_action_prompt_mode == "teacher_forced_joint_subtask"
+    assert len(train_config.data.repack_transforms.inputs) == 2
+    assert isinstance(train_config.data.repack_transforms.inputs[1], subtask_aux_config.TeacherForcedSubtaskPrompt)
     assert repack["actions"] == "action"
     assert repack["semantic_subtask_id"] == "observation.semantic_subtask_id"
     assert "action_mask" not in repack
@@ -84,3 +89,19 @@ def test_subtask_aux_config_keeps_native_action_chunk_and_adds_current_frame_tar
     assert "action_phase" not in repack
     assert repack["semantic_subtask_id"] == "observation.semantic_subtask_id"
     assert train_config.data.action_sequence_keys == ("action",)
+
+
+def test_teacher_forced_prompt_matches_factorized_checkpoint_contract():
+    transform = subtask_aux_config.TeacherForcedSubtaskPrompt()
+
+    output = transform(
+        {
+            "prompt": "  put the object in the cabinet  ",
+            "semantic_subtask_id": 11,
+        }
+    )
+
+    assert output["prompt"] == (
+        "put the object in the cabinet\n"
+        "Current subtask: Left arm: wait while holding drawer open; Right arm: insert and place object."
+    )

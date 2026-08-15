@@ -333,6 +333,16 @@ def test_subtask_signature_records_class_weights(monkeypatch):
     assert signature["model"]["aux_subtask"]["class_weights"] == (subtask_aux_config.SQRT_BALANCED_CLASS_WEIGHTS)
 
 
+def test_shared_subtask_signature_records_factorized_prompt_contract(monkeypatch):
+    monkeypatch.setenv("PARALLELVLA_CODE_COMMIT", "a" * 40)
+    config = _config.get_config("pi05_putcab_factorized_anchor_subtask_shared_projector_pytorch")
+
+    signature = train_pytorch.config_signature(config)
+
+    assert signature["pytorch_action_prompt_mode"] == "teacher_forced_joint_subtask"
+    assert signature["training_objective"] == "teacher_forced_factorized_action_plus_subtask_shared_projector_v1"
+
+
 def test_resume_signature_allows_only_training_budget_extension(monkeypatch):
     monkeypatch.setenv("PARALLELVLA_DATASET_REVISION", "revision")
     monkeypatch.setenv("PI05_BASE_SHA256", "sha")

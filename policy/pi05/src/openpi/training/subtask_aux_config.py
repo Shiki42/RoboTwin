@@ -3,10 +3,26 @@ from __future__ import annotations
 import dataclasses
 from typing import Literal
 
+import numpy as np
+
 from openpi import transforms
 from openpi.training import optimizer
 
 SUBTASK_CLASSES = 12
+JOINT_SUBTASK_TEXTS = (
+    "Left arm: reach and grasp object; Right arm: wait.",
+    "Left arm: reach and grasp object; Right arm: reach and open drawer.",
+    "Left arm: reach and grasp object; Right arm: wait while holding drawer open.",
+    "Left arm: wait while holding object; Right arm: reach and open drawer.",
+    "Left arm: wait while holding object; Right arm: wait while holding drawer open.",
+    "Left arm: reach and open drawer; Right arm: wait.",
+    "Left arm: reach and open drawer; Right arm: reach and grasp object.",
+    "Left arm: reach and open drawer; Right arm: wait while holding object.",
+    "Left arm: insert and place object; Right arm: wait while holding drawer open.",
+    "Left arm: wait while holding drawer open; Right arm: reach and grasp object.",
+    "Left arm: wait while holding drawer open; Right arm: wait while holding object.",
+    "Left arm: wait while holding drawer open; Right arm: insert and place object.",
+)
 # Mean-one normalized inverse square roots of train revision 85c010cd class counts
 # (10, 4674, 427, 1422, 108, 40, 4005, 1169, 5008, 448, 92, 4242).
 SQRT_BALANCED_CLASS_WEIGHTS = (
@@ -25,6 +41,30 @@ SQRT_BALANCED_CLASS_WEIGHTS = (
 )
 
 
+@dataclasses.dataclass(frozen=True)
+class TeacherForcedSubtaskPrompt(transforms.DataTransformFn):
+    """Reproduce the factorized checkpoint's action-prompt contract."""
+
+    def __call__(self, data: dict) -> dict:
+        target = np.asarray(data["semantic_subtask_id"])
+        if target.size != 1:
+            raise ValueError("semantic subtask target must contain one class id")
+        class_id = int(target.reshape(-1)[0])
+        if not 0 <= class_id < len(JOINT_SUBTASK_TEXTS):
+            raise ValueError(f"semantic subtask class is invalid: {class_id}")
+        prompt = data["prompt"]
+        if isinstance(prompt, np.ndarray):
+            if prompt.size != 1:
+                raise ValueError("action prompt must contain one string")
+            prompt = prompt.item()
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise ValueError("action prompt must be a non-empty string")
+        return {
+            **data,
+            "prompt": f"{prompt.strip()}\nCurrent subtask: {JOINT_SUBTASK_TEXTS[class_id]}",
+        }
+
+
 def create(
     base_config,
     *,
@@ -36,6 +76,7 @@ def create(
     peak_lr: float = 3e-4,
     decay_lr: float = 3e-5,
     factorized_action_loss: bool = False,
+    teacher_forced_action_prompt: bool = False,
 ):
     """Add joint-subtask supervision while preserving the native PI0.5 action contract."""
     repack_structure = {
@@ -57,11 +98,10 @@ def create(
                 "action_is_pad": "action_is_pad",
             }
         )
-    repack = transforms.Group(
-        inputs=[
-            transforms.RepackTransform(repack_structure)
-        ]
-    )
+    repack_inputs = [transforms.RepackTransform(repack_structure)]
+    if teacher_forced_action_prompt:
+        repack_inputs.append(TeacherForcedSubtaskPrompt())
+    repack = transforms.Group(inputs=repack_inputs)
     data = dataclasses.replace(
         base_config.data,
         repack_transforms=repack,
@@ -85,6 +125,7 @@ def create(
         pytorch_trainable_scope=trainable_scope,
         pytorch_gradient_checkpointing=False,
         pytorch_compile_mode="default",
+        pytorch_action_prompt_mode=("teacher_forced_joint_subtask" if teacher_forced_action_prompt else "task_only"),
         lr_schedule=optimizer.CosineDecaySchedule(
             warmup_steps=100,
             peak_lr=peak_lr,

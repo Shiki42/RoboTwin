@@ -501,6 +501,9 @@ class TrainConfig:
         "subtask_head",
         "subtask_head_and_projector",
     ] = "all"
+    pytorch_action_prompt_mode: Literal[
+        "task_only", "teacher_forced_joint_subtask"
+    ] = "task_only"
     lr_schedule: _optimizer.LRScheduleConfig = dataclasses.field(default_factory=_optimizer.CosineDecaySchedule)
     optimizer: _optimizer.OptimizerConfig = dataclasses.field(default_factory=_optimizer.AdamW)
     ema_decay: float | None = 0.99
@@ -913,6 +916,7 @@ _CONFIGS = [
         peak_lr=1e-4,
         decay_lr=1e-5,
         factorized_action_loss=True,
+        teacher_forced_action_prompt=True,
     ),
     TrainConfig(
         name="pi0_base_aloha_robotwin_lora",

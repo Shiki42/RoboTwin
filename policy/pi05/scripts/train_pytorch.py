@@ -160,12 +160,17 @@ def config_signature(config: _config.TrainConfig) -> dict[str, Any]:
         "pytorch_gradient_checkpointing": config.pytorch_gradient_checkpointing,
         "pytorch_gradient_checkpointing_scope": config.pytorch_gradient_checkpointing_scope,
         "pytorch_trainable_scope": config.pytorch_trainable_scope,
+        "pytorch_action_prompt_mode": config.pytorch_action_prompt_mode,
         "training_objective": {
             "all": "action_policy_v1",
             "action_expert_and_gate": "action_policy_v1",
             "lora": "action_policy_v1",
             "subtask_head": "detached_subtask_ce_only_v1",
-            "subtask_head_and_projector": "active_valid_action_plus_subtask_shared_projector_v1",
+            "subtask_head_and_projector": (
+                "teacher_forced_factorized_action_plus_subtask_shared_projector_v1"
+                if config.pytorch_action_prompt_mode == "teacher_forced_joint_subtask"
+                else "action_plus_subtask_shared_projector_v1"
+            ),
         }[config.pytorch_trainable_scope],
         "seed": config.seed,
         "episode_split": episode_split,
