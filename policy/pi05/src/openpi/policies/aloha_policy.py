@@ -87,7 +87,19 @@ class AlohaInputs(transforms.DataTransformFn):
             actions = _encode_actions_inv(actions, adapt_to_pi=self.adapt_to_pi)
             inputs["actions"] = actions
 
-        if "action_mask" in data or "action_is_pad" in data:
+        if "action_loss_mask" in data:
+            if "action_mask" in data:
+                raise ValueError("action_loss_mask and action_mask are mutually exclusive")
+            if "action_is_pad" not in data:
+                raise ValueError("action supervision requires action_is_pad")
+            action_is_pad = np.asarray(data["action_is_pad"], dtype=np.bool_)
+            dimensional_mask = np.asarray(data["action_loss_mask"], dtype=np.float32)
+            if action_is_pad.shape != dimensional_mask.shape[:-1]:
+                raise ValueError(
+                    f"action pad/mask shape mismatch: {action_is_pad.shape} and {dimensional_mask.shape}"
+                )
+            inputs["action_mask"] = dimensional_mask * (~action_is_pad)[..., None]
+        elif "action_mask" in data or "action_is_pad" in data:
             if "action_is_pad" not in data:
                 raise ValueError("action supervision requires action_is_pad")
             action_is_pad = np.asarray(data["action_is_pad"], dtype=np.bool_)

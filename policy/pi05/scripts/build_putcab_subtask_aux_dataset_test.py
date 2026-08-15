@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
@@ -44,8 +45,20 @@ def _write_fixture(tmp_path):
                 "episode": 0,
                 "frame_count": 4,
                 "segments": [
-                    {"start": 0, "end": 2, "stage_id": 6, "subtask_text": "first"},
-                    {"start": 2, "end": 4, "stage_id": 9, "subtask_text": "second"},
+                    {
+                        "start": 0,
+                        "end": 2,
+                        "stage_id": 6,
+                        "subtask_text": "first",
+                        "arm_semantic_keys": {"left": "reach_grasp_object", "right": "wait"},
+                    },
+                    {
+                        "start": 2,
+                        "end": 4,
+                        "stage_id": 9,
+                        "subtask_text": "second",
+                        "arm_semantic_keys": {"left": "reach_grasp_object", "right": "reach_grasp_object"},
+                    },
                 ],
             }
         )
@@ -70,11 +83,47 @@ def test_build_adds_dense_joint_subtask_target_without_mutating_source(tmp_path)
     target = pq.read_table(output / "data/chunk-000/episode_000000.parquet")
     unchanged = pq.read_table(source_parquet)
     assert target["observation.semantic_subtask_id"].to_pylist() == [0, 0, 1]
+    action_masks = np.asarray(target["observation.action_loss_mask"].to_pylist(), dtype=np.float32)
+    assert action_masks.shape == (3, 50, 32)
+    assert np.all(action_masks[0, :3, :7] == 1)
+    assert np.all(action_masks[0, :, 7:] == 0)
+    assert np.all(action_masks[2, 0, :14] == 1)
+    assert np.all(action_masks[2, 1:] == 0)
+    assert "observation.action_loss_mask" not in unchanged.column_names
+    assert receipt["schema"] == "parallelvla.putcab_subtask_aux_dataset.v2"
     assert "observation.semantic_subtask_id" not in unchanged.column_names
     assert receipt["class_counts"]["0"] == 2
     assert receipt["class_counts"]["1"] == 1
     assert receipt["allow_synthetic_fixture"] is True
     assert json.loads((output / "parallelvla_dataset_receipt.json").read_text()) == receipt
+
+
+def test_action_mask_excludes_artificial_delay():
+    annotation = {
+        "frame_count": 4,
+        "rewritten_relative_delay": {
+            "delayed_arm": "left",
+            "start": 1,
+            "end": 3,
+            "physical_semantic_key": "wait",
+            "supervision_semantic_key": "reach_grasp_object",
+        },
+        "segments": [
+            {
+                "start": 0,
+                "end": 4,
+                "stage_id": 6,
+                "subtask_text": "first",
+                "arm_semantic_keys": {"left": "reach_grasp_object", "right": "wait"},
+            }
+        ],
+    }
+
+    _, _, masks = builder.annotation_targets(annotation, lerobot_frame_count=3)
+
+    assert np.all(masks[0, :2] == 0)
+    assert np.all(masks[0, 2, :7] == 1)
+    assert np.all(masks[0, 2, 7:] == 0)
 
 
 def test_annotation_targets_rejects_gaps():

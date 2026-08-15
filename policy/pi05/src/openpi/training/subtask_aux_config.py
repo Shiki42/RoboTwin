@@ -35,7 +35,7 @@ def create(
     loss_weight: float = 1.0,
     peak_lr: float = 3e-4,
     decay_lr: float = 3e-5,
-    active_valid_action_loss: bool = False,
+    factorized_action_loss: bool = False,
 ):
     """Add joint-subtask supervision while preserving the native PI0.5 action contract."""
     repack_structure = {
@@ -50,14 +50,13 @@ def create(
         "prompt": "prompt",
     }
     action_sequence_keys = ("action",)
-    if active_valid_action_loss:
+    if factorized_action_loss:
         repack_structure.update(
             {
-                "action_mask": "observation.arm_active_mask",
+                "action_loss_mask": "observation.action_loss_mask",
                 "action_is_pad": "action_is_pad",
             }
         )
-        action_sequence_keys = ("action", "observation.arm_active_mask")
     repack = transforms.Group(
         inputs=[
             transforms.RepackTransform(repack_structure)

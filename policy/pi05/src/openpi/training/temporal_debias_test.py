@@ -49,6 +49,39 @@ def test_aloha_inputs_masks_temporal_padding_and_requires_pad_receipt():
         AlohaInputs(adapt_to_pi=False)(data)
 
 
+def test_aloha_inputs_preserves_full_factorized_action_mask():
+    image = np.zeros((3, 8, 8), dtype=np.uint8)
+    mask = np.zeros((3, 32), dtype=np.float32)
+    mask[0, :7] = 1.0
+    mask[1, 7:14] = 1.0
+    mask[2, :14] = 1.0
+
+    output = AlohaInputs(adapt_to_pi=False)(
+        {
+            "images": {"cam_high": image},
+            "state": np.zeros(14, dtype=np.float32),
+            "actions": np.zeros((3, 14), dtype=np.float32),
+            "action_loss_mask": mask,
+            "action_is_pad": np.array([False, True, False]),
+        }
+    )
+
+    assert output["action_mask"].shape == (3, 32)
+    assert np.array_equal(output["action_mask"][0], mask[0])
+    assert np.all(output["action_mask"][1] == 0)
+    assert np.array_equal(output["action_mask"][2], mask[2])
+    invalid = {
+        "images": {"cam_high": image},
+        "state": np.zeros(14, dtype=np.float32),
+        "actions": np.zeros((3, 14), dtype=np.float32),
+        "action_loss_mask": mask,
+        "action_mask": mask,
+        "action_is_pad": np.zeros(3, dtype=np.bool_),
+    }
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        AlohaInputs(adapt_to_pi=False)(invalid)
+
+
 def test_aloha_inputs_defaults_to_both_arms_active_with_temporal_padding():
     image = np.zeros((3, 8, 8), dtype=np.uint8)
     output = AlohaInputs(adapt_to_pi=False)(

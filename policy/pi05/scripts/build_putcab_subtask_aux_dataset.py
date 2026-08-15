@@ -10,12 +10,35 @@ import os
 from pathlib import Path
 import shutil
 
+import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 
 STAGE_IDS = (6, 9, 11, 15, 17, 18, 19, 20, 29, 31, 32, 34)
 STAGE_TO_CLASS = {stage_id: index for index, stage_id in enumerate(STAGE_IDS)}
 FEATURE = {"dtype": "int64", "names": ["joint_subtask_class"], "shape": [1]}
+ACTION_HORIZON = 50
+MODEL_ACTION_DIM = 32
+ARM_ACTION_DIM = 7
+ARM_NAMES = ("left", "right")
+ARM_SEMANTIC_STAGES = frozenset(
+    {
+        "wait",
+        "reach_grasp_object",
+        "wait_hold_object",
+        "reach_open_drawer",
+        "insert_place_object",
+        "wait_hold_drawer_open",
+    }
+)
+ACTION_SUPERVISED_STAGES = frozenset(
+    {"reach_grasp_object", "reach_open_drawer", "insert_place_object"}
+)
+ACTION_MASK_FEATURE = {
+    "dtype": "float32",
+    "names": None,
+    "shape": [ACTION_HORIZON, MODEL_ACTION_DIM],
+}
 
 
 def sha256(path: Path) -> str:
@@ -26,7 +49,87 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def annotation_targets(annotation: dict, lerobot_frame_count: int) -> tuple[list[int], dict[int, str]]:
+def _expanded_arm_stages(annotation: dict, native_frame_count: int) -> dict[str, list[str]]:
+    stages = {arm: [""] * native_frame_count for arm in ARM_NAMES}
+    for segment in annotation["segments"]:
+        start = int(segment["start"])
+        end = int(segment["end"])
+        semantic_keys = segment.get("arm_semantic_keys")
+        if not isinstance(semantic_keys, dict) or set(semantic_keys) != set(ARM_NAMES):
+            raise ValueError("subtask segment must contain both arm semantic keys")
+        for arm in ARM_NAMES:
+            stage = str(semantic_keys[arm])
+            if stage not in ARM_SEMANTIC_STAGES:
+                raise ValueError(f"unknown {arm} semantic stage: {stage}")
+            stages[arm][start:end] = [stage] * (end - start)
+    if any(not stage for arm in ARM_NAMES for stage in stages[arm]):
+        raise ValueError("arm semantic stages do not cover every frame")
+    return stages
+
+
+def _delay_window(annotation: dict, native_frame_count: int) -> tuple[int | None, int | None, int | None]:
+    rewritten = annotation.get("rewritten_relative_delay")
+    if rewritten is None:
+        return None, None, None
+    arm = str(rewritten["delayed_arm"])
+    if arm not in ARM_NAMES:
+        raise ValueError("relative-delay arm is invalid")
+    if rewritten.get("physical_semantic_key") != "wait":
+        raise ValueError("relative-delay physical semantic must be wait")
+    if rewritten.get("supervision_semantic_key") not in ARM_SEMANTIC_STAGES:
+        raise ValueError("relative-delay next-active semantic is invalid")
+    start = int(rewritten["start"])
+    end = int(rewritten["end"])
+    if not 0 <= start < end < native_frame_count:
+        raise ValueError("relative-delay window is invalid")
+    return ARM_NAMES.index(arm), start, end
+
+
+def _action_loss_masks(
+    stages: dict[str, list[str]],
+    annotation: dict,
+    lerobot_frame_count: int,
+) -> np.ndarray:
+    native_frame_count = lerobot_frame_count + 1
+    delayed_arm, delay_start, delay_end = _delay_window(annotation, native_frame_count)
+    masks = np.zeros(
+        (lerobot_frame_count, ACTION_HORIZON, MODEL_ACTION_DIM),
+        dtype=np.float32,
+    )
+    for frame in range(lerobot_frame_count):
+        for offset in range(ACTION_HORIZON):
+            target_frame = frame + offset + 1
+            if target_frame >= native_frame_count:
+                break
+            for arm_index, arm in enumerate(ARM_NAMES):
+                target_stage = stages[arm][target_frame]
+                if target_stage == stages[arm][frame] and target_stage in ACTION_SUPERVISED_STAGES:
+                    start = arm_index * ARM_ACTION_DIM
+                    masks[frame, offset, start : start + ARM_ACTION_DIM] = 1.0
+            if (
+                delayed_arm is not None
+                and delay_start is not None
+                and delay_end is not None
+                and delay_start <= target_frame < delay_end
+            ):
+                start = delayed_arm * ARM_ACTION_DIM
+                masks[frame, offset, start : start + ARM_ACTION_DIM] = 0.0
+    return masks
+
+
+def _fixed_action_mask_array(masks: np.ndarray) -> pa.FixedSizeListArray:
+    expected = (len(masks), ACTION_HORIZON, MODEL_ACTION_DIM)
+    if masks.shape != expected:
+        raise ValueError(f"action mask shape mismatch: {masks.shape} != {expected}")
+    values = pa.array(masks.reshape(-1), type=pa.float32())
+    dimensions = pa.FixedSizeListArray.from_arrays(values, MODEL_ACTION_DIM)
+    return pa.FixedSizeListArray.from_arrays(dimensions, ACTION_HORIZON)
+
+
+def annotation_targets(
+    annotation: dict,
+    lerobot_frame_count: int,
+) -> tuple[list[int], dict[int, str], np.ndarray]:
     native_frame_count = int(annotation.get("frame_count", -1))
     if native_frame_count != lerobot_frame_count + 1:
         raise ValueError(
@@ -52,7 +155,9 @@ def annotation_targets(annotation: dict, lerobot_frame_count: int) -> tuple[list
         texts[stage_id] = text
     if any(target == -1 for target in targets):
         raise ValueError("subtask segments do not cover every frame")
-    return targets[:lerobot_frame_count], texts
+    stages = _expanded_arm_stages(annotation, native_frame_count)
+    masks = _action_loss_masks(stages, annotation, lerobot_frame_count)
+    return targets[:lerobot_frame_count], texts, masks
 
 
 def update_huggingface_metadata(table: pa.Table) -> pa.Table:
@@ -60,9 +165,19 @@ def update_huggingface_metadata(table: pa.Table) -> pa.Table:
     key = b"huggingface"
     if key in metadata:
         payload = json.loads(metadata[key])
-        payload.setdefault("info", {}).setdefault("features", {})["observation.semantic_subtask_id"] = {
+        features = payload.setdefault("info", {}).setdefault("features", {})
+        features["observation.semantic_subtask_id"] = {
             "dtype": "int64",
             "_type": "Value",
+        }
+        features["observation.action_loss_mask"] = {
+            "feature": {
+                "feature": {"dtype": "float32", "_type": "Value"},
+                "length": MODEL_ACTION_DIM,
+                "_type": "Sequence",
+            },
+            "length": ACTION_HORIZON,
+            "_type": "Sequence",
         }
         metadata[key] = json.dumps(payload, sort_keys=True).encode()
     return table.replace_schema_metadata(metadata)
@@ -181,7 +296,7 @@ def build(
             frames = table.column("frame_index").to_pylist()
             if frames != list(range(table.num_rows)):
                 raise ValueError(f"{relative} frame indices are not contiguous")
-            targets, texts = annotation_targets(annotation, table.num_rows)
+            targets, texts, action_masks = annotation_targets(annotation, table.num_rows)
             if episode in targets_by_episode:
                 raise ValueError(f"duplicate episode index {episode}")
             targets_by_episode[episode] = targets
@@ -192,6 +307,7 @@ def build(
             for class_id in targets:
                 class_counts[class_id] += 1
             table = table.append_column("observation.semantic_subtask_id", pa.array(targets, type=pa.int64()))
+            table = table.append_column("observation.action_loss_mask", _fixed_action_mask_array(action_masks))
             table = update_huggingface_metadata(table)
             part = target_parquet.with_suffix(".parquet.part")
             pq.write_table(table, part)
@@ -221,6 +337,7 @@ def build(
         info_path = output / "meta/info.json"
         info = json.loads(info_path.read_text())
         info.setdefault("features", {})["observation.semantic_subtask_id"] = FEATURE
+        info["features"]["observation.action_loss_mask"] = ACTION_MASK_FEATURE
         info_part = info_path.with_suffix(".json.part")
         info_part.write_text(json.dumps(info, indent=4, sort_keys=True) + "\n")
         info_part.replace(info_path)
@@ -230,13 +347,18 @@ def build(
         inventory_payload = json.dumps(inventory, separators=(",", ":"), sort_keys=True).encode()
         data_revision = hashlib.sha256(inventory_payload).hexdigest()
         manifest = {
-            "schema": "parallelvla.putcab_subtask_aux_dataset.v1",
+            "schema": "parallelvla.putcab_subtask_aux_dataset.v2",
             "data_revision": data_revision,
             "producer_commit": producer_commit,
             "require_all_classes": require_all_classes,
             "source_dataset": str(source),
             "source_revision": source_revision,
             "source_receipt_sha256": sha256(source_receipt) if source_receipt.is_file() else None,
+            "action_loss_mask": {
+                "shape": [ACTION_HORIZON, MODEL_ACTION_DIM],
+                "action_supervised_stages": sorted(ACTION_SUPERVISED_STAGES),
+                "alignment": "state_t_to_native_action_t_plus_1",
+            },
             "annotation_root": str(annotations),
             "annotation_revision": annotation_revision,
             "output_dataset": str(output),

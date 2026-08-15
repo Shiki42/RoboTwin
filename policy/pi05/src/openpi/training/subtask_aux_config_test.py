@@ -51,10 +51,11 @@ def test_shared_projector_config_preserves_native_action_contract():
     assert train_config.ema_decay is None
     assert repack["actions"] == "action"
     assert repack["semantic_subtask_id"] == "observation.semantic_subtask_id"
-    assert repack["action_mask"] == "observation.arm_active_mask"
+    assert "action_mask" not in repack
+    assert repack["action_loss_mask"] == "observation.action_loss_mask"
     assert repack["action_is_pad"] == "action_is_pad"
     assert "action_phase" not in repack
-    assert train_config.data.action_sequence_keys == ("action", "observation.arm_active_mask")
+    assert train_config.data.action_sequence_keys == ("action",)
 
 
 def test_subtask_aux_configs_record_expected_class_weights():
