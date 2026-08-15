@@ -160,11 +160,13 @@ def config_signature(config: _config.TrainConfig) -> dict[str, Any]:
         "pytorch_gradient_checkpointing": config.pytorch_gradient_checkpointing,
         "pytorch_gradient_checkpointing_scope": config.pytorch_gradient_checkpointing_scope,
         "pytorch_trainable_scope": config.pytorch_trainable_scope,
-        "training_objective": (
-            "detached_subtask_ce_only_v1"
-            if config.pytorch_trainable_scope == "subtask_head"
-            else "action_policy_v1"
-        ),
+        "training_objective": {
+            "all": "action_policy_v1",
+            "action_expert_and_gate": "action_policy_v1",
+            "lora": "action_policy_v1",
+            "subtask_head": "detached_subtask_ce_only_v1",
+            "subtask_head_and_projector": "action_plus_subtask_shared_projector_v1",
+        }[config.pytorch_trainable_scope],
         "seed": config.seed,
         "episode_split": episode_split,
         "normalizer": _normalizer_signature(config, episode_split),
@@ -230,7 +232,13 @@ def build_model(config: _config.TrainConfig, device: torch.device) -> pi0_pytorc
 
 def configure_trainable_parameters(
     model: torch.nn.Module,
-    scope: Literal["all", "action_expert_and_gate", "lora", "subtask_head"],
+    scope: Literal[
+        "all",
+        "action_expert_and_gate",
+        "lora",
+        "subtask_head",
+        "subtask_head_and_projector",
+    ],
 ) -> tuple[str, ...]:
     frozen_lora_prefixes = (
         "paligemma_with_expert.paligemma.model.language_model.",
@@ -266,6 +274,15 @@ def configure_trainable_parameters(
 
         def selected(name: str) -> bool:
             return name.startswith("subtask_head.")
+
+    elif scope == "subtask_head_and_projector":
+        prefixes = (
+            "subtask_head.",
+            "paligemma_with_expert.paligemma.model.multi_modal_projector.",
+        )
+
+        def selected(name: str) -> bool:
+            return name.startswith(prefixes)
 
     else:
         raise ValueError(f"unsupported PyTorch trainable scope: {scope}")

@@ -494,7 +494,13 @@ class TrainConfig:
     pytorch_fused_optimizer: bool = False
     # Compile the PyTorch module in place while preserving state-dict keys.
     pytorch_compile_mode: Literal["none", "default", "reduce-overhead", "max-autotune"] = "none"
-    pytorch_trainable_scope: Literal["all", "action_expert_and_gate", "lora", "subtask_head"] = "all"
+    pytorch_trainable_scope: Literal[
+        "all",
+        "action_expert_and_gate",
+        "lora",
+        "subtask_head",
+        "subtask_head_and_projector",
+    ] = "all"
     lr_schedule: _optimizer.LRScheduleConfig = dataclasses.field(default_factory=_optimizer.CosineDecaySchedule)
     optimizer: _optimizer.OptimizerConfig = dataclasses.field(default_factory=_optimizer.AdamW)
     ema_decay: float | None = 0.99
@@ -897,6 +903,15 @@ _CONFIGS = [
         _putcab_pytorch_config("putcab_subtask_aux_sqrt_balanced_base", "none"),
         name="pi05_putcab_factorized_anchor_subtask_head_sqrt_balanced_pytorch",
         class_weights=subtask_aux_config.SQRT_BALANCED_CLASS_WEIGHTS,
+    ),
+    subtask_aux_config.create(
+        _putcab_pytorch_config("putcab_subtask_aux_shared_projector_base", "none"),
+        name="pi05_putcab_factorized_anchor_subtask_shared_projector_pytorch",
+        stop_gradient=False,
+        trainable_scope="subtask_head_and_projector",
+        loss_weight=0.01,
+        peak_lr=1e-4,
+        decay_lr=1e-5,
     ),
     TrainConfig(
         name="pi0_base_aloha_robotwin_lora",

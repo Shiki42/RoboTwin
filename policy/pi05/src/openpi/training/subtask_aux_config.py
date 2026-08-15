@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+from typing import Literal
 
 from openpi import transforms
 from openpi.training import optimizer
@@ -29,8 +30,13 @@ def create(
     *,
     name: str = "pi05_putcab_factorized_anchor_subtask_head_pytorch",
     class_weights: tuple[float, ...] | None = None,
+    stop_gradient: bool = True,
+    trainable_scope: Literal["subtask_head", "subtask_head_and_projector"] = "subtask_head",
+    loss_weight: float = 1.0,
+    peak_lr: float = 3e-4,
+    decay_lr: float = 3e-5,
 ):
-    """Add a detached joint-subtask head to an unchanged PI0.5 action policy."""
+    """Add joint-subtask supervision while preserving the native PI0.5 action contract."""
     repack = transforms.Group(
         inputs=[
             transforms.RepackTransform(
@@ -58,9 +64,9 @@ def create(
         pytorch_aux_subtask_classes=SUBTASK_CLASSES,
         pytorch_aux_subtask_hidden_dim=512,
         pytorch_aux_subtask_state_dim=14,
-        pytorch_aux_subtask_loss_weight=1.0,
+        pytorch_aux_subtask_loss_weight=loss_weight,
         pytorch_aux_subtask_class_weights=class_weights,
-        pytorch_aux_subtask_stop_gradient=True,
+        pytorch_aux_subtask_stop_gradient=stop_gradient,
     )
     return dataclasses.replace(
         base_config,
@@ -68,14 +74,14 @@ def create(
         project_name="parallelvla-putcab-subtask-aux",
         model=model,
         data=data,
-        pytorch_trainable_scope="subtask_head",
+        pytorch_trainable_scope=trainable_scope,
         pytorch_gradient_checkpointing=False,
         pytorch_compile_mode="default",
         lr_schedule=optimizer.CosineDecaySchedule(
             warmup_steps=100,
-            peak_lr=3e-4,
+            peak_lr=peak_lr,
             decay_steps=2_000,
-            decay_lr=3e-5,
+            decay_lr=decay_lr,
         ),
         ema_decay=None,
         batch_size=16,

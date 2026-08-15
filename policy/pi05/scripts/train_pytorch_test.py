@@ -37,6 +37,8 @@ class TinyScopedPolicy(nn.Module):
         super().__init__()
         self.paligemma_with_expert = nn.Module()
         self.paligemma_with_expert.paligemma = nn.Linear(2, 2)
+        self.paligemma_with_expert.paligemma.model = nn.Module()
+        self.paligemma_with_expert.paligemma.model.multi_modal_projector = nn.Linear(2, 2)
         self.paligemma_with_expert.gemma_expert = nn.Linear(2, 2)
         self.action_in_proj = nn.Linear(2, 2)
         self.action_out_proj = nn.Linear(2, 2)
@@ -223,6 +225,23 @@ def test_subtask_head_scope_freezes_every_other_parameter():
     assert all(parameter.requires_grad == (name in trainable_names) for name, parameter in model.named_parameters())
 
 
+def test_shared_projector_scope_keeps_action_head_frozen():
+    model = TinyScopedPolicy()
+
+    trainable_names = train_pytorch.configure_trainable_parameters(model, "subtask_head_and_projector")
+
+    prefixes = (
+        "subtask_head.",
+        "paligemma_with_expert.paligemma.model.multi_modal_projector.",
+    )
+    assert trainable_names
+    assert all(name.startswith(prefixes) for name in trainable_names)
+    assert any(name.startswith("subtask_head.") for name in trainable_names)
+    assert any("multi_modal_projector" in name for name in trainable_names)
+    assert not any(name.startswith("action_out_proj.") for name in trainable_names)
+    assert all(parameter.requires_grad == (name in trainable_names) for name, parameter in model.named_parameters())
+
+
 def test_subtask_head_training_skips_action_forward():
     model = TinyAuxPolicy()
     optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
@@ -245,6 +264,28 @@ def test_subtask_head_training_skips_action_forward():
     assert "action_loss" not in metrics
     assert metrics["subtask_loss"] == pytest.approx(1.0)
     assert metrics["loss"] == pytest.approx(0.5)
+
+
+def test_shared_projector_training_keeps_action_objective():
+    model = TinyAuxPolicy()
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    config = _tiny_config()
+    config.pytorch_trainable_scope = "subtask_head_and_projector"
+    observation = SimpleNamespace(action_mask=None)
+
+    metrics = train_pytorch.train_step(
+        model,
+        optimizer,
+        [(observation, torch.zeros(1, 2, 2))],
+        config,
+        global_step=0,
+    )
+
+    assert model.action_forward_called
+    assert model.subtask_head.detach() > 0
+    assert metrics["action_loss"] == pytest.approx(2.0)
+    assert metrics["subtask_loss"] == pytest.approx(1.0)
+    assert metrics["loss"] == pytest.approx(2.5)
 
 
 def test_lora_scope_freezes_gemma_base_but_keeps_adapters_vision_and_action_heads():
@@ -287,9 +328,7 @@ def test_subtask_signature_records_class_weights(monkeypatch):
 
     signature = train_pytorch.config_signature(config)
 
-    assert signature["model"]["aux_subtask"]["class_weights"] == (
-        subtask_aux_config.SQRT_BALANCED_CLASS_WEIGHTS
-    )
+    assert signature["model"]["aux_subtask"]["class_weights"] == (subtask_aux_config.SQRT_BALANCED_CLASS_WEIGHTS)
 
 
 def test_resume_signature_allows_only_training_budget_extension(monkeypatch):
