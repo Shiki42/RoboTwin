@@ -7,6 +7,7 @@ def test_putcab_pytorch_and_jax_casm_configs_match_training_semantics():
 
     assert pytorch.model == jax.model
     assert pytorch.data == jax.data
+    assert pytorch.data.use_delta_joint_actions is False
     assert pytorch.batch_size == jax.batch_size == 16
     assert pytorch.num_train_steps == jax.num_train_steps == 20_000
     assert pytorch.save_interval == jax.save_interval == 2_000
@@ -31,6 +32,7 @@ def test_putcab_pytorch_and_jax_baseline_configs_match_training_semantics():
 
     assert pytorch.model == jax.model
     assert pytorch.data == jax.data
+    assert pytorch.data.use_delta_joint_actions is False
     assert pytorch.batch_size == jax.batch_size == 16
     assert pytorch.num_train_steps == jax.num_train_steps == 20_000
     assert pytorch.save_interval == jax.save_interval == 2_000

@@ -61,6 +61,7 @@ def test_shared_projector_config_preserves_native_action_contract():
     assert repack["action_is_pad"] == "action_is_pad"
     assert "action_phase" not in repack
     assert train_config.data.action_sequence_keys == ("action",)
+    assert train_config.data.use_delta_joint_actions is False
 
 
 def test_subtask_aux_configs_record_expected_class_weights():
@@ -89,6 +90,7 @@ def test_subtask_aux_config_keeps_native_action_chunk_and_adds_current_frame_tar
     assert "action_phase" not in repack
     assert repack["semantic_subtask_id"] == "observation.semantic_subtask_id"
     assert train_config.data.action_sequence_keys == ("action",)
+    assert train_config.data.use_delta_joint_actions is False
 
 
 def test_teacher_forced_prompt_matches_factorized_checkpoint_contract():

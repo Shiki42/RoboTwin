@@ -605,6 +605,7 @@ def _putcab_casm_data(repo_id: str) -> LeRobotAlohaDataConfig:
     return LeRobotAlohaDataConfig(
         repo_id=repo_id,
         adapt_to_pi=False,
+        use_delta_joint_actions=False,
         repack_transforms=_transforms.Group(inputs=[
             _transforms.RepackTransform({
                 "images": {
