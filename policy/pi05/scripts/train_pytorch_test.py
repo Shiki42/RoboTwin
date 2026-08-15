@@ -242,6 +242,31 @@ def test_shared_projector_scope_keeps_action_head_frozen():
     assert all(parameter.requires_grad == (name in trainable_names) for name, parameter in model.named_parameters())
 
 
+def test_joint_action_policy_scope_freezes_pretrained_prefix():
+    model = TinyScopedPolicy()
+
+    trainable_names = train_pytorch.configure_trainable_parameters(
+        model,
+        "subtask_head_and_action_policy",
+    )
+
+    prefixes = (
+        "subtask_head.",
+        "paligemma_with_expert.gemma_expert.",
+        "action_in_proj.",
+        "action_out_proj.",
+        "time_mlp_in.",
+        "time_mlp_out.",
+    )
+    assert trainable_names
+    assert all(name.startswith(prefixes) for name in trainable_names)
+    for prefix in prefixes:
+        assert any(name.startswith(prefix) for name in trainable_names)
+    assert not any(name.startswith("paligemma_with_expert.paligemma.") for name in trainable_names)
+    assert not any(name.startswith("phase_gate.") for name in trainable_names)
+    assert all(parameter.requires_grad == (name in trainable_names) for name, parameter in model.named_parameters())
+
+
 def test_subtask_head_training_skips_action_forward():
     model = TinyAuxPolicy()
     optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
@@ -341,6 +366,17 @@ def test_shared_subtask_signature_records_factorized_prompt_contract(monkeypatch
 
     assert signature["pytorch_action_prompt_mode"] == "teacher_forced_joint_subtask"
     assert signature["training_objective"] == "teacher_forced_factorized_action_plus_subtask_shared_projector_v1"
+
+
+def test_joint_action_policy_signature_records_factorized_prompt_contract(monkeypatch):
+    monkeypatch.setenv("PARALLELVLA_CODE_COMMIT", "a" * 40)
+    config = _config.get_config("pi05_putcab_factorized_anchor_subtask_joint_action_policy_pytorch")
+
+    signature = train_pytorch.config_signature(config)
+
+    assert signature["pytorch_trainable_scope"] == "subtask_head_and_action_policy"
+    assert signature["pytorch_action_prompt_mode"] == "teacher_forced_joint_subtask"
+    assert signature["training_objective"] == "teacher_forced_factorized_action_plus_subtask_action_policy_v1"
 
 
 def test_resume_signature_allows_only_training_budget_extension(monkeypatch):

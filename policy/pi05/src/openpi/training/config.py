@@ -500,6 +500,7 @@ class TrainConfig:
         "lora",
         "subtask_head",
         "subtask_head_and_projector",
+        "subtask_head_and_action_policy",
     ] = "all"
     pytorch_action_prompt_mode: Literal[
         "task_only", "teacher_forced_joint_subtask"
@@ -916,6 +917,17 @@ _CONFIGS = [
         loss_weight=0.01,
         peak_lr=1e-4,
         decay_lr=1e-5,
+        factorized_action_loss=True,
+        teacher_forced_action_prompt=True,
+    ),
+    subtask_aux_config.create(
+        _putcab_pytorch_config("putcab_subtask_aux_joint_action_policy_base", "none"),
+        name="pi05_putcab_factorized_anchor_subtask_joint_action_policy_pytorch",
+        stop_gradient=True,
+        trainable_scope="subtask_head_and_action_policy",
+        loss_weight=0.01,
+        peak_lr=1e-5,
+        decay_lr=1e-6,
         factorized_action_loss=True,
         teacher_forced_action_prompt=True,
     ),

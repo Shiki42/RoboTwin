@@ -171,6 +171,7 @@ def config_signature(config: _config.TrainConfig) -> dict[str, Any]:
                 if config.pytorch_action_prompt_mode == "teacher_forced_joint_subtask"
                 else "action_plus_subtask_shared_projector_v1"
             ),
+            "subtask_head_and_action_policy": "teacher_forced_factorized_action_plus_subtask_action_policy_v1",
         }[config.pytorch_trainable_scope],
         "seed": config.seed,
         "episode_split": episode_split,
@@ -243,6 +244,7 @@ def configure_trainable_parameters(
         "lora",
         "subtask_head",
         "subtask_head_and_projector",
+        "subtask_head_and_action_policy",
     ],
 ) -> tuple[str, ...]:
     frozen_lora_prefixes = (
@@ -284,6 +286,19 @@ def configure_trainable_parameters(
         prefixes = (
             "subtask_head.",
             "paligemma_with_expert.paligemma.model.multi_modal_projector.",
+        )
+
+        def selected(name: str) -> bool:
+            return name.startswith(prefixes)
+
+    elif scope == "subtask_head_and_action_policy":
+        prefixes = (
+            "subtask_head.",
+            "paligemma_with_expert.gemma_expert.",
+            "action_in_proj.",
+            "action_out_proj.",
+            "time_mlp_in.",
+            "time_mlp_out.",
         )
 
         def selected(name: str) -> bool:

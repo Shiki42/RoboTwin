@@ -71,7 +71,11 @@ def create(
     name: str = "pi05_putcab_factorized_anchor_subtask_head_pytorch",
     class_weights: tuple[float, ...] | None = None,
     stop_gradient: bool = True,
-    trainable_scope: Literal["subtask_head", "subtask_head_and_projector"] = "subtask_head",
+    trainable_scope: Literal[
+        "subtask_head",
+        "subtask_head_and_projector",
+        "subtask_head_and_action_policy",
+    ] = "subtask_head",
     loss_weight: float = 1.0,
     peak_lr: float = 3e-4,
     decay_lr: float = 3e-5,
