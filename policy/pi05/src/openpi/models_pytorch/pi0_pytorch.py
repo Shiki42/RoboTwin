@@ -359,19 +359,30 @@ class PI0Pytorch(nn.Module):
 
         return embs, pad_masks, att_masks, adarms_cond
 
+    def _subtask_logits(self, observation, *, train: bool) -> Tensor:
+        if not self.aux_subtask_classes:
+            raise ValueError("subtask prediction requires an auxiliary subtask head")
+        images, img_masks, lang_tokens, lang_masks, state = self._preprocess_observation(
+            observation,
+            train=train,
+        )
+        _, _, _, visual_summary = self.embed_prefix(images, img_masks, lang_tokens, lang_masks)
+        return self.subtask_head(visual_summary, state[:, : self.aux_subtask_state_dim])
+
     def forward_subtask(self, observation) -> dict[str, Tensor]:
         """Run only the detached visual/state classifier used by head-only probes."""
-        if not self.aux_subtask_classes:
-            raise ValueError("subtask-only forward requires an auxiliary subtask head")
         if observation.semantic_subtask_id is None:
             raise ValueError("auxiliary subtask prediction requires semantic_subtask_id")
-        images, img_masks, lang_tokens, lang_masks, state = self._preprocess_observation(observation, train=True)
-        _, _, _, visual_summary = self.embed_prefix(images, img_masks, lang_tokens, lang_masks)
         return casm_pytorch.subtask_classification_loss(
-            self.subtask_head(visual_summary, state[:, : self.aux_subtask_state_dim]),
+            self._subtask_logits(observation, train=True),
             observation.semantic_subtask_id,
             self.aux_subtask_class_weights,
         ).metrics
+
+    @torch.no_grad()
+    def predict_subtask_logits(self, observation) -> Tensor:
+        """Predict closed-set subtask logits without requiring a target label."""
+        return self._subtask_logits(observation, train=False)
 
     def forward(
         self,

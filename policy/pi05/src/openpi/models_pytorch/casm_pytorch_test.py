@@ -184,3 +184,42 @@ def test_pi0_subtask_only_forward_does_not_require_actions(monkeypatch):
 
     assert torch.isfinite(metrics["subtask_loss"])
     assert metrics["subtask_accuracy"] >= 0
+
+
+def test_pi0_predict_subtask_logits_uses_inference_preprocessing(monkeypatch):
+    model = pi0_pytorch.PI0Pytorch.__new__(pi0_pytorch.PI0Pytorch)
+    nn.Module.__init__(model)
+    model.aux_subtask_classes = 2
+    model.aux_subtask_state_dim = 3
+    model.subtask_head = casm_pytorch.VisualProprioceptionClassifier(
+        visual_dim=4,
+        state_dim=3,
+        hidden_dim=5,
+        classes=2,
+        stop_gradient=True,
+    )
+    visual = torch.randn(2, 4)
+    state = torch.randn(2, 5)
+    preprocess_train_flags = []
+
+    def preprocess(unused, *, train):
+        preprocess_train_flags.append(train)
+        return [None], [None], None, None, state
+
+    monkeypatch.setattr(model, "_preprocess_observation", preprocess)
+    monkeypatch.setattr(
+        model,
+        "embed_prefix",
+        lambda images, img_masks, lang_tokens, lang_masks: (
+            None,
+            None,
+            None,
+            visual,
+        ),
+    )
+
+    logits = model.predict_subtask_logits(SimpleNamespace())
+
+    assert logits.shape == (2, 2)
+    assert torch.isfinite(logits).all()
+    assert preprocess_train_flags == [False]
