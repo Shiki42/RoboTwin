@@ -79,7 +79,7 @@ def create(
     loss_weight: float = 1.0,
     peak_lr: float = 3e-4,
     decay_lr: float = 3e-5,
-    factorized_action_loss: bool = False,
+    action_loss_mode: Literal["unmasked", "factorized", "full"] = "unmasked",
     teacher_forced_action_prompt: bool = False,
 ):
     """Add joint-subtask supervision while preserving the native PI0.5 action contract."""
@@ -95,13 +95,17 @@ def create(
         "prompt": "prompt",
     }
     action_sequence_keys = ("action",)
-    if factorized_action_loss:
+    if action_loss_mode == "factorized":
         repack_structure.update(
             {
                 "action_loss_mask": "observation.action_loss_mask",
                 "action_is_pad": "action_is_pad",
             }
         )
+    elif action_loss_mode == "full":
+        repack_structure["action_is_pad"] = "action_is_pad"
+    elif action_loss_mode != "unmasked":
+        raise ValueError(f"unsupported action loss mode: {action_loss_mode}")
     repack_inputs = [transforms.RepackTransform(repack_structure)]
     if teacher_forced_action_prompt:
         repack_inputs.append(TeacherForcedSubtaskPrompt())

@@ -917,7 +917,7 @@ _CONFIGS = [
         loss_weight=0.01,
         peak_lr=1e-4,
         decay_lr=1e-5,
-        factorized_action_loss=True,
+        action_loss_mode="factorized",
         teacher_forced_action_prompt=True,
     ),
     subtask_aux_config.create(
@@ -928,7 +928,7 @@ _CONFIGS = [
         loss_weight=0.01,
         peak_lr=1e-5,
         decay_lr=1e-6,
-        factorized_action_loss=True,
+        action_loss_mode="factorized",
         teacher_forced_action_prompt=True,
     ),
     subtask_aux_config.create(
@@ -939,7 +939,17 @@ _CONFIGS = [
         loss_weight=0.01,
         peak_lr=1e-5,
         decay_lr=1e-6,
-        factorized_action_loss=True,
+        action_loss_mode="factorized",
+    ),
+    subtask_aux_config.create(
+        _putcab_pytorch_config("putcab_subtask_aux_joint_action_policy_task_only_full_action_base", "none"),
+        name="pi05_putcab_factorized_anchor_subtask_joint_action_policy_task_only_full_action_pytorch",
+        stop_gradient=True,
+        trainable_scope="subtask_head_and_action_policy",
+        loss_weight=0.01,
+        peak_lr=1e-5,
+        decay_lr=1e-6,
+        action_loss_mode="full",
     ),
     TrainConfig(
         name="pi0_base_aloha_robotwin_lora",

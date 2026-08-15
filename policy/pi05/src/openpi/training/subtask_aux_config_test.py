@@ -133,6 +133,34 @@ def test_task_only_joint_action_policy_config_is_matched_control():
     assert train_config.data.use_delta_joint_actions is False
 
 
+def test_task_only_full_action_config_supervises_both_arms_and_masks_padding():
+    train_config = config.get_config(
+        "pi05_putcab_factorized_anchor_subtask_joint_action_policy_task_only_full_action_pytorch"
+    )
+    repack = train_config.data.repack_transforms.inputs[0].structure
+
+    assert train_config.model.pi05
+    assert train_config.model.action_horizon == 50
+    assert train_config.model.action_dim == 32
+    assert train_config.pytorch_trainable_scope == "subtask_head_and_action_policy"
+    assert train_config.model.pytorch_aux_subtask_loss_weight == 0.01
+    assert train_config.lr_schedule.warmup_steps == 100
+    assert train_config.lr_schedule.peak_lr == 1e-5
+    assert train_config.lr_schedule.decay_steps == 2_000
+    assert train_config.lr_schedule.decay_lr == 1e-6
+    assert train_config.num_train_steps == 2_000
+    assert train_config.batch_size == 16
+    assert train_config.pytorch_action_prompt_mode == "task_only"
+    assert len(train_config.data.repack_transforms.inputs) == 1
+    assert repack["actions"] == "action"
+    assert repack["semantic_subtask_id"] == "observation.semantic_subtask_id"
+    assert repack["action_is_pad"] == "action_is_pad"
+    assert "action_loss_mask" not in repack
+    assert "action_mask" not in repack
+    assert train_config.data.action_sequence_keys == ("action",)
+    assert train_config.data.use_delta_joint_actions is False
+
+
 def test_subtask_aux_configs_record_expected_class_weights():
     unweighted = config.get_config("pi05_putcab_factorized_anchor_subtask_head_pytorch")
     balanced = config.get_config("pi05_putcab_factorized_anchor_subtask_head_sqrt_balanced_pytorch")
