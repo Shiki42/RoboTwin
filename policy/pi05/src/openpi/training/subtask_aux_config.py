@@ -35,29 +35,38 @@ def create(
     loss_weight: float = 1.0,
     peak_lr: float = 3e-4,
     decay_lr: float = 3e-5,
+    active_valid_action_loss: bool = False,
 ):
     """Add joint-subtask supervision while preserving the native PI0.5 action contract."""
+    repack_structure = {
+        "images": {
+            "cam_high": "observation.images.cam_high",
+            "cam_left_wrist": "observation.images.cam_left_wrist",
+            "cam_right_wrist": "observation.images.cam_right_wrist",
+        },
+        "state": "observation.state",
+        "actions": "action",
+        "semantic_subtask_id": "observation.semantic_subtask_id",
+        "prompt": "prompt",
+    }
+    action_sequence_keys = ("action",)
+    if active_valid_action_loss:
+        repack_structure.update(
+            {
+                "action_mask": "observation.arm_active_mask",
+                "action_is_pad": "action_is_pad",
+            }
+        )
+        action_sequence_keys = ("action", "observation.arm_active_mask")
     repack = transforms.Group(
         inputs=[
-            transforms.RepackTransform(
-                {
-                    "images": {
-                        "cam_high": "observation.images.cam_high",
-                        "cam_left_wrist": "observation.images.cam_left_wrist",
-                        "cam_right_wrist": "observation.images.cam_right_wrist",
-                    },
-                    "state": "observation.state",
-                    "actions": "action",
-                    "semantic_subtask_id": "observation.semantic_subtask_id",
-                    "prompt": "prompt",
-                }
-            )
+            transforms.RepackTransform(repack_structure)
         ]
     )
     data = dataclasses.replace(
         base_config.data,
         repack_transforms=repack,
-        action_sequence_keys=("action",),
+        action_sequence_keys=action_sequence_keys,
     )
     model = dataclasses.replace(
         base_config.model,

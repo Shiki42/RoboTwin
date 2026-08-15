@@ -912,6 +912,7 @@ _CONFIGS = [
         loss_weight=0.01,
         peak_lr=1e-4,
         decay_lr=1e-5,
+        active_valid_action_loss=True,
     ),
     TrainConfig(
         name="pi0_base_aloha_robotwin_lora",

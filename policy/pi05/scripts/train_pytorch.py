@@ -165,7 +165,7 @@ def config_signature(config: _config.TrainConfig) -> dict[str, Any]:
             "action_expert_and_gate": "action_policy_v1",
             "lora": "action_policy_v1",
             "subtask_head": "detached_subtask_ce_only_v1",
-            "subtask_head_and_projector": "action_plus_subtask_shared_projector_v1",
+            "subtask_head_and_projector": "active_valid_action_plus_subtask_shared_projector_v1",
         }[config.pytorch_trainable_scope],
         "seed": config.seed,
         "episode_split": episode_split,

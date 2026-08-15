@@ -271,7 +271,9 @@ def test_shared_projector_training_keeps_action_objective():
     optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
     config = _tiny_config()
     config.pytorch_trainable_scope = "subtask_head_and_projector"
-    observation = SimpleNamespace(action_mask=None)
+    observation = SimpleNamespace(
+        action_mask=torch.tensor([[[1.0, 1.0], [0.0, 0.0]]]),
+    )
 
     metrics = train_pytorch.train_step(
         model,
@@ -283,9 +285,9 @@ def test_shared_projector_training_keeps_action_objective():
 
     assert model.action_forward_called
     assert model.subtask_head.detach() > 0
-    assert metrics["action_loss"] == pytest.approx(2.0)
+    assert metrics["action_loss"] == pytest.approx(1.0)
     assert metrics["subtask_loss"] == pytest.approx(1.0)
-    assert metrics["loss"] == pytest.approx(2.5)
+    assert metrics["loss"] == pytest.approx(1.5)
 
 
 def test_lora_scope_freezes_gemma_base_but_keeps_adapters_vision_and_action_heads():
