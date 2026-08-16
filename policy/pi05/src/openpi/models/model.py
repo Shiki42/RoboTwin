@@ -111,8 +111,8 @@ class Observation(Generic[ArrayT]):
     semantic_subtask_id: at.Int[ArrayT, "*b p"] | None = None
 
     # Precomputed tokenized prompt variants for subtask conditioning.
-    subtask_prompt_tokens: at.Int[ArrayT, "*b c l"] | None = None
-    subtask_prompt_masks: at.Bool[ArrayT, "*b c l"] | None = None
+    subtask_prompt_tokens: at.Int[ArrayT, "*b v l"] | None = None
+    subtask_prompt_masks: at.Bool[ArrayT, "*b v l"] | None = None
 
     # Tokenized prompt.
     tokenized_prompt: at.Int[ArrayT, "*b l"] | None = None
