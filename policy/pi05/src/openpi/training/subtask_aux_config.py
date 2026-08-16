@@ -81,8 +81,13 @@ def create(
     decay_lr: float = 3e-5,
     action_loss_mode: Literal["unmasked", "factorized", "full"] = "unmasked",
     teacher_forced_action_prompt: bool = False,
+    self_conditioned: bool = False,
+    conditioning_warmup_steps: int = 500,
+    conditioning_max_prob: float = 0.9,
 ):
     """Add joint-subtask supervision while preserving the native PI0.5 action contract."""
+    if self_conditioned and teacher_forced_action_prompt:
+        raise ValueError("self-conditioned and teacher-forced prompts are mutually exclusive")
     repack_structure = {
         "images": {
             "cam_high": "observation.images.cam_high",
@@ -123,6 +128,14 @@ def create(
         pytorch_aux_subtask_loss_weight=loss_weight,
         pytorch_aux_subtask_class_weights=class_weights,
         pytorch_aux_subtask_stop_gradient=stop_gradient,
+        pytorch_aux_subtask_prompt_variants=self_conditioned,
+    )
+    action_prompt_mode = (
+        "teacher_forced_joint_subtask"
+        if teacher_forced_action_prompt
+        else "self_conditioned_predicted_text"
+        if self_conditioned
+        else "task_only"
     )
     return dataclasses.replace(
         base_config,
@@ -133,7 +146,9 @@ def create(
         pytorch_trainable_scope=trainable_scope,
         pytorch_gradient_checkpointing=False,
         pytorch_compile_mode="default",
-        pytorch_action_prompt_mode=("teacher_forced_joint_subtask" if teacher_forced_action_prompt else "task_only"),
+        pytorch_action_prompt_mode=action_prompt_mode,
+        pytorch_subtask_conditioning_warmup_steps=conditioning_warmup_steps,
+        pytorch_subtask_conditioning_max_prob=conditioning_max_prob,
         lr_schedule=optimizer.CosineDecaySchedule(
             warmup_steps=100,
             peak_lr=peak_lr,

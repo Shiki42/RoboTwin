@@ -246,6 +246,27 @@ class PI0Pytorch(nn.Module):
         """Embed images with SigLIP and language tokens with embedding layer to prepare
         for PaliGemma transformer processing.
         """
+        image_embs, image_pad_masks, image_att_masks, visual_summary = self._embed_images(images, img_masks)
+        lang_emb = self._embed_language(lang_tokens, lang_masks)
+
+        embs = [*image_embs, lang_emb]
+        pad_masks = [*image_pad_masks, lang_masks]
+        att_masks = image_att_masks + [0] * lang_emb.shape[1]
+
+        embs = torch.cat(embs, dim=1)
+        pad_masks = torch.cat(pad_masks, dim=1)
+        att_masks = torch.tensor(att_masks, dtype=torch.bool, device=pad_masks.device)
+
+        # Get batch size from the first dimension of the concatenated tensors
+        bsize = pad_masks.shape[0]
+        att_masks = att_masks[None, :].expand(bsize, len(att_masks))
+
+        return embs, pad_masks, att_masks, visual_summary
+
+    def _embed_images(
+        self, images, img_masks
+    ) -> tuple[list[torch.Tensor], list[torch.Tensor], list[int], torch.Tensor]:
+        """Embed image tokens and compute the mean visual summary for the subtask head."""
         embs = []
         pad_masks = []
         att_masks = []
@@ -266,32 +287,18 @@ class PI0Pytorch(nn.Module):
             # Create attention masks so that image tokens attend to each other
             att_masks += [0] * num_img_embs
 
-        # Process language tokens
-        lang_emb = self.paligemma_with_expert.embed_language_tokens(lang_tokens)
-        lang_emb_dim = lang_emb.shape[-1]
-        lang_emb = lang_emb * math.sqrt(lang_emb_dim)
-
-        embs.append(lang_emb)
-        pad_masks.append(lang_masks)
-
-        # full attention between image and language inputs
-        num_lang_embs = lang_emb.shape[1]
-        att_masks += [0] * num_lang_embs
-
-        embs = torch.cat(embs, dim=1)
-        pad_masks = torch.cat(pad_masks, dim=1)
-        att_masks = torch.tensor(att_masks, dtype=torch.bool, device=pad_masks.device)
-
-        # Get batch size from the first dimension of the concatenated tensors
-        bsize = pad_masks.shape[0]
-        att_masks = att_masks[None, :].expand(bsize, len(att_masks))
-
         presence = torch.stack(visual_presence, dim=1)
         summaries = torch.stack(visual_summaries, dim=1)
         visual_summary = (summaries * presence[..., None]).sum(dim=1)
         visual_summary = visual_summary / presence.sum(dim=1, keepdim=True).clamp_min(1)
 
         return embs, pad_masks, att_masks, visual_summary
+
+    def _embed_language(self, lang_tokens, lang_masks) -> torch.Tensor:
+        """Embed language tokens with the same scaling used by embed_prefix."""
+        lang_emb = self.paligemma_with_expert.embed_language_tokens(lang_tokens)
+        lang_emb_dim = lang_emb.shape[-1]
+        return lang_emb * math.sqrt(lang_emb_dim)
 
     def embed_suffix(self, state, noisy_actions, timestep):
         """Embed state, noisy_actions, timestep to prepare for Expert Gemma processing."""
@@ -393,6 +400,7 @@ class PI0Pytorch(nn.Module):
         *,
         return_aux=False,
         subtask_only=False,
+        conditioning_enabled=False,
     ):
         """Run a training forward pass and return per-action-step loss."""
         if subtask_only:
@@ -413,9 +421,28 @@ class PI0Pytorch(nn.Module):
         x_t = time_expanded * noise + (1 - time_expanded) * actions
         u_t = noise - actions
 
-        prefix_embs, prefix_pad_masks, prefix_att_masks, visual_summary = self.embed_prefix(
-            images, img_masks, lang_tokens, lang_masks
+        image_embs, image_pad_masks, image_att_masks, visual_summary = self._embed_images(images, img_masks)
+        lang_emb = self._embed_language(lang_tokens, lang_masks)
+        subtask_logits = None
+        if self.aux_subtask_classes:
+            subtask_logits = self.subtask_head(visual_summary, state[:, : self.aux_subtask_state_dim])
+            if conditioning_enabled:
+                if observation.subtask_prompt_tokens is None or observation.subtask_prompt_masks is None:
+                    raise ValueError("self-conditioned training requires precomputed subtask prompt variants")
+                class_ids = subtask_logits.argmax(dim=-1).detach()
+                batch_indices = torch.arange(actions.shape[0], device=actions.device)
+                lang_tokens = observation.subtask_prompt_tokens[batch_indices, class_ids]
+                lang_masks = observation.subtask_prompt_masks[batch_indices, class_ids]
+                lang_emb = self._embed_language(lang_tokens, lang_masks)
+        prefix_embs = torch.cat([*image_embs, lang_emb], dim=1)
+        prefix_pad_masks = torch.cat([*image_pad_masks, lang_masks], dim=1)
+        prefix_att_masks = torch.tensor(
+            image_att_masks + [0] * lang_emb.shape[1],
+            dtype=torch.bool,
+            device=prefix_pad_masks.device,
         )
+        bsize = prefix_pad_masks.shape[0]
+        prefix_att_masks = prefix_att_masks[None, :].expand(bsize, len(prefix_att_masks))
         suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix(state, x_t, time)
         if (
             self.paligemma_with_expert.paligemma.language_model.layers[0].self_attn.q_proj.weight.dtype
@@ -467,7 +494,7 @@ class PI0Pytorch(nn.Module):
             if observation.semantic_subtask_id is None:
                 raise ValueError("auxiliary subtask prediction requires semantic_subtask_id")
             subtask = casm_pytorch.subtask_classification_loss(
-                self.subtask_head(visual_summary, state[:, : self.aux_subtask_state_dim]),
+                subtask_logits,
                 observation.semantic_subtask_id,
                 self.aux_subtask_class_weights,
             )

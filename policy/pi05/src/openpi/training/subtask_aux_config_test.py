@@ -204,3 +204,21 @@ def test_teacher_forced_prompt_matches_factorized_checkpoint_contract():
         "put the object in the cabinet\n"
         "Current subtask: Left arm: wait while holding drawer open; Right arm: insert and place object."
     )
+
+
+def test_self_conditioned_full_action_config():
+    train_config = config.get_config(
+        "pi05_putcab_factorized_anchor_subtask_self_conditioned_full_action_pytorch"
+    )
+    repack = train_config.data.repack_transforms.inputs[0].structure
+
+    assert train_config.model.pytorch_aux_subtask_prompt_variants
+    assert train_config.pytorch_action_prompt_mode == "self_conditioned_predicted_text"
+    assert train_config.pytorch_subtask_conditioning_warmup_steps == 500
+    assert train_config.pytorch_subtask_conditioning_max_prob == 0.9
+    assert train_config.pytorch_trainable_scope == "subtask_head_and_action_policy"
+    assert repack["actions"] == "action"
+    assert repack["action_is_pad"] == "action_is_pad"
+    assert "action_loss_mask" not in repack
+    assert train_config.data.action_sequence_keys == ("action",)
+    assert train_config.data.use_delta_joint_actions is False

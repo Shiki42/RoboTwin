@@ -52,6 +52,7 @@ class Pi0Config(_model.BaseModelConfig):
     pytorch_aux_subtask_loss_weight: float = 1.0
     pytorch_aux_subtask_class_weights: tuple[float, ...] | None = None
     pytorch_aux_subtask_stop_gradient: bool = True
+    pytorch_aux_subtask_prompt_variants: bool = False
     # This config option is not used directly by the model, but it is read by the ModelTransformFactory.
     discrete_state_input: bool = None  # type: ignore
 
@@ -95,6 +96,8 @@ class Pi0Config(_model.BaseModelConfig):
                 not math.isfinite(weight) or weight <= 0 for weight in self.pytorch_aux_subtask_class_weights
             ):
                 raise ValueError("PyTorch auxiliary subtask class weights must be finite and positive")
+        if self.pytorch_aux_subtask_prompt_variants and not self.pytorch_aux_subtask_classes:
+            raise ValueError("PyTorch subtask prompt variants require an auxiliary subtask head")
         if self.max_token_len is None:
             object.__setattr__(self, "max_token_len", 200 if self.pi05 else 48)
         if self.discrete_state_input is None:

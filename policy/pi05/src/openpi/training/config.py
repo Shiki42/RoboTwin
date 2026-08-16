@@ -131,17 +131,27 @@ class ModelTransformFactory(GroupFactory):
                 )
             case _model.ModelType.PI05:
                 assert isinstance(model_config, pi0_config.Pi0Config)
-                return _transforms.Group(
-                    inputs=[
-                        _transforms.InjectDefaultPrompt(self.default_prompt),
-                        _transforms.ResizeImages(224, 224),
-                        _transforms.TokenizePrompt(
-                            _tokenizer.PaligemmaTokenizer(model_config.max_token_len),
+                inputs = [
+                    _transforms.InjectDefaultPrompt(self.default_prompt),
+                    _transforms.ResizeImages(224, 224),
+                    _transforms.TokenizePrompt(
+                        _tokenizer.PaligemmaTokenizer(model_config.max_token_len),
+                        discrete_state_input=model_config.discrete_state_input,
+                    ),
+                    _transforms.PadStatesAndActions(model_config.action_dim),
+                ]
+                if getattr(model_config, "pytorch_aux_subtask_prompt_variants", False):
+                    from openpi.training import subtask_aux_config as _subtask_aux_config
+
+                    inputs.insert(
+                        2,
+                        _transforms.PrecomputePromptVariants(
+                            tokenizer=_tokenizer.PaligemmaTokenizer(model_config.max_token_len),
+                            texts=_subtask_aux_config.JOINT_SUBTASK_TEXTS,
                             discrete_state_input=model_config.discrete_state_input,
                         ),
-                        _transforms.PadStatesAndActions(model_config.action_dim),
-                    ],
-                )
+                    )
+                return _transforms.Group(inputs=inputs)
             case _model.ModelType.PI0_FAST:
                 tokenizer_cls = (
                     _tokenizer.FASTTokenizer
@@ -503,8 +513,12 @@ class TrainConfig:
         "subtask_head_and_action_policy",
     ] = "all"
     pytorch_action_prompt_mode: Literal[
-        "task_only", "teacher_forced_joint_subtask"
+        "task_only", "teacher_forced_joint_subtask", "self_conditioned_predicted_text"
     ] = "task_only"
+    # Ramp from zero to max_prob over this many optimizer steps when using
+    # self-conditioned predicted subtask prompts.
+    pytorch_subtask_conditioning_warmup_steps: int = 0
+    pytorch_subtask_conditioning_max_prob: float = 1.0
     lr_schedule: _optimizer.LRScheduleConfig = dataclasses.field(default_factory=_optimizer.CosineDecaySchedule)
     optimizer: _optimizer.OptimizerConfig = dataclasses.field(default_factory=_optimizer.AdamW)
     ema_decay: float | None = 0.99
@@ -601,6 +615,10 @@ class TrainConfig:
                 raise ValueError("episode indices must be non-negative")
         if set(episode_groups[0]) & set(episode_groups[1]):
             raise ValueError("training and validation episodes must be disjoint")
+        if self.pytorch_subtask_conditioning_warmup_steps < 0:
+            raise ValueError("subtask conditioning warmup steps must be non-negative")
+        if not 0.0 <= self.pytorch_subtask_conditioning_max_prob <= 1.0:
+            raise ValueError("subtask conditioning max probability must be in [0, 1]")
 
 def _putcab_casm_data(repo_id: str) -> LeRobotAlohaDataConfig:
     return LeRobotAlohaDataConfig(
@@ -950,6 +968,17 @@ _CONFIGS = [
         peak_lr=1e-5,
         decay_lr=1e-6,
         action_loss_mode="full",
+    ),
+    subtask_aux_config.create(
+        _putcab_pytorch_config("putcab_subtask_aux_self_conditioned_full_action_base", "none"),
+        name="pi05_putcab_factorized_anchor_subtask_self_conditioned_full_action_pytorch",
+        stop_gradient=True,
+        trainable_scope="subtask_head_and_action_policy",
+        loss_weight=0.01,
+        peak_lr=1e-5,
+        decay_lr=1e-6,
+        action_loss_mode="full",
+        self_conditioned=True,
     ),
     TrainConfig(
         name="pi0_base_aloha_robotwin_lora",

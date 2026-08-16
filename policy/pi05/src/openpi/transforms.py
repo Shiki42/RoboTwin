@@ -267,6 +267,43 @@ class TokenizePrompt(DataTransformFn):
 
 
 @dataclasses.dataclass(frozen=True)
+class PrecomputePromptVariants(DataTransformFn):
+    """Tokenize a fixed set of prompt variants once per sample."""
+
+    tokenizer: _tokenizer.PaligemmaTokenizer
+    texts: Sequence[str]
+    discrete_state_input: bool = False
+    output_token_key: str = "subtask_prompt_tokens"
+    output_mask_key: str = "subtask_prompt_masks"
+
+    def __call__(self, data: DataDict) -> DataDict:
+        if (prompt := data.get("prompt")) is None:
+            raise ValueError("Prompt is required")
+        if self.discrete_state_input:
+            if (state := data.get("state")) is None:
+                raise ValueError("State is required")
+        else:
+            state = None
+        if not isinstance(prompt, str):
+            prompt = prompt.item()
+        if not self.texts:
+            raise ValueError("prompt variant text table is empty")
+        token_rows = []
+        mask_rows = []
+        for text in self.texts:
+            tokens, token_masks = self.tokenizer.tokenize(
+                f"{prompt.strip()}\nCurrent subtask: {text}", state
+            )
+            token_rows.append(tokens)
+            mask_rows.append(token_masks)
+        return {
+            **data,
+            self.output_token_key: np.stack(token_rows, axis=0),
+            self.output_mask_key: np.stack(mask_rows, axis=0),
+        }
+
+
+@dataclasses.dataclass(frozen=True)
 class TokenizeFASTInputs(DataTransformFn):
     tokenizer: _tokenizer.FASTTokenizer
 

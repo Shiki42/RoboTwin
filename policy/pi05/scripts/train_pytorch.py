@@ -161,6 +161,8 @@ def config_signature(config: _config.TrainConfig) -> dict[str, Any]:
         "pytorch_gradient_checkpointing_scope": config.pytorch_gradient_checkpointing_scope,
         "pytorch_trainable_scope": config.pytorch_trainable_scope,
         "pytorch_action_prompt_mode": config.pytorch_action_prompt_mode,
+        "pytorch_subtask_conditioning_warmup_steps": config.pytorch_subtask_conditioning_warmup_steps,
+        "pytorch_subtask_conditioning_max_prob": config.pytorch_subtask_conditioning_max_prob,
         "training_objective": {
             "all": "action_policy_v1",
             "action_expert_and_gate": "action_policy_v1",
@@ -174,6 +176,8 @@ def config_signature(config: _config.TrainConfig) -> dict[str, Any]:
             "subtask_head_and_action_policy": (
                 "teacher_forced_factorized_action_plus_subtask_action_policy_v1"
                 if config.pytorch_action_prompt_mode == "teacher_forced_joint_subtask"
+                else "self_conditioned_predicted_text_full_action_plus_subtask_action_policy_v1"
+                if config.pytorch_action_prompt_mode == "self_conditioned_predicted_text"
                 else "factorized_action_plus_subtask_action_policy_task_only_v1"
             ),
         }[config.pytorch_trainable_scope],
@@ -436,6 +440,7 @@ def forward_losses(
     observation: Any,
     actions: torch.Tensor,
     config: _config.TrainConfig,
+    conditioning_enabled: bool = False,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     use_autocast = config.pytorch_compute_precision == "bfloat16"
     with torch.autocast(
@@ -444,7 +449,12 @@ def forward_losses(
         enabled=use_autocast,
     ):
         if getattr(model, "casm_mode", "none") == "visual_phase_gate" or getattr(model, "aux_subtask_classes", 0):
-            return model(observation, actions, return_aux=True)
+            return model(
+                observation,
+                actions,
+                return_aux=True,
+                conditioning_enabled=conditioning_enabled,
+            )
         return model(observation, actions), {}
 
 
@@ -469,6 +479,13 @@ def train_step(
     for group in optimizer.param_groups:
         group["lr"] = lr
 
+    conditioning_prob = 0.0
+    if config.pytorch_action_prompt_mode == "self_conditioned_predicted_text":
+        warmup = config.pytorch_subtask_conditioning_warmup_steps
+        max_prob = config.pytorch_subtask_conditioning_max_prob
+        conditioning_prob = max_prob * min(1.0, global_step / warmup) if warmup > 0 else max_prob
+    conditioning_enabled = bool(torch.rand(1).item() < conditioning_prob)
+
     optimizer.zero_grad(set_to_none=True)
     metric_sums: dict[str, float] = {}
     accumulation_steps = len(batches)
@@ -484,7 +501,13 @@ def train_step(
                 auxiliary = model(observation, subtask_only=True)
                 loss = model.aux_subtask_loss_weight * auxiliary["subtask_loss"]
         else:
-            losses, auxiliary = forward_losses(model, observation, actions, config)
+            losses, auxiliary = forward_losses(
+                model,
+                observation,
+                actions,
+                config,
+                conditioning_enabled=conditioning_enabled,
+            )
             if model.casm_mode == "visual_phase_gate":
                 loss = losses.mean()
             else:
@@ -529,6 +552,8 @@ def train_step(
     metrics = {
         "learning_rate": lr,
         "gradient_norm": float(gradient_norm.detach().cpu()),
+        "conditioning_prob": conditioning_prob,
+        "conditioning_enabled": float(conditioning_enabled),
     }
     metrics.update({name: value / accumulation_steps for name, value in metric_sums.items()})
     return metrics
@@ -553,10 +578,17 @@ def evaluate_validation_loss(
     try:
         pytorch_training.seed_everything(seed)
         model.eval()
+        conditioning_enabled = config.pytorch_action_prompt_mode == "self_conditioned_predicted_text"
         for cpu_observation, cpu_actions in loader:
             observation = pytorch_training.move_to_device(cpu_observation, device, non_blocking=True)
             actions = cpu_actions.to(device=device, dtype=torch.float32, non_blocking=True)
-            losses, _ = forward_losses(model, observation, actions, config)
+            losses, _ = forward_losses(
+                model,
+                observation,
+                actions,
+                config,
+                conditioning_enabled=conditioning_enabled,
+            )
             action_mask = getattr(observation, "action_mask", None)
             batch_loss, batch_weight = _action_loss_total(losses, action_mask)
             loss_total += batch_loss

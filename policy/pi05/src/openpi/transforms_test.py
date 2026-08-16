@@ -119,3 +119,21 @@ def test_extract_prompt_from_task():
 
     with pytest.raises(ValueError, match="task_index=2 not found in task mapping"):
         transform({"task_index": 2})
+
+
+def test_precompute_prompt_variants_tokenizes_hardcoded_texts():
+    tokenizer = _tokenizer.PaligemmaTokenizer(48)
+    transform = _transforms.PrecomputePromptVariants(
+        tokenizer=tokenizer,
+        texts=(
+            "Left arm: reach and grasp object; Right arm: wait.",
+            "Left arm: wait while holding drawer open; Right arm: insert and place object.",
+        ),
+        discrete_state_input=False,
+    )
+
+    output = transform({"prompt": "put the object in the cabinet", "state": np.zeros((14,), dtype=np.float32)})
+
+    assert output["subtask_prompt_tokens"].shape == (2, 48)
+    assert output["subtask_prompt_masks"].shape == (2, 48)
+    assert np.issubdtype(output["subtask_prompt_tokens"].dtype, np.integer)

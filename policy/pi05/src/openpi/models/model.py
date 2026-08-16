@@ -110,6 +110,10 @@ class Observation(Generic[ArrayT]):
     # Joint semantic class: object-arm role x async/sync stage.
     semantic_subtask_id: at.Int[ArrayT, "*b p"] | None = None
 
+    # Precomputed tokenized prompt variants for subtask conditioning.
+    subtask_prompt_tokens: at.Int[ArrayT, "*b c l"] | None = None
+    subtask_prompt_masks: at.Bool[ArrayT, "*b c l"] | None = None
+
     # Tokenized prompt.
     tokenized_prompt: at.Int[ArrayT, "*b l"] | None = None
     # Tokenized prompt mask.
@@ -135,6 +139,8 @@ class Observation(Generic[ArrayT]):
             action_mask=data.get("action_mask"),
             phase_id=data.get("phase_id"),
             semantic_subtask_id=data.get("semantic_subtask_id"),
+            subtask_prompt_tokens=data.get("subtask_prompt_tokens"),
+            subtask_prompt_masks=data.get("subtask_prompt_masks"),
             tokenized_prompt=data.get("tokenized_prompt"),
             tokenized_prompt_mask=data.get("tokenized_prompt_mask"),
             token_ar_mask=data.get("token_ar_mask"),
@@ -217,6 +223,8 @@ def preprocess_observation(
         action_mask=observation.action_mask,
         phase_id=observation.phase_id,
         semantic_subtask_id=observation.semantic_subtask_id,
+        subtask_prompt_tokens=observation.subtask_prompt_tokens,
+        subtask_prompt_masks=observation.subtask_prompt_masks,
         tokenized_prompt=observation.tokenized_prompt,
         tokenized_prompt_mask=observation.tokenized_prompt_mask,
         token_ar_mask=observation.token_ar_mask,
