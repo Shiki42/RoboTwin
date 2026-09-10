@@ -210,6 +210,14 @@ class TimedExpert:
 
 
 class TimedSetup:
+    def setup_scene(self, **kwargs):
+        super().setup_scene(**kwargs)
+        # Select raster rendering before cameras are constructed. The deployed
+        # OIDN backend fails on this host; rendering does not change physics.
+        import sapien
+        sapien.render.set_camera_shader_dir('default')
+        sapien.render.set_ray_tracing_denoiser('none')
+
     def setup_demo(self, **kwargs):
         offset = float(kwargs.pop('right_start_offset_s', 0.0))
         if not math.isfinite(offset):

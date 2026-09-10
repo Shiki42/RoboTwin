@@ -43,6 +43,9 @@ def main():
     provenance = dict(host=socket.gethostname(), account=getpass.getuser(),
                       cuda_visible_devices=os.environ.get('CUDA_VISIBLE_DEVICES'),
                       python=sys.executable, exact_command=sys.argv,
+                      renderer='sapien-default-raster',
+                      gpu=subprocess.check_output(['nvidia-smi', '--query-gpu=index,uuid', '--format=csv,noheader'], text=True).strip(),
+                      runtime_manifest_sha256=hashlib.sha256((Path(sys.executable).parents[1]/'runtime_manifest.json').read_bytes()).hexdigest(),
                       source_commit=subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip())
     (args.output/'result.json').write_text(json.dumps(dict(success=success, seed=args.seed,
                   task=args.task, provenance=provenance, **info), indent=2, default=str)+'\n')
