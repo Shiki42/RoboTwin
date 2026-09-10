@@ -124,7 +124,7 @@ class TimedExpert:
 
     def tick(self, controls, step):
         t = self.task
-        if step % t.save_freq == 0:
+        if t.save_data and t.save_freq is not None and step % t.save_freq == 0 and step != self.last_capture:
             self.capture()
         if controls:
             seq = dict.fromkeys(('left_arm', 'right_arm', 'left_gripper', 'right_gripper'))
