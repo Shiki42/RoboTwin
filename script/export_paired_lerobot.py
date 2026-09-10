@@ -71,8 +71,13 @@ def tracking_audit(h,program_path,receipt):
         programs={s:f[s] for s in ('left','right','tail')}
     hashes={s:hashlib.sha256(np.ascontiguousarray(a).tobytes()).hexdigest() for s,a in programs.items()}
     if hashes!=receipt['control_hashes']:raise AssertionError('stored source program hash mismatch')
+    if h.attrs['wrist_camera_preset']!='centered_fovy90':raise AssertionError('New FOV missing')
+    camera_receipt=json.loads(h.attrs['wrist_camera_receipt'])
+    for side in ('left','right'):
+        if not np.allclose(h['camera_validation/'+side+'_fovy_deg'][:],90,atol=0.001,rtol=0):raise AssertionError('FOVY90 violation')
+        if not np.allclose(h['camera_validation/'+side+'_mount'][:],camera_receipt['gripper_to_camera_matrix'],atol=2e-6,rtol=0):raise AssertionError('centered mount violation')
     reasons=h['physics/reasons'][:];indices=h['physics/source_index'][:]
-    samples=h['physics_step'][:];state=h['joint_action/vector'][:]
+    samples=h['physics_step'][:];state=h['observation/state'][:]
     tail=[e['step'] for e in receipt['events'] if e['event']=='scan_barrier_release']
     tail_start=tail[0] if tail else len(reasons)
     expected=state[0].copy();errors=[];cursor=0
@@ -118,7 +123,8 @@ def export_one(source,output,task,variant,slots):
         directory=Path(slot['path'])/label
         source_file=directory/'episode.hdf5'
         with h5py.File(source_file) as h:
-            states=h['joint_action/vector'][:]
+            states=h['observation/state'][:]
+            targets=h['joint_action/vector'][:]
             if len(states)<2 or states.shape[1]!=14 or not np.isfinite(states).all():
                 raise ValueError('invalid joint state sequence')
             masks=np.column_stack([h['retime/'+s+'_idle'][:] for s in ('left','right')])
@@ -132,7 +138,7 @@ def export_one(source,output,task,variant,slots):
             grid=slot['slot']+(slots if label=='uniform_1' else 0) if variant=='uniform' else -1
             for i in range(n):
                 frame={'task':PROMPTS[task],'observation.state':states[i].astype(np.float32),
-                       'action':states[i+1].astype(np.float32)}
+                       'action':targets[i+1].astype(np.float32)}
                 for key,value in [('source_seed',r['seed']),('source_slot',r['slot']),('grid_index',grid)]:
                     frame['retime.'+key]=np.array([value],dtype=np.int64)
                 for key,value in [('u',u),('offset_s',r['actual_offset_steps']*r['physics_dt_s'])]:

@@ -78,6 +78,7 @@ def config(task):
                left_embodiment_config=embodiment,right_embodiment_config=deepcopy(embodiment),
                dual_arm_embodied=True,need_plan=True,save_data=False,save_freq=10,
                render_freq=0,right_start_offset_s=0.0)
+    cfg['camera']['wrist_camera_preset']='centered_fovy90'
     return cfg
 
 
@@ -132,6 +133,19 @@ class H5Capture:
         if self.steps and self.steps[-1]==step: return
         self.task._update_render()
         obs=self.task.get_obs()
+        camera_validation=self.task.validate_wrist_cameras()
+        for side,v in camera_validation.items():
+            self.append('camera_validation/'+side+'_mount',v['actual_mount'])
+            self.append('camera_validation/'+side+'_fovy_deg',v['fovy_deg'])
+        real=np.asarray(self.task.robot.get_left_arm_real_jointState()+self.task.robot.get_right_arm_real_jointState())
+        real_grippers=self.task.robot.get_normal_real_gripper_val()
+        real[6],real[13]=real_grippers
+        self.append('observation/state',real)
+        names={'pick_dual_bottles':['bottle1','bottle2'], 'scan_object':['scanner','object'],
+               'place_dual_shoes':['left_shoe','right_shoe','shoe_box']}[self.task.task_name]
+        for name in names:
+            pose=getattr(self.task,name).get_pose()
+            self.append('actor_pose/'+name,np.r_[pose.p,pose.q])
         def visit(value,path=''):
             for key,item in value.items():
                 child=f'{path}/{key}' if path else key
@@ -156,6 +170,8 @@ class H5Capture:
         self.f.create_dataset('physics/source_index',data=np.asarray(indices,dtype=np.int32),compression='lzf')
         self.f.attrs['reason_names']=json.dumps(REASONS)
         self.f.attrs['rgb_encoding']='jpeg_rgb'
+        self.f.attrs['wrist_camera_preset']='centered_fovy90'
+        self.f.attrs['wrist_camera_receipt']=json.dumps(self.task.wrist_camera_receipt)
         self.f.attrs['receipt']=json.dumps(receipt)
         self.f.flush()
         return dict(observations=len(self.steps),training_frames=len(masks),
@@ -200,7 +216,7 @@ def replay(task,p,task_name,u,path,expected_scene):
                      nominal_offset_steps=clock.raw_delta,actual_offset_steps=clock.delta,
                      starts=clock.starts,durations={s:len(getattr(p,s)) for s in SIDES},
                      physics_dt_s=writer.dt,physics_steps=clock.step,settling_steps=settling,
-                     control_hashes=hashes,events=clock.events,
+                     control_hashes=hashes,events=clock.events,wrist_camera=task.wrist_camera_receipt,
                      workspace_wait_steps={s:int(np.count_nonzero(np.asarray(reasons)[:,a]==WORKSPACE)) for a,s in enumerate(SIDES)},
                      cross_arm_collisions=driver.contacts)
         receipt.update(writer.finish(reasons,indices,receipt))

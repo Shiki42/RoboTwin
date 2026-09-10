@@ -116,6 +116,7 @@ class TimedExpert:
         t = self.task
         if t.save_data:
             t._update_render()
+            t.validate_wrist_cameras()
             t._take_picture()
             self.frames.append(dict(frame=t.FRAME_IDX-1, step=self.timeline.step,
                                     time_s=self.timeline.step*self.timeline.dt,
@@ -209,6 +210,21 @@ class TimedExpert:
         return self.task.info
 
 
+def validate_camera_geometry(intrinsic, width, height, actual_mount, expected_mount):
+    import numpy as np
+    if (width,height)!=(320,240):
+        raise ValueError('centered_fovy90 requires 320x240 wrist images')
+    k=np.asarray(intrinsic)
+    expected_k=np.array([[height/2,0,width/2],[0,height/2,height/2],[0,0,1]])
+    if not np.allclose(k,expected_k,atol=1e-3,rtol=0):
+        raise ValueError(f'wrist camera does not satisfy centered FOVY90 intrinsics: {k}')
+    error=float(np.max(np.abs(np.asarray(actual_mount)-expected_mount)))
+    if error>2e-6:
+        raise ValueError(f'wrist camera optical-axis mount mismatch: {error}')
+    return dict(fovy_deg=math.degrees(2*math.atan(height/(2*k[1,1]))),
+                cx=float(k[0,2]),cy=float(k[1,2]),mount_max_abs_error=error)
+
+
 class TimedSetup:
     expert_driver_type = TimedExpert
 
@@ -224,5 +240,25 @@ class TimedSetup:
         offset = float(kwargs.pop('right_start_offset_s', 0.0))
         if not math.isfinite(offset):
             raise ValueError('right_start_offset_s must be finite')
+        save_data=kwargs.get("save_data",False)
+        kwargs["save_data"]=False
         super().setup_demo(**kwargs)
         self.right_start_offset_s = offset
+        from parallel_vla.robotwin_wrist_camera import install_wrist_camera_preset
+        self.wrist_camera_receipt = install_wrist_camera_preset(self, 'centered_fovy90')
+        self.validate_wrist_cameras()
+        self.save_data=save_data
+
+    def validate_wrist_cameras(self):
+        import numpy as np
+        import sapien
+        expected=np.asarray(self.wrist_camera_receipt['gripper_to_camera_matrix'])
+        report={}
+        for side in ('left','right'):
+            camera=getattr(self.cameras,side+'_camera')
+            ee=self.get_arm_pose(side)
+            ee_matrix=sapien.Pose(ee[:3],ee[3:]).to_transformation_matrix()
+            actual=np.linalg.inv(ee_matrix) @ camera.entity.get_pose().to_transformation_matrix()
+            report[side]=validate_camera_geometry(camera.get_intrinsic_matrix(),camera.width,camera.height,actual,expected)
+            report[side]['actual_mount']=actual.tolist()
+        return report

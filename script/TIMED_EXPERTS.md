@@ -39,3 +39,24 @@ start offset and exact subtask/wait/entry/exit timestamps. Native `video/` is
 the upstream fixed-30-FPS export; `preview.mp4` uses the actual simulation clock.
 
 Run CPU scheduler tests with `python -m pytest tests/test_timed_expert.py`.
+
+
+## Required New FOV camera contract
+
+All timed experts install the existing `parallel_vla.robotwin_wrist_camera`
+`centered_fovy90` preset after scene setup and before recording any frame.
+Both wrists use vertical FOV 90 degrees, 320x240, principal point (160,120),
+and the preset's calibrated gripper-to-camera transform (manifest SHA-256
+`bd7a9d918a775f3d59b70ca04d1a9f4151c9602557487947e2ee49d8a461b0e5`).
+The calibrated transform is essential; changing only focal length is invalid.
+For Coder A, expose the existing source dependency with
+`PYTHONPATH=/home/coder/share/parallelVLA-piperx-sortletter-retime/src`.
+Each paired-data frame verifies actual intrinsics and the measured mount;
+HDF5 stores those measurements and the preset receipt for independent audit.
+Data produced before this contract used native 37-degree wrists and must not
+be included in the New FOV paired datasets.
+
+Paired HDF5 distinguishes measured `observation/state` from native commanded
+`joint_action/vector`. LeRobot states use measured joints and normalized actual
+grippers; actions use the next sampled command target. Physical actor poses are
+also captured. Source command hashes remain invariant across timing variants.

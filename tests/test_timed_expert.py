@@ -49,3 +49,16 @@ def test_conditional_wait_and_mutual_exclusion(offset, expected_wait):
 def test_reject_nonfinite_offset():
     with pytest.raises(ValueError):
         m.Timeline(0.01, lambda c,s:None).run({}, float('nan'))
+
+
+def test_new_fov_rejects_native_fov_and_off_axis_mount():
+    import numpy as np
+    k=np.array([[120.,0,160],[0,120.,120],[0,0,1]])
+    mount=np.eye(4)
+    assert m.validate_camera_geometry(k,320,240,mount,mount)['fovy_deg']==90
+    native=k.copy();native[0,0]=native[1,1]=358.64218
+    with pytest.raises(ValueError,match='intrinsics'):
+        m.validate_camera_geometry(native,320,240,mount,mount)
+    offset=mount.copy();offset[0,3]=.001
+    with pytest.raises(ValueError,match='mount mismatch'):
+        m.validate_camera_geometry(k,320,240,offset,mount)

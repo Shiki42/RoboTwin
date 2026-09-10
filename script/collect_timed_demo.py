@@ -36,6 +36,7 @@ def main():
     name = args.task+'_timed'
     task = getattr(importlib.import_module('envs.'+name), name)()
     task.setup_demo(seed=args.seed, now_ep_num=0, **cfg)
+    task.info["wrist_camera"] = task.wrist_camera_receipt
     task.save_data = True
     info = task.play_once()
     success = bool(task.plan_success and task.check_success())
