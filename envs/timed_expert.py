@@ -210,6 +210,8 @@ class TimedExpert:
 
 
 class TimedSetup:
+    expert_driver_type = TimedExpert
+
     def setup_scene(self, **kwargs):
         super().setup_scene(**kwargs)
         # Select raster rendering before cameras are constructed. The deployed

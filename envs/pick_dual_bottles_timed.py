@@ -5,7 +5,7 @@ from .utils import ArmTag
 
 class pick_dual_bottles_timed(TimedSetup, pick_dual_bottles):
     def play_once(self):
-        driver = TimedExpert(self)
+        driver = self.expert_driver_type(self)
 
         def lane(side, bottle, target):
             arm = ArmTag(side)

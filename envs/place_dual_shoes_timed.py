@@ -6,7 +6,7 @@ from ._GLOBAL_CONFIGS import GRASP_DIRECTION_DIC
 
 class place_dual_shoes_timed(TimedSetup, place_dual_shoes):
     def play_once(self):
-        driver = TimedExpert(self)
+        driver = self.expert_driver_type(self)
         # Reuse the native transformed box bounds for the exclusive corridor.
         self.add_prohibit_area(self.shoe_box, padding=0)
         box_bounds = self.prohibited_area.pop()
@@ -32,9 +32,10 @@ class place_dual_shoes_timed(TimedSetup, place_dual_shoes):
 
         driver.run({'left': lane('left', self.left_shoe, 0),
                     'right': lane('right', self.right_shoe, 1)}, self.right_start_offset_s)
-        # A real three-second settling interval, sampled on the same physics clock.
         def settle():
             for _ in range(round(3/driver.timeline.dt)):
+                if self.check_success():
+                    break
                 yield {}
         driver.run({'left': settle()})
         self.info['info'] = {'{A}': f'041_shoe/base{self.shoe_id}', '{B}': '007_shoe-box/base0'}
