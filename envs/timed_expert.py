@@ -136,11 +136,12 @@ class TimedExpert:
             t._update_render()
             t.viewer.render()
         if hasattr(t, 'left_shoe'):
-            names = {t.left_shoe.get_name(): 'left', t.right_shoe.get_name(): 'right'}
+            names = {t.left_shoe.actor: 'left', t.right_shoe.actor: 'right'}
             for contact in t.scene.get_contacts():
-                a, b = (body.entity.name for body in contact.bodies)
-                side_a = names.get(a) or ('left' if a.startswith('fl_') else 'right' if a.startswith('fr_') else None)
-                side_b = names.get(b) or ('left' if b.startswith('fl_') else 'right' if b.startswith('fr_') else None)
+                entity_a, entity_b = (body.entity for body in contact.bodies)
+                a, b = entity_a.name, entity_b.name
+                side_a = names.get(entity_a) or ('left' if a.startswith('fl_') else 'right' if a.startswith('fr_') else None)
+                side_b = names.get(entity_b) or ('left' if b.startswith('fl_') else 'right' if b.startswith('fr_') else None)
                 if side_a and side_b and side_a != side_b:
                     for p in contact.points:
                         if p.separation < -0.002:
