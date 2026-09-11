@@ -113,34 +113,40 @@ class H5Capture:
         self.path=path
         self.task=task
         self.f=h5py.File(path,'w')
+        self.datasets={}
+        for side in ('left','right'):
+            entity=getattr(task.robot,side+'_entity')
+            self.f.attrs[side+'_qpos_joint_names']=json.dumps([j.get_name() for j in entity.get_active_joints()])
         self.steps=[]
         self.dt=float(task.scene.get_timestep())
 
     def append(self,path,value,jpeg=False):
         array=np.asarray(value)
-        if path not in self.f:
+        if path not in self.datasets:
             parent,name=path.rsplit('/',1) if '/' in path else ('',path)
             group=self.f.require_group(parent) if parent else self.f
             if jpeg:
-                group.create_dataset(name,shape=(0,),maxshape=(None,),dtype=h5py.vlen_dtype(np.dtype('uint8')))
+                self.datasets[path]=group.create_dataset(name,shape=(0,),maxshape=(None,),dtype=h5py.vlen_dtype(np.dtype('uint8')))
             else:
                 if array.dtype.kind not in 'biuf': raise TypeError(f'non-numeric observation: {path}')
-                group.create_dataset(name,shape=(0,)+array.shape,maxshape=(None,)+array.shape,
+                self.datasets[path]=group.create_dataset(name,shape=(0,)+array.shape,maxshape=(None,)+array.shape,
                                      dtype=array.dtype,chunks=True,compression='lzf')
-        d=self.f[path]; n=len(d); d.resize(n+1,axis=0); d[n]=value
+        d=self.datasets[path]; n=len(d); d.resize(n+1,axis=0); d[n]=value
 
     def capture(self,step):
         if self.steps and self.steps[-1]==step: return
-        self.task._update_render()
         obs=self.task.get_obs()
         camera_validation=self.task.validate_wrist_cameras()
         for side,v in camera_validation.items():
             self.append('camera_validation/'+side+'_mount',v['actual_mount'])
             self.append('camera_validation/'+side+'_fovy_deg',v['fovy_deg'])
         real=np.asarray(self.task.robot.get_left_arm_real_jointState()+self.task.robot.get_right_arm_real_jointState())
-        real_grippers=self.task.robot.get_normal_real_gripper_val()
+        real_grippers=self.task.robot.get_measured_gripper_val()
         real[6],real[13]=real_grippers
         self.append('observation/state',real)
+        for side in ('left','right'):
+            self.append('physics_qpos/'+side, getattr(self.task.robot,side+'_entity').get_qpos())
+        self.append('command/gripper',self.task.robot.get_normal_real_gripper_val())
         names={'pick_dual_bottles':['bottle1','bottle2'], 'scan_object':['scanner','object'],
                'place_dual_shoes':['left_shoe','right_shoe','shoe_box']}[self.task.task_name]
         for name in names:

@@ -230,11 +230,12 @@ class TimedSetup:
 
     def setup_scene(self, **kwargs):
         super().setup_scene(**kwargs)
-        # Select raster rendering before cameras are constructed. The deployed
-        # OIDN backend fails on this host; rendering does not change physics.
+        # Explicit ray tracing with OIDN; no raster fallback.
         import sapien
-        sapien.render.set_camera_shader_dir('default')
-        sapien.render.set_ray_tracing_denoiser('none')
+        sapien.render.set_camera_shader_dir('rt')
+        sapien.render.set_ray_tracing_samples_per_pixel(32)
+        sapien.render.set_ray_tracing_path_depth(8)
+        sapien.render.set_ray_tracing_denoiser('oidn')
 
     def setup_demo(self, **kwargs):
         offset = float(kwargs.pop('right_start_offset_s', 0.0))
@@ -246,6 +247,10 @@ class TimedSetup:
         self.right_start_offset_s = offset
         from parallel_vla.robotwin_wrist_camera import install_wrist_camera_preset
         self.wrist_camera_receipt = install_wrist_camera_preset(self, 'centered_fovy90')
+        for camera in (self.cameras.left_camera,self.cameras.right_camera):
+            k=camera.get_intrinsic_matrix()
+            camera.set_perspective_parameters(0.005,100,k[0,0],k[1,1],k[0,2],k[1,2],k[0,1])
+        self.wrist_camera_receipt.update(near_m=0.005,far_m=100,renderer='rt',denoiser='oidn',samples_per_pixel=32,path_depth=8)
         self.validate_wrist_cameras()
         self.save_data=save_data
 
