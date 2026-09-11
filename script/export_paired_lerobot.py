@@ -229,10 +229,12 @@ def make_reports(source,output,slots):
     with (reports/'seed-report.csv').open('w') as f:
         w=csv.DictWriter(f,fieldnames=list(records[0]));w.writeheader();w.writerows(records)
     lines=['# CTR 配对数据 seed 报告','',f'交付 {len(records)} 条 Episode，12 个数据集。Mixed 本轮未生成。',
+           '', '相机：Aloha AgileX，250 Hz物理步，25 FPS；双腕为320×240、centered_fovy90（垂直90°及标定居中安装）。',
            '', '| 任务 | 共同seed | 候选数 | 淘汰数 | Concurrent | 左先 | 右先 | Uniform |',
            '|---|---:|---:|---:|---:|---:|---:|---:|']
     for task,s in summaries.items():
         lines.append(f'| {task} | {slots} | {s["candidates"]} | {len(s["rejected"])} | {slots} | {slots} | {slots} | {2*slots} |')
+    for task,s in summaries.items():
         lines.extend(['',f'## {task}','', '共同 seed（按槽位顺序）：'+', '.join(map(str,s['seeds'])),
                       '', '四个集合的 seed 差集均为空。Uniform 中每个 seed 出现两次。'])
     lines.extend(['','每条 Episode 的偏移、必要等待及映射见同目录 CSV/JSON；失败原因保存在 JSON 中。',
