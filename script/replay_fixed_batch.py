@@ -2,7 +2,7 @@
 import os,sys,json,subprocess,shutil,time,hashlib
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
-OUT=Path('/home/coder/share/ctr-paired-rt5mm-20260911-output')
+OUT=Path(os.environ.get('CTR_BATCH_OUTPUT','/home/coder/share/ctr-paired-rt5mm-20260911-output'))
 SOURCE=Path('/home/coder/share/ctr-paired-datasets-newfov-20260911-output')
 TASKS=['pick_dual_bottles','scan_object','place_dual_shoes']
 def save(p,d):
@@ -40,6 +40,8 @@ def main():
  jobs=json.loads((OUT/'jobs.json').read_text());start=time.time();success=0;failures=[]
  for i,j in enumerate(jobs):
   with (OUT/'logs'/f'{i:04d}.log').open('w') as f: code=subprocess.call([sys.executable,__file__,str(i)],stdout=f,stderr=subprocess.STDOUT)
+  log=(OUT/'logs'/f'{i:04d}.log').read_text(errors='replace')
+  if 'OIDN Error' in log or '[error]' in log:code=70
   if code==0:success+=1
   else:failures.append(dict(index=i,exitcode=code,task=j['task'],seed=j['seed'],variant=j['variant']))
   state=dict(status='running',completed=i+1,total=len(jobs),success=success,failures=failures,elapsed_s=time.time()-start,last_job=j)
