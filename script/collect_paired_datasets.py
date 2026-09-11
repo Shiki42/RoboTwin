@@ -113,25 +113,25 @@ class H5Capture:
         self.path=path
         self.task=task
         self.f=h5py.File(path,'w')
+        self.datasets={}
         self.steps=[]
         self.dt=float(task.scene.get_timestep())
 
     def append(self,path,value,jpeg=False):
         array=np.asarray(value)
-        if path not in self.f:
+        if path not in self.datasets:
             parent,name=path.rsplit('/',1) if '/' in path else ('',path)
             group=self.f.require_group(parent) if parent else self.f
             if jpeg:
-                group.create_dataset(name,shape=(0,),maxshape=(None,),dtype=h5py.vlen_dtype(np.dtype('uint8')))
+                self.datasets[path]=group.create_dataset(name,shape=(0,),maxshape=(None,),dtype=h5py.vlen_dtype(np.dtype('uint8')))
             else:
                 if array.dtype.kind not in 'biuf': raise TypeError(f'non-numeric observation: {path}')
-                group.create_dataset(name,shape=(0,)+array.shape,maxshape=(None,)+array.shape,
+                self.datasets[path]=group.create_dataset(name,shape=(0,)+array.shape,maxshape=(None,)+array.shape,
                                      dtype=array.dtype,chunks=True,compression='lzf')
-        d=self.f[path]; n=len(d); d.resize(n+1,axis=0); d[n]=value
+        d=self.datasets[path]; n=len(d); d.resize(n+1,axis=0); d[n]=value
 
     def capture(self,step):
         if self.steps and self.steps[-1]==step: return
-        self.task._update_render()
         obs=self.task.get_obs()
         camera_validation=self.task.validate_wrist_cameras()
         for side,v in camera_validation.items():
