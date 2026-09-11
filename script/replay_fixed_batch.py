@@ -34,6 +34,8 @@ def worker(job):
  except CandidateRejected as e:
   save(dest/'failure.json',dict(job=job,reason=str(e)));return 2
  r.update(seed=job['seed'],slot=job['slot'],variant=job['variant'],source_commit=job['source_commit'],camera_config_sha256=job['camera_config_sha256'],host='evo-rl',account='coder',gpu_uuid='GPU-66e7fd65-e8bd-9792-e71c-3fe30fcd5ee5',source_program_sha256=job['program_sha256'])
+ r['oidn_loaded_libraries']=sorted(set(line.split()[-1] for line in Path('/proc/self/maps').read_text().splitlines() if 'OpenImageDenoise' in line))
+ r['runtime']=sys.executable
  save(dest/'result.json',r);return 0
 def main():
  if len(sys.argv)>1:return worker(json.loads((OUT/'jobs.json').read_text())[int(sys.argv[1])])
@@ -41,7 +43,7 @@ def main():
  for i,j in enumerate(jobs):
   with (OUT/'logs'/f'{i:04d}.log').open('w') as f: code=subprocess.call([sys.executable,__file__,str(i)],stdout=f,stderr=subprocess.STDOUT)
   log=(OUT/'logs'/f'{i:04d}.log').read_text(errors='replace')
-  if 'OIDN Error' in log or '[error]' in log:code=70
+  if any(message in log for message in ['OIDN Error','[error]','unsupported device type','invalid handle']):code=70
   if code==0:success+=1
   else:failures.append(dict(index=i,exitcode=code,task=j['task'],seed=j['seed'],variant=j['variant']))
   state=dict(status='running',completed=i+1,total=len(jobs),success=success,failures=failures,elapsed_s=time.time()-start,last_job=j)
@@ -59,8 +61,10 @@ def main():
    if len(results)==5:rows.append(dict(row,path=str(d),variants=results))
   save(OUT/task/'manifest.json',rows)
  if success!=750:return 2
- subprocess.run([sys.executable,str(ROOT/'script/export_paired_lerobot.py'),'--source',str(OUT),'--output',str(OUT/'lerobot'),'--slots','50'],check=True)
- subprocess.run([sys.executable,str(ROOT/'script/bundle_paired_metadata.py'),'--root',str(OUT/'lerobot')],check=True)
+ export_python='/home/coder/share/piperx-native-10-20260910/lerobot/.venv/bin/python'
+ export_env=os.environ.copy();export_env['CUDA_VISIBLE_DEVICES']='';export_env['PYTHONPATH']='/home/coder/share/ctr-paired-datasets-newfov-20260911-output/export-deps:/home/coder/share/lerobot/src';export_env.pop('LD_PRELOAD',None)
+ subprocess.run([export_python,str(ROOT/'script/export_paired_lerobot.py'),'--source',str(OUT),'--output',str(OUT/'lerobot'),'--slots','50'],check=True,env=export_env)
+ subprocess.run([export_python,str(ROOT/'script/bundle_paired_metadata.py'),'--root',str(OUT/'lerobot')],check=True,env=export_env)
  save(OUT/'delivery-complete.json',dict(status='reported',episodes=750,datasets=12,lifecycle='audit pending'))
  return 0
 if __name__=='__main__':raise SystemExit(main())
