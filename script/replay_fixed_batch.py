@@ -60,6 +60,8 @@ def main():
     if p.exists():results.append(json.loads(p.read_text()))
    if len(results)==5:rows.append(dict(row,path=str(d),variants=results))
   save(OUT/task/'manifest.json',rows)
+  accepted={row['seed'] for row in rows}
+  (OUT/task/'attempts.jsonl').write_text(''.join(json.dumps({'seed':row['seed'],'slot':row['slot'],'status':'accepted' if row['seed'] in accepted else 'rejected','mode':'fixed_control_replay'})+'\n' for row in old))
  if success!=750:return 2
  export_python='/home/coder/share/piperx-native-10-20260910/lerobot/.venv/bin/python'
  export_env=os.environ.copy();export_env['CUDA_VISIBLE_DEVICES']='';export_env['PYTHONPATH']='/home/coder/share/ctr-paired-datasets-newfov-20260911-output/export-deps:/home/coder/share/lerobot/src';export_env.pop('LD_PRELOAD',None)
