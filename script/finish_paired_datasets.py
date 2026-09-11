@@ -28,6 +28,8 @@ def main():
             time.sleep(15)
         subprocess.run(base+['--task',task],check=True)
     subprocess.run(base,check=True)
+    subprocess.run([sys.executable,str(ROOT/'audit_paired_datasets.py'),'--source',str(args.source),
+                    '--require-slots',str(args.slots),'--output',str(args.source/'reports/data-audit.json')],check=True)
     subprocess.run([sys.executable,str(ROOT/'preview_paired_datasets.py'),'--source',str(args.source)],check=True)
     (args.source/'delivery-complete.json').write_text(json.dumps(dict(
         status='reported',tasks=3,datasets=12,episodes=15*args.slots,

@@ -167,6 +167,7 @@ def export_one(source,output,task,variant,slots):
         dest=target/'meta/source_programs'/f'seed-{r["seed"]}.npz'
         if not dest.exists():
             dest.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(program,dest)
+            shutil.copyfile(Path(slot['path'])/'initial.json',dest.with_suffix('.scene.json'))
         print(json.dumps(dict(phase='export_episode',task=task,variant=variant,episode=episode+1,total=len(selected))),flush=True)
     dataset.finalize()
     dump(target/'meta/retime_manifest.json',episode_meta)
@@ -209,11 +210,20 @@ def make_reports(source,output,slots):
                             datasets=exported)
         for v in VARIANTS:
             for episode,(slot,label,r) in enumerate(selected_rows(manifest,v,slots)):
+                with h5py.File(Path(slot['path'])/label/'episode.hdf5') as h:
+                    reasons=h['physics/reasons'][:]
+                dt=r['physics_dt_s']
+                waits={s:float(np.count_nonzero(reasons[:,a]==4)*dt) for a,s in enumerate(('left','right'))}
+                overlap_s=float(np.count_nonzero(np.all(reasons==0,axis=1))*dt)
                 records.append(dict(task=task,dataset=v,episode_index=episode,seed=r['seed'],slot=r['slot'],
                     source_variant=label,u=r['u'],requested_offset_s=r['nominal_offset_steps']*r['physics_dt_s'],
                     actual_offset_s=r['actual_offset_steps']*r['physics_dt_s'],
-                    left_wait_s=r['workspace_wait_steps']['left']*r['physics_dt_s'],
-                    right_wait_s=r['workspace_wait_steps']['right']*r['physics_dt_s'],
+                    left_wait_s=r['workspace_wait_steps']['left']*dt+waits['left'],
+                    right_wait_s=r['workspace_wait_steps']['right']*dt+waits['right'],
+                    left_workspace_wait_s=r['workspace_wait_steps']['left']*dt,
+                    right_workspace_wait_s=r['workspace_wait_steps']['right']*dt,
+                    left_scan_barrier_wait_s=waits['left'],right_scan_barrier_wait_s=waits['right'],
+                    overlap_s=overlap_s,
                     frames=r['training_frames']))
     dump(reports/'seed-report.json',dict(tasks=summaries,episodes=records))
     with (reports/'seed-report.csv').open('w') as f:
