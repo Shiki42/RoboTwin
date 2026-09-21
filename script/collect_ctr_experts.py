@@ -68,7 +68,7 @@ def collect_episode(args, task=None):
         program=task.recorded_expert.program()
         program.save(args.output/'program.npz')
         receipt=dict(task=args.task,seed=args.seed,success=True,initial=initial,hashes=program.hashes(),
-                     stages=program.stages,provenance=identity,minimum_clearance_m=task.recorded_expert.safety.minimum_clearance if args.task=='blocks_ranking_rgb_ctr' else None)
+                     stages=program.stages,source_events=task.info['timing']['events'],provenance=identity,minimum_clearance_m=task.recorded_expert.safety.minimum_clearance if args.task=='blocks_ranking_rgb_ctr' else None)
         if args.task=='scan_object_ctr':
             receipt.update(scan_angle=task.scan_angle,scan_offset=task.scan_offset.tolist(),
                            scanner_base_functional_target=task.scanner_base_functional_target,indicator_projection=task.indicator_projection,scan_translation_audit=task.scan_translation_audit,return_motion_audit=task.return_motion_audit,return_paths={side:{key:value.tolist() for key,value in paths.items()} for side,paths in task.return_paths.items()})
