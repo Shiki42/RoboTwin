@@ -13,8 +13,8 @@ class blocks_ranking_rgb_ctr(TimedSetup, blocks_ranking_rgb):
     def load_actors(self):
         self.block_half_size = float(np.random.uniform(.015,.025))
         # Disjoint initial bands avoid unbounded rejection sampling.
-        left = [(-np.random.uniform(.22,.29), np.random.uniform(-.035,.045)),
-                (-np.random.uniform(.22,.29), np.random.uniform(.155,.215))]
+        left = [(-np.random.uniform(.16,.20), np.random.uniform(-.04,.04)),
+                (-np.random.uniform(.30,.33), np.random.uniform(-.04,.04))]
         yaw = np.random.uniform(-.75,.75,2)
         colors = ((1,0,0),(1,1,0),(0,0,1),(0,1,0))
         for index,(name,color) in enumerate(zip(self.record_actor_names,colors)):
