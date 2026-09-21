@@ -7,10 +7,27 @@ from .ctr_timing import StageRecorder
 from .utils import ArmTag, create_box
 
 class ScanRecorder(StageRecorder):
+    def plan_move(self, arm, action):
+        if not action.args.get('cartesian_return', False):
+            return super().plan_move(arm, action)
+        robot = self.task.robot
+        goal = robot._trans_from_gripper_to_endlink(action.target_pose, arm_tag=arm)
+        result = getattr(robot, arm+'_mplib_planner').plan_screw(
+            getattr(robot, arm+'_entity').get_qpos(), goal, arms_tag=arm, log=True)
+        self.task.plan_success = result['status'] == 'Success'
+        if self.task.plan_success and result['position'].shape[1] != 6:
+            raise RuntimeError('Cartesian return planner did not produce six arm joints')
+        return result
+
     def tick(self, controls, step):
         super().tick(controls, step)
         if self.phase['right'] == 'scan_align':
             self.task.validate_scan_translation()
+        if self.task.return_motion_audit is not None:
+            for side in ('left','right'):
+                if self.phase[side] == 'release':
+                    self.task.return_released[side] = True
+            self.task.sample_return_audit()
 
 
 class scan_object_ctr(TimedSetup, scan_object):
@@ -26,6 +43,7 @@ class scan_object_ctr(TimedSetup, scan_object):
         self.scan_offset = np.array([0, .1*np.cos(self.scan_angle), .1*np.sin(self.scan_angle)])
         self.scan_complete = False
         self.return_complete = False
+        self.return_motion_audit = None
         self.scan_indicator = create_box(self.scene, sapien.Pose([-.032, -.20, 1.155]),
                                         (.04, .0096, .0128), color=(1,0,0),
                                         is_static=True, name='SCAN_indicator')
@@ -124,12 +142,9 @@ class scan_object_ctr(TimedSetup, scan_object):
                 _, ready_actions = self.place_actor(actor, arm, target, functional_point_id=0,
                                            pre_dis=.05, dis=.05, is_open=False)
                 ready_pose = np.array(ready_actions[-1].target_pose)
-                # Establish horizontal scan orientation while clear of the center,
-                # then retain that orientation throughout both translations.
-                orient_pose = np.array(self.get_arm_pose(arm))
-                orient_pose[3:] = ready_pose[3:]
-                yield from driver.motion('ready', self.move_to_pose(arm,orient_pose))
-                actions = self.translate_scanner(ready_pose[:3])
+                # One SE(3) plan changes position and orientation together.
+                # Do not level in place or insert an outward preparation waypoint.
+                actions = self.move_to_pose(arm,ready_pose)
             yield from driver.motion('ready', actions)
         driver.stage('prepare', {'left':prepare('left',self.object), 'right':prepare('right',self.scanner)})
         self.begin_scan_translation()
@@ -137,23 +152,61 @@ class scan_object_ctr(TimedSetup, scan_object):
         driver.stage('scan_align', {'right':driver.motion('scan_align',
             self.translate_scanner(destination))}, independent=False)
         self.complete_scan()
+        self.prepare_return_paths()
         def put_back(side, actor):
             arm = ArmTag(side)
-            # Clear the interaction area before rotating back toward the table.
-            yield from driver.motion('withdraw', self.move_by_displacement(arm, x=-.12 if side=='left' else .12, z=.04))
-            ee = self.get_arm_pose(arm)
-            grasp = actor.get_pose().inv() * sapien.Pose(ee[:3],ee[3:])
-            target = self.return_poses[side]
-            above = sapien.Pose(target.p + np.array([0,0,.14]), target.q) * grasp
-            low = sapien.Pose(target.p + np.array([0,0,.012]), target.q) * grasp
-            yield from driver.motion('return', self.move_to_pose(arm, np.r_[above.p,above.q]))
-            yield from driver.motion('return', self.move_to_pose(arm, np.r_[low.p,low.q]))
+            paths = self.return_paths[side]
+            for label,name in (('withdraw','retract'),('return','approach'),('return','lower')):
+                actions = self.move_to_pose(arm,paths[name])
+                actions[1][0].args['cartesian_return'] = True
+                yield from driver.motion(label, actions)
             yield from driver.motion('release', self.open_gripper(arm))
-            yield from driver.motion('withdraw', self.move_by_displacement(arm,z=.12))
+            actions = self.move_by_displacement(arm,z=.06)
+            actions[1][0].args['cartesian_return'] = True
+            yield from driver.motion('withdraw', actions)
             yield from driver.motion('home', self.back_to_origin(arm))
         driver.stage('put_back', {'left':put_back('left',self.object),'right':put_back('right',self.scanner)})
         self.return_complete = True
         return driver.finish()
+
+    def prepare_return_paths(self):
+        starts = {s:np.array(self.get_arm_pose(s)) for s in ('left','right')}
+        lowers = {}
+        for side,name in (('left','object'),('right','scanner')):
+            actor = getattr(self,name)
+            grasp = actor.get_pose().inv()*sapien.Pose(starts[side][:3],starts[side][3:])
+            target = self.return_poses[side]
+            low = sapien.Pose(target.p+np.array([0,0,.012]),target.q)*grasp
+            lowers[side] = np.r_[low.p,low.q]
+        retract_x = max(abs(p[0]) for p in starts.values())+.08
+        retract_y = np.mean([p[1] for p in starts.values()])
+        retract_z = min(p[2] for p in starts.values())-.003
+        approach_x = max(abs(p[0]) for p in lowers.values())
+        approach_y = np.mean([p[1] for p in lowers.values()])
+        approach_z = max(max(p[2] for p in lowers.values())+.035,
+                         min(p[2] for p in starts.values())-.03)
+        self.return_paths = {}
+        for side,sign in (('left',-1),('right',1)):
+            self.return_paths[side] = dict(
+                retract=np.r_[sign*retract_x,retract_y,retract_z,starts[side][3:]],
+                approach=np.r_[sign*approach_x,approach_y,approach_z,lowers[side][3:]],
+                lower=lowers[side])
+        self.begin_return_audit()
+
+    def begin_return_audit(self):
+        self.return_released = dict(left=False,right=False)
+        self.return_motion_audit = {s:dict(start_position=list(self.get_arm_pose(s)[:3]),
+            max_rise_before_release_m=0.0,physics_samples=0) for s in ('left','right')}
+
+    def sample_return_audit(self):
+        for side in ('left','right'):
+            if self.return_released[side]:
+                continue
+            report = self.return_motion_audit[side]
+            position = np.array(self.get_arm_pose(side)[:3])
+            report['max_rise_before_release_m'] = max(report['max_rise_before_release_m'],
+                float(position[2]-report['start_position'][2]))
+            report['physics_samples'] += 1
 
     def check_success(self):
         if not self.scan_complete or not self.return_complete:

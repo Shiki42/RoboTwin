@@ -150,6 +150,10 @@ class TimedExpert:
                             self.contacts.append(row)
                             raise RuntimeError(f'inter-arm/object collision: {row}')
 
+    def plan_move(self, arm, action):
+        return getattr(self.task, arm+'_move_to_pose')(
+            action.target_pose, constraint_pose=action.args.get('constraint_pose'))
+
     def motion(self, label, actions):
         t = self.task
         arm, sequence = actions
@@ -160,8 +164,7 @@ class TimedExpert:
         self.timeline.emit('subtask_start', arm, subtask=label)
         for action in sequence:
             if action.action == 'move':
-                plan = getattr(t, arm+'_move_to_pose')(
-                    action.target_pose, constraint_pose=action.args.get('constraint_pose'))
+                plan = self.plan_move(arm, action)
                 if not t.plan_success:
                     raise RuntimeError(f'planning failed: {arm} {label}')
                 n = len(plan['position'])

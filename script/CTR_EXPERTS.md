@@ -110,8 +110,12 @@ Audit a completed 16-episode review root (containing review-plan.json):
 /path/to/runtime/python script/audit_ctr_experts.py /external/review-root
 ```
 
-Scanner correction: establish the native horizontal scan orientation outside the
-interaction area, then move to ready and align with rotation constrained by the
-existing native planner hold vector [1,1,1,0,0,0]. Alignment applies only the
-sampled y-z translation, preserving the ready quaternion. Every alignment physics
-step verifies scanner orientation drift and horizontal beam tilt <=2 degrees.
+Scanner ready correction: a single native SE(3) move reaches the ready position
+and horizontal orientation together. There is no in-place leveling substep.
+Scan-align alone holds the ready quaternion with [1,1,1,0,0,0] and checks <=2°
+orientation drift/tilt. Return uses mirrored Cartesian retract/approach positions
+computed once after alignment, without an initial upward waypoint. Both arms
+then lower to their actor-specific release poses, open, clear by6cm and go home.
+The existing native MPlib screw planner supplies the Cartesian return segments;
+planning failure is terminal, with no planner fallback. Per-physics-step return
+height diagnostics expose any pre-release upward excursion.
