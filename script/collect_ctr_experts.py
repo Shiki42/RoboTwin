@@ -21,7 +21,7 @@ from envs.ctr_safety import CrossArmSafety
 
 def signature(task):
     result = {name:dict(pose=np.r_[getattr(task,name).get_pose().p,getattr(task,name).get_pose().q].tolist(),
-                       config=getattr(task,name).config) for name in task.record_actor_names}
+                       config=json.loads(json.dumps(getattr(task,name).config))) for name in task.record_actor_names}
     result['robot_qpos'] = np.r_[task.robot.left_entity.get_qpos(),task.robot.right_entity.get_qpos()].tolist()
     return result
 
