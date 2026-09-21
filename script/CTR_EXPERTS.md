@@ -15,7 +15,8 @@ Choose `--first left|right --delay-fraction p` with p in [0,1]. Each independent
 stage delays the other arm by p times the first arm's **exact frozen stage length**.
 At p=1 the other arm starts immediately upon first-arm completion. No average
 length approximation is needed. The same physical first arm and p apply to all
-independent stages. Commands retain native 250 Hz speed and are never resampled.
+independent stages. Replay consumes the frozen controls at 250 Hz without any
+further speed changes or resampling.
 
 Alternatively `--u u` selects the repository uniform offset for the first stage:
 `delta = T_L - u*(T_L+T_R)`. Convert it to first arm and p, then reuse them for later
@@ -110,26 +111,35 @@ Audit a completed 16-episode review root (containing review-plan.json):
 /path/to/runtime/python script/audit_ctr_experts.py /external/review-root
 ```
 
-Scanner ready correction: a single native SE(3) move reaches the ready position
-and horizontal orientation together. There is no in-place leveling substep.
-Scan-align alone holds the ready quaternion with [1,1,1,0,0,0] and checks <=2°
-orientation drift/tilt. Return uses mirrored Cartesian retract/approach positions
-computed once after alignment, without an initial upward waypoint. Both arms
-then lower to their actor-specific release poses, open, clear by6cm and go home.
-The existing native planner executes these mirrored pose goals. Retract and lower
-segments hold orientation; the approach changes position and return orientation
-together. Planning failure is terminal, with no alternate-planner fallback. Per-physics-step return
-height diagnostics expose any pre-release upward excursion.
+## Scan motion details
 
-Return constraints use the robot base frame, not the rotating goal-tool frame:
-base X/Z are held on lateral retraction (Aloha base Y is world lateral), base Z
-is held while orienting/approaching above the table, and base X/Y plus orientation
-are held during vertical lowering and post-release clearance. Each arm retains
-its grasp-specific starting height until lowering. Mirroring applies to motion
-structure and outward displacement; final tool poses account for distinct grasps.
-Both rise above the initial height and any intermediate vertical rebound are
-measured at every physics step; qualification requires <=8mm before release.
+After grasp and lift, the right arm uses one native SE(3) move to reach the ready
+position and horizontal orientation together. There is no in-place leveling
+substep or additional outward preparation waypoint. Scan-align alone holds the
+ready quaternion with [1,1,1,0,0,0] and checks <=2 degrees of actual orientation
+drift and horizontal tilt at every physics step.
 
-Base-frame held components are anchored to the current planner FK after the native
-calibration transform; this keeps level/vertical motion exact in the planner
-without weakening the native start-goal constraint or collision checks.
+After scan success, return paths are computed once from the actual grasp geometry.
+Both arms move outward, approach their fixed table return poses while restoring
+actor orientation, lower, release, clear vertically by 6 cm, and return home.
+The motion structure and lateral goals are mirrored; different grasp geometry
+requires arm-specific tool orientations and heights. There is no initial upward
+waypoint. The native planner remains responsible for collision-checked planning;
+planning failure is terminal.
+
+Return constraints use the robot base frame: base X/Z are held during lateral
+retraction (Aloha base Y is world lateral), base Z during approach, and base X/Y
+plus orientation during lowering and post-release clearance. Held components are
+anchored to current planner FK after native calibration. These are planner costs,
+not guarantees of exact physical tool motion, so actual execution is audited.
+
+Both arms' source retract, approach and lower trajectories use duration_scale=2:
+joint positions are interpolated to twice the duration and velocities are halved.
+This reduces physical tracking error during return orientation changes. Scaling
+happens before source controls are frozen; all timing variants replay the same
+resulting controls, with only their independent-stage start delays changed.
+
+Both rise above the scan-end height and any intermediate vertical rebound are
+measured at every physics step until release. Qualification requires <=8 mm for
+both arms in the source and all eight review replays. The generated review page
+reports actual values, horizontal scan checks, and links to per-episode receipts.
