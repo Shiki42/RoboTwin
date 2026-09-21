@@ -64,10 +64,10 @@ def main():
         program=task.recorded_expert.program()
         program.save(args.output/'program.npz')
         receipt=dict(task=args.task,seed=args.seed,success=True,initial=initial,hashes=program.hashes(),
-                     stages=program.stages,provenance=identity,minimum_clearance_m=task.recorded_expert.safety.minimum_clearance)
+                     stages=program.stages,provenance=identity,minimum_clearance_m=task.recorded_expert.safety.minimum_clearance if args.task=='blocks_ranking_rgb_ctr' else None)
         if args.task=='scan_object_ctr':
             receipt.update(scan_angle=task.scan_angle,scan_offset=task.scan_offset.tolist(),
-                           scanner_base_functional_target=task.scanner_base_functional_target)
+                           scanner_base_functional_target=task.scanner_base_functional_target,indicator_projection=task.indicator_projection)
         json_write(args.output/'source.json',receipt)
         task.close_env()
         return
@@ -81,7 +81,7 @@ def main():
     clock=StageClock(program,u=args.u,first=args.first,delay_fraction=args.delay_fraction)
     safety=CrossArmSafety(task)
     writer=H5Capture(args.output/'episode.hdf5',task)
-    reasons=[];indices=[];stage_indices=[];scan_steps=[]
+    reasons=[];indices=[];stage_indices=[];scan_steps=[];stage_geometry=[]
     try:
         while not clock.finished():
             step=clock.step
@@ -92,6 +92,7 @@ def main():
             task.scene.step();safety.check(step)
             reasons.append(why);indices.append(index);stage_indices.append(stage_index)
             if end:
+                stage_geometry.append(dict(stage=clock.name,step=clock.step,actors={name:np.r_[getattr(task,name).get_pose().p,getattr(task,name).get_pose().q].tolist() for name in task.record_actor_names}))
                 if clock.name=='scan_align':
                     task.complete_scan();scan_steps.append(clock.step)
                 clock.advance_stage()
@@ -110,8 +111,8 @@ def main():
                      first=clock.first,delay_fraction=clock.fraction,stages=clock.schedules,events=clock.events,
                      physics_dt_s=writer.dt,physics_steps=clock.step,scan_success_steps=scan_steps,
                      actual_offset_steps=clock.schedules[0]['delay_steps']*(1 if clock.first=='left' else -1),
-                     source_program_sha256=sha(args.source/'program.npz'),control_hashes=hashes,
-                     minimum_clearance_m=safety.minimum_clearance,provenance=identity,settling_steps=settling,
+                     source_program_sha256=sha(args.source/'program.npz'),control_hashes=hashes,stage_geometry=stage_geometry,
+                     minimum_clearance_m=safety.minimum_clearance if args.task=='blocks_ranking_rgb_ctr' else None,provenance=identity,settling_steps=settling,
                      idle_definition='imposed_independent_stage_start_delay_only',result_lifecycle='reported_audit_pending')
         masks=delay_masks(reasons,writer.steps)
         for side,values in zip(SIDES,masks.T):writer.f.create_dataset('retime/'+side+'_idle',data=values)

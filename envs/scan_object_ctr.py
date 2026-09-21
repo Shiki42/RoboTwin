@@ -19,16 +19,47 @@ class scan_object_ctr(TimedSetup, scan_object):
         self.scan_offset = np.array([0, .1*np.cos(self.scan_angle), .1*np.sin(self.scan_angle)])
         self.scan_complete = False
         self.return_complete = False
-        self.scan_indicator = create_box(self.scene, sapien.Pose([0, .10, 1.24]),
-                                        (.085, .018, .028), color=(1,0,0),
+        self.scan_indicator = create_box(self.scene, sapien.Pose([0, -.20, 1.14]),
+                                        (.05, .012, .016), color=(1,0,0),
                                         is_static=True, name='SCAN_indicator')
 
     def setup_demo(self, **kwargs):
         super().setup_demo(**kwargs)
+        self.validate_indicator()
         self.return_poses = {}
         for side,name in (('left','object'),('right','scanner')):
             pose = getattr(self,name).get_pose()
             self.return_poses[side] = sapien.Pose([-.24 if side=='left' else .24, -.15, pose.p[2]], pose.q)
+
+    def validate_indicator(self):
+        from .ctr_safety import CrossArmSafety
+        geometry = CrossArmSafety(self)
+        geometry.add(self.scan_indicator.actor, 'left')
+        camera = self.cameras.get_config()['head_camera']
+        intrinsic, extrinsic = camera['intrinsic_cv'], camera['extrinsic_cv']
+        rectangles = {}
+        for name in (*self.record_actor_names, 'scan_indicator'):
+            actor = getattr(self,name).actor
+            points = []
+            for shapes in geometry.shapes.values():
+                for entity,corners in shapes:
+                    if entity == actor:
+                        matrix = entity.get_pose().to_transformation_matrix()
+                        points.extend(corners@matrix[:3,:3].T+matrix[:3,3])
+            points = np.asarray(points)
+            projected = (np.c_[points,np.ones(len(points))]@extrinsic.T)@intrinsic.T
+            if np.any(projected[:,2] <= 0):
+                raise RuntimeError('indicator or initial actor is behind the head camera')
+            uv = projected[:,:2]/projected[:,2:]
+            rectangles[name] = np.array([uv.min(axis=0),uv.max(axis=0)])
+        indicator = rectangles['scan_indicator']
+        if np.any(indicator[0] < [0,0]) or np.any(indicator[1] >= [320,240]):
+            raise RuntimeError(f'scan indicator outside head image: {indicator}')
+        for name in self.record_actor_names:
+            rectangle = rectangles[name]
+            if np.all(indicator[0] < rectangle[1]) and np.all(rectangle[0] < indicator[1]):
+                raise RuntimeError(f'scan indicator obscures initial {name} region')
+        self.indicator_projection = {name:rectangle.tolist() for name,rectangle in rectangles.items()}
 
     def complete_scan(self):
         if not scan_object.check_success(self):
