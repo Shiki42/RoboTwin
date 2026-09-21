@@ -127,17 +127,18 @@ requires arm-specific tool orientations and heights. There is no initial upward
 waypoint. The native planner remains responsible for collision-checked planning;
 planning failure is terminal.
 
-Return constraints use the robot base frame: base X/Z are held during lateral
-retraction (Aloha base Y is world lateral), base Z during approach, and base X/Y
+Return constraints use the robot base frame: base Z is held during outward retraction and approach, and base X/Y
 plus orientation during lowering and post-release clearance. Held components are
 anchored to current planner FK after native calibration. These are planner costs,
 not guarantees of exact physical tool motion, so actual execution is audited.
 
-Both arms' source retract, approach and lower trajectories use duration_scale=2:
-joint positions are interpolated to twice the duration and velocities are halved.
-This reduces physical tracking error during return orientation changes. Scaling
-happens before source controls are frozen; all timing variants replay the same
-resulting controls, with only their independent-stage start delays changed.
+Outward retraction also restores each actor's return orientation, avoiding the
+large redundant wrist turn induced by holding the scan orientation. Both source
+retractions use an explicit1.0-second duration (250 controls), with positions
+interpolated and velocities scaled consistently. Other return segments retain
+native planner speed. No whole-return slowdown is used. Concurrent starts and
+finishes both retractions together; delayed variants preserve their original
+independent-stage offsets and do not insert a new synchronization barrier.
 
 Both rise above the scan-end height and any intermediate vertical rebound are
 measured at every physics step until release. Qualification requires <=8 mm for

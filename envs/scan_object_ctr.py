@@ -146,9 +146,11 @@ class scan_object_ctr(TimedSetup, scan_object):
             paths = self.return_paths[side]
             for label,name in (('withdraw','retract'),('return','approach'),('return','lower')):
                 actions = self.move_to_pose(arm,paths[name])
-                actions[1][0].args.update(duration_scale=2.0, project_to_goal_frame=False, constraint_pose={
-                    'retract':[1,1,1,1,0,1], 'approach':[0,0,0,0,0,1],
+                actions[1][0].args.update(project_to_goal_frame=False, constraint_pose={
+                    'retract':[0,0,0,0,0,1], 'approach':[0,0,0,0,0,1],
                     'lower':[1,1,1,1,1,0]}[name])
+                if name == 'retract':
+                    actions[1][0].args['duration_s'] = 1.0
                 yield from driver.motion(label, actions)
             yield from driver.motion('release', self.open_gripper(arm))
             actions = self.move_by_displacement(arm,z=.06)
@@ -172,7 +174,7 @@ class scan_object_ctr(TimedSetup, scan_object):
         self.return_paths = {}
         for side,sign in (('left',-1),('right',1)):
             self.return_paths[side] = dict(
-                retract=np.r_[sign*retract_x,starts[side][1:]],
+                retract=np.r_[sign*retract_x,starts[side][1:3],lowers[side][3:]],
                 approach=np.r_[lowers[side][:2],starts[side][2],lowers[side][3:]],
                 lower=lowers[side])
         self.begin_return_audit()
