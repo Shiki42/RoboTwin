@@ -2,6 +2,7 @@
 import itertools
 import numpy as np
 import sapien
+from .paired_timing import CandidateRejected
 
 class CrossArmSafety:
     def __init__(self, task):
@@ -48,7 +49,7 @@ class CrossArmSafety:
             side_a,side_b = self.entities.get(a),self.entities.get(b)
             if side_a and side_b and side_a != side_b:
                 if any(point.separation < -.002 for point in contact.points):
-                    raise RuntimeError(f'cross-arm collision at step {step}: {a.name}, {b.name}')
+                    raise CandidateRejected(f'cross-arm collision at step {step}: {a.name}, {b.name}')
         if self.task.task_name != 'blocks_ranking_rgb_ctr':
             return
         bounds = {}
@@ -64,4 +65,4 @@ class CrossArmSafety:
         clearance = float(np.linalg.norm(gap,axis=-1).min())
         self.minimum_clearance = min(self.minimum_clearance,clearance)
         if clearance < .10:
-            raise RuntimeError(f'cross-arm conservative clearance {clearance:.6f} m < 0.10 m at step {step}')
+            raise CandidateRejected(f'cross-arm conservative clearance {clearance:.6f} m < 0.10 m at step {step}')

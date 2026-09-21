@@ -5,7 +5,7 @@ import math
 from dataclasses import dataclass
 import numpy as np
 from .timed_expert import TimedExpert
-from .paired_timing import SIDES, REASONS, ACTIVE, START, DONE, BARRIER, HOLD, encode_control, digest, start_steps
+from .paired_timing import SIDES, REASONS, ACTIVE, START, DONE, BARRIER, HOLD, CandidateRejected, encode_control, digest, start_steps
 
 PHASES = ('grasp', 'lift', 'ready', 'scan_align', 'return', 'release', 'withdraw', 'home',
           'first_grasp', 'first_lift', 'first_place', 'first_withdraw',
@@ -43,9 +43,14 @@ class StageRecorder(TimedExpert):
 
     def motion(self, label, actions):
         side = str(actions[0])
-        for control in super().motion(label, actions):
-            self.arrays[self.stage_name + '/' + side].append(encode_control(side, control, label, PHASES))
-            yield control
+        try:
+            for control in super().motion(label, actions):
+                self.arrays[self.stage_name + '/' + side].append(encode_control(side, control, label, PHASES))
+                yield control
+        except RuntimeError as error:
+            if str(error).startswith(('planning failed:', 'failed to construct')):
+                raise CandidateRejected(str(error)) from error
+            raise
 
     def stage(self, name, lanes, independent=True):
         self.stage_name = name

@@ -15,7 +15,7 @@ import numpy as np
 from collect_paired_datasets import config, setup, H5Capture, compare_scene, json_write, sha
 from preview_paired_datasets import preview
 from envs.ctr_timing import StagedProgram, StageClock, delay_masks, SIDES, REASONS
-from envs.paired_timing import apply_control, SETTLE
+from envs.paired_timing import apply_control, SETTLE, CandidateRejected
 from envs.ctr_safety import CrossArmSafety
 
 
@@ -43,10 +43,14 @@ def main():
     parser.add_argument('--u',type=float)
     parser.add_argument('--first',choices=SIDES)
     parser.add_argument('--delay-fraction',type=float)
-    args=parser.parse_args()
+    collect_episode(parser.parse_args())
+
+
+def collect_episode(args, task=None):
     os.chdir(ROOT)
     args.output.mkdir(parents=True,exist_ok=False)
-    task=getattr(importlib.import_module('envs.'+args.task),args.task)()
+    if task is None:
+        task=getattr(importlib.import_module('envs.'+args.task),args.task)()
     cfg=config(args.task)
     setup(task,cfg,args.seed)
     initial=signature(task)
@@ -60,7 +64,7 @@ def main():
         print(json.dumps(dict(stage='source',task=args.task,success=success)),flush=True)
         if not success:
             json_write(args.output/'failure.json',dict(initial=initial,final=signature(task),provenance=identity))
-            raise RuntimeError('source expert failed completion criterion')
+            raise CandidateRejected('source expert failed completion criterion')
         program=task.recorded_expert.program()
         program.save(args.output/'program.npz')
         receipt=dict(task=args.task,seed=args.seed,success=True,initial=initial,hashes=program.hashes(),
@@ -70,7 +74,8 @@ def main():
                            scanner_base_functional_target=task.scanner_base_functional_target,indicator_projection=task.indicator_projection)
         json_write(args.output/'source.json',receipt)
         task.close_env()
-        return
+        del task.recorded_expert
+        return receipt
     source=json.loads((args.source/'source.json').read_text())
     if source['task'] != args.task or source['seed'] != args.seed:
         raise ValueError('source identity mismatch')
@@ -128,7 +133,8 @@ def main():
         writer.close()
     preview(args.output,args.output/'preview.mp4')
     task.close_env()
-    if not success:raise RuntimeError('frozen replay failed completion criterion')
+    if not success:raise CandidateRejected('frozen replay failed completion criterion')
+    return receipt
 
 if __name__=='__main__':
     main()
