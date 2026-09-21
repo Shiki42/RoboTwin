@@ -14,3 +14,17 @@ def test_native_motion_preserves_constraint_frame(project):
     controls=list(TimedExpert(task).motion('withdraw',('right',[action])))
     assert len(controls)==1 and 'right_arm' in controls[0]
     assert captured=={'weights':[1,1,1,1,0,1],'project':project}
+
+
+def test_source_duration_scaling_preserves_path_and_scales_velocity():
+    position=np.arange(18,dtype=float).reshape(3,6)
+    def plan(*args,**kwargs):
+        return {'position':position.copy(),'velocity':np.ones((3,6))*6}
+    task=SimpleNamespace(scene=SimpleNamespace(get_timestep=lambda:.004),plan_success=True,right_move_to_pose=plan)
+    action=SimpleNamespace(action='move',target_pose=[0]*7,args={'duration_scale':2})
+    rows=list(TimedExpert(task).motion('return',('right',[action])))
+    assert len(rows)==5
+    actual=np.concatenate([row['right_arm']['position'] for row in rows])
+    np.testing.assert_array_equal(actual[::2],position)
+    np.testing.assert_array_equal(actual[1],(position[0]+position[1])/2)
+    assert all(np.all(row['right_arm']['velocity']==3) for row in rows)

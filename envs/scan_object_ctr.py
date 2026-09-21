@@ -146,7 +146,7 @@ class scan_object_ctr(TimedSetup, scan_object):
             paths = self.return_paths[side]
             for label,name in (('withdraw','retract'),('return','approach'),('return','lower')):
                 actions = self.move_to_pose(arm,paths[name])
-                actions[1][0].args.update(project_to_goal_frame=False, constraint_pose={
+                actions[1][0].args.update(duration_scale=2.0, project_to_goal_frame=False, constraint_pose={
                     'retract':[1,1,1,1,0,1], 'approach':[0,0,0,0,0,1],
                     'lower':[1,1,1,1,1,0]}[name])
                 yield from driver.motion(label, actions)

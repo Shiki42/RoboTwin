@@ -165,6 +165,19 @@ class TimedExpert:
                     project_to_goal_frame=action.args.get('project_to_goal_frame', True))
                 if not t.plan_success:
                     raise RuntimeError(f'planning failed: {arm} {label}')
+                # Source-only execution scaling; frozen replay never changes speed.
+                scale = float(action.args.get('duration_scale', 1.0))
+                if not math.isfinite(scale) or scale < 1:
+                    raise ValueError('duration_scale must be finite and at least one')
+                if scale != 1 and len(plan['position']) > 1:
+                    import numpy as np
+                    count = len(plan['position'])
+                    samples = np.linspace(0, count-1, math.ceil((count-1)*scale)+1)
+                    effective_scale = (len(samples)-1)/(count-1)
+                    plan = {key:np.stack([np.interp(samples,np.arange(count),column)
+                            for column in plan[key].T],axis=1)
+                            for key in ('position','velocity')}
+                    plan['velocity'] /= effective_scale
                 n = len(plan['position'])
                 for i in range(n):
                     yield {arm+'_arm': {'position': plan['position'][i:i+1],
