@@ -54,6 +54,28 @@ def exact_stats(values):
     assert np.all(np.array(result['q01'])<=result['q99'])
     return result
 
+def validate_commands(h, program_path):
+    commands=h['joint_action/vector'][:]
+    steps=h['physics_step'][:]
+    reasons=h['physics/reasons'][:];indices=h['physics/source_index'][:]
+    expected=np.zeros_like(commands)
+    with np.load(program_path,allow_pickle=False) as program:
+        for side_index,side in enumerate(('left','right')):
+            rows=program['sort/'+side]
+            active=np.flatnonzero(reasons[:,side_index]==0)
+            source_indices=indices[active,side_index]
+            assert np.array_equal(source_indices,np.arange(len(rows)))
+            for kind,columns,source_columns in ((0,slice(7*side_index,7*side_index+6),slice(2,8)),(1,7*side_index+6,14)):
+                selected=rows[source_indices,0]==kind
+                event_steps=np.r_[0,active[selected]+1]
+                values=np.concatenate([commands[0:1,columns],rows[source_indices[selected],source_columns]],axis=0)
+                latest=np.searchsorted(event_steps,steps,side='right')-1
+                expected[:,columns]=values[latest]
+    np.testing.assert_allclose(commands,expected,atol=2e-6,rtol=0)
+    assert np.all((commands[:,[6,13]]>=0)&(commands[:,[6,13]]<=1))
+    return dict(max_command_error=float(np.max(np.abs(commands-expected))),source_indices_contiguous=True,
+                action_alignment='state[t] -> recorded command target[t+1]')
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--collection',type=Path,required=True)
@@ -76,6 +98,7 @@ def main():
         assert receipt['success'] and receipt['minimum_clearance_m']>=.1
         assert receipt['control_hashes']==source_receipt['hashes']
         with h5py.File(directory/'episode.hdf5') as h:
+            command_audit=validate_commands(h,source/'program.npz')
             states=h['observation/state'][:-1].astype(np.float32)
             actions=h['joint_action/vector'][1:].astype(np.float32)
             n=len(states);assert n==len(actions)==receipt['training_frames'] and states.shape[1]==14
@@ -112,7 +135,7 @@ def main():
             numeric['observation.state'].append(states);numeric['action'].append(actions);total+=n
             entry=dict(episode_index=episode,source_slot=slot,source_seed=accepted['seed'],source_variant=label,
                        frames=n,normalized_u=u,source_hdf5_sha256=sha(directory/'episode.hdf5'),control_hashes=receipt['control_hashes'],
-                       minimum_clearance_m=receipt['minimum_clearance_m'],timing=receipt['stages'],source_commit=receipt['provenance']['commit'])
+                       minimum_clearance_m=receipt['minimum_clearance_m'],timing=receipt['stages'],source_commit=receipt['provenance']['commit'],command_audit=command_audit)
             if args.method=='ctr':entry['idle_intervals']={s:intervals(idle[:,a]) for a,s in enumerate(('left','right'))}
             metadata.append(entry)
         destination=target/'meta/source_programs'/f'slot-{slot:03d}'
