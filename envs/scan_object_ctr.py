@@ -11,9 +11,15 @@ class ScanRecorder(StageRecorder):
         if not action.args.get('cartesian_return', False):
             return super().plan_move(arm, action)
         robot = self.task.robot
-        goal = robot._trans_from_gripper_to_endlink(action.target_pose, arm_tag=arm)
+        entity = getattr(robot, arm+'_entity')
+        link = next(link for link in entity.get_links()
+                    if link.name == getattr(robot, arm+'_move_group'))
+        reported = self.task.get_arm_pose(arm)
+        tool_to_link = sapien.Pose(reported[:3],reported[3:]).inv()*link.entity.get_pose()
+        target = action.target_pose
+        goal = sapien.Pose(target[:3],target[3:])*tool_to_link
         result = getattr(robot, arm+'_mplib_planner').plan_screw(
-            getattr(robot, arm+'_entity').get_qpos(), goal, arms_tag=arm, log=True)
+            entity.get_qpos(), goal, arms_tag=arm, log=True)
         self.task.plan_success = result['status'] == 'Success'
         if self.task.plan_success and result['position'].shape[1] != 6:
             raise RuntimeError('Cartesian return planner did not produce six arm joints')
