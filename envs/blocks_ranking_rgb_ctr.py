@@ -10,6 +10,13 @@ class blocks_ranking_rgb_ctr(TimedSetup, blocks_ranking_rgb):
     record_actor_names = ('red','yellow','blue','green')
     display_name = 'Blocks Ranking RGB-CTR'
 
+    def setup_demo(self, **kwargs):
+        super().setup_demo(**kwargs)
+        # Fixed wider head view includes both safety-separated target groups.
+        index = self.cameras.static_camera_name.index('head_camera')
+        camera = self.cameras.static_camera_list[index]
+        camera.set_perspective_parameters(.01,100,260,260,160,120,0)
+
     def load_actors(self):
         self.block_half_size = float(np.random.uniform(.015,.025))
         # Disjoint initial bands avoid unbounded rejection sampling.

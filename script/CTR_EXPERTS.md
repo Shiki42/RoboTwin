@@ -59,6 +59,8 @@ Fixed final centers: x={-.31,-.21,+.21,+.31}, y=-.17 m. Thus the groups have cen
 spacing .52 m. Left/right refers to world x, not the mirrored appearance of a
 camera. Every physics step certifies **at least .10 m** between conservative
 world-axis bounding boxes of opposing arm collision shapes and their blocks.
+The fixed head camera uses fx=fy=260 px at 320x240 (FOVY approximately49.55°)
+to include all four safety-separated blocks; wrist calibration is unchanged.
 The fixed initial and target regions are intentionally separated enough to avoid
 runtime arbitration. A violation rejects the rollout rather than adding waits.
 Cross-arm penetration over 2 mm is also rejected for both tasks.
