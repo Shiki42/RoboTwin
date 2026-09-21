@@ -116,6 +116,7 @@ Scan-align alone holds the ready quaternion with [1,1,1,0,0,0] and checks <=2°
 orientation drift/tilt. Return uses mirrored Cartesian retract/approach positions
 computed once after alignment, without an initial upward waypoint. Both arms
 then lower to their actor-specific release poses, open, clear by6cm and go home.
-The existing native MPlib screw planner supplies the Cartesian return segments;
-planning failure is terminal, with no planner fallback. Per-physics-step return
+The existing native planner executes these mirrored pose goals. Retract and lower
+segments hold orientation; the approach changes position and return orientation
+together. Planning failure is terminal, with no alternate-planner fallback. Per-physics-step return
 height diagnostics expose any pre-release upward excursion.

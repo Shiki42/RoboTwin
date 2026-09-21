@@ -7,24 +7,6 @@ from .ctr_timing import StageRecorder
 from .utils import ArmTag, create_box
 
 class ScanRecorder(StageRecorder):
-    def plan_move(self, arm, action):
-        if not action.args.get('cartesian_return', False):
-            return super().plan_move(arm, action)
-        robot = self.task.robot
-        entity = getattr(robot, arm+'_entity')
-        link = next(link for link in entity.get_links()
-                    if link.name == getattr(robot, arm+'_move_group'))
-        reported = self.task.get_arm_pose(arm)
-        tool_to_link = sapien.Pose(reported[:3],reported[3:]).inv()*link.entity.get_pose()
-        target = action.target_pose
-        goal = sapien.Pose(target[:3],target[3:])*tool_to_link
-        result = getattr(robot, arm+'_mplib_planner').plan_screw(
-            entity.get_qpos(), goal, arms_tag=arm, log=True)
-        self.task.plan_success = result['status'] == 'Success'
-        if self.task.plan_success and result['position'].shape[1] != 6:
-            raise RuntimeError('Cartesian return planner did not produce six arm joints')
-        return result
-
     def tick(self, controls, step):
         super().tick(controls, step)
         if self.phase['right'] == 'scan_align':
@@ -164,11 +146,12 @@ class scan_object_ctr(TimedSetup, scan_object):
             paths = self.return_paths[side]
             for label,name in (('withdraw','retract'),('return','approach'),('return','lower')):
                 actions = self.move_to_pose(arm,paths[name])
-                actions[1][0].args['cartesian_return'] = True
+                if name in ('retract','lower'):
+                    actions[1][0].args['constraint_pose'] = [1,1,1,0,0,0]
                 yield from driver.motion(label, actions)
             yield from driver.motion('release', self.open_gripper(arm))
             actions = self.move_by_displacement(arm,z=.06)
-            actions[1][0].args['cartesian_return'] = True
+            actions[1][0].args['constraint_pose'] = [1,1,1,0,0,0]
             yield from driver.motion('withdraw', actions)
             yield from driver.motion('home', self.back_to_origin(arm))
         driver.stage('put_back', {'left':put_back('left',self.object),'right':put_back('right',self.scanner)})
@@ -186,11 +169,11 @@ class scan_object_ctr(TimedSetup, scan_object):
             lowers[side] = np.r_[low.p,low.q]
         retract_x = max(abs(p[0]) for p in starts.values())+.08
         retract_y = np.mean([p[1] for p in starts.values()])
-        retract_z = min(p[2] for p in starts.values())-.003
         approach_x = max(abs(p[0]) for p in lowers.values())
         approach_y = np.mean([p[1] for p in lowers.values()])
-        approach_z = max(max(p[2] for p in lowers.values())+.035,
-                         min(p[2] for p in starts.values())-.03)
+        approach_z = max(max(p[2] for p in lowers.values())+.025,
+                         min(p[2] for p in starts.values())-.04)
+        retract_z = max(approach_z, min(p[2] for p in starts.values())-.025)
         self.return_paths = {}
         for side,sign in (('left',-1),('right',1)):
             self.return_paths[side] = dict(
