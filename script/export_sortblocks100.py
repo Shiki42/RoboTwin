@@ -54,6 +54,25 @@ def exact_stats(values):
     assert np.all(np.array(result['q01'])<=result['q99'])
     return result
 
+def refresh_statistics(target, tables):
+    stats_path=target/'meta/stats.json';stats=json.loads(stats_path.read_text())
+    details={}
+    for key in stats:
+        if key.startswith('observation.images.'):
+            stats[key]={k:v for k,v in stats[key].items() if not k.startswith('q')}
+            continue
+        values=np.concatenate([np.asarray(table[key].to_pylist(),dtype=np.float64) for table in tables])
+        if values.ndim==1:values=values[:,None]
+        stats[key]=exact_stats(values)
+        details[key]=dict(dimensions=values.shape[1],constant_dimensions=np.flatnonzero(values.min(axis=0)==values.max(axis=0)).tolist(),
+                          zero_quantile_interval_dimensions=np.flatnonzero(np.array(stats[key]['q01'])==stats[key]['q99']).tolist())
+    dump(stats_path,stats)
+    commit=subprocess.check_output(['git','-C',str(Path(__file__).resolve().parents[1]),'rev-parse','HEAD'],text=True).strip()
+    dump(target/'meta/exact_global_statistics.json',dict(algorithm='numpy.quantile',method='linear',values='all published numeric rows promoted to float64',
+        sampling='all valid rows once; no padding or mask exclusion; no per-episode quantile averaging',quantiles=[.01,.1,.5,.9,.99],
+        features=list(details),feature_details=details,frames=sum(len(t) for t in tables),stats_sha256=sha(stats_path),implementation_commit=commit,
+        image_statistics='Native LeRobot sampled image mean/std/min/max/count retained; image quantiles are omitted.'))
+
 def validate_commands(h, program_path):
     commands=h['joint_action/vector'][:]
     steps=h['physics_step'][:]
@@ -88,7 +107,7 @@ def main():
     dataset=LeRobotDataset.create(repo_id=repo_id,root=target,fps=25,robot_type='aloha_agilex',
         features=features(args.method),streaming_encoding=True,encoder_threads=1,metadata_buffer_size=1,
         rgb_encoder=RGBEncoderConfig(vcodec='h264',g=25,crf=18,preset='fast'))
-    metadata=[];numeric={'observation.state':[],'action':[]};total=0;camera_intrinsics=None
+    metadata=[];total=0;camera_intrinsics=None
     for episode,(slot,label) in enumerate(recipe(args.method)):
         accepted=wait_for_slot(args.collection,slot,args.collection_exit)
         directory=Path(accepted['path'])/label
@@ -132,7 +151,7 @@ def main():
                     frame['observation.images.'+name]=cv2.cvtColor(image,cv2.COLOR_BGR2RGB)
                 dataset.add_frame(frame)
             dataset.save_episode(parallel_encoding=False)
-            numeric['observation.state'].append(states);numeric['action'].append(actions);total+=n
+            total+=n
             entry=dict(episode_index=episode,source_slot=slot,source_seed=accepted['seed'],source_variant=label,
                        frames=n,normalized_u=u,source_hdf5_sha256=sha(directory/'episode.hdf5'),control_hashes=receipt['control_hashes'],
                        minimum_clearance_m=receipt['minimum_clearance_m'],timing=receipt['stages'],source_commit=receipt['provenance']['commit'],command_audit=command_audit)
@@ -144,13 +163,11 @@ def main():
         dump(destination/'scene.json',dict(seed=accepted['seed'],initial=source_receipt['initial'],hashes=source_receipt['hashes']))
         print(json.dumps(dict(method=args.method,episodes=episode+1,frames=total)),flush=True)
     dataset.finalize()
-    stats_path=target/'meta/stats.json';stats=json.loads(stats_path.read_text())
-    for key,chunks in numeric.items():stats[key]=exact_stats(np.concatenate(chunks))
-    dump(stats_path,stats)
     dump(target/'meta/retime_manifest.json',metadata)
     info=json.loads((target/'meta/info.json').read_text());assert info['total_episodes']==100 and info['total_frames']==total
     tables=[pq.read_table(p) for p in sorted((target/'data').rglob('*.parquet'))]
     assert sum(len(t) for t in tables)==total
+    refresh_statistics(target,tables)
     for table in tables:
         assert 'retime.overlap' not in table.column_names
         if args.method=='ctr':
@@ -160,8 +177,6 @@ def main():
             assert np.array_equal(active,np.stack([~left,~right],axis=1))
         else:assert not any('mask' in k or k.endswith('_idle') for k in table.column_names)
     export_commit=subprocess.check_output(['git','-C',str(Path(__file__).resolve().parents[1]),'rev-parse','HEAD'],text=True).strip()
-    dump(target/'meta/exact_global_statistics.json',dict(algorithm='numpy.quantile',method='linear',values='published float32 rows promoted to float64',
-        sampling='all valid training rows once; no padding; no per-episode quantile averaging',quantiles=[.01,.1,.5,.9,.99],features=['observation.state','action'],frames=total,stats_sha256=sha(stats_path)))
     dump(target/'.ctr-revision.json',dict(schema='ctr.generated_dataset_revision.v1',repo_id=repo_id,origin='generated native expert',
         revision=sha(target/'meta/retime_manifest.json'),revision_kind='sha256-scene-and-control-manifest',exporter_commit=export_commit,episodes=100,frames=total))
     dump(target/'meta/export-receipt.json',dict(success=True,repo_id=repo_id,episodes=100,frames=total,fps=25,method=args.method,
