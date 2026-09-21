@@ -31,6 +31,11 @@ def preview(directory,target):
             texts=[f"{r['task']} | {r['variant']} | seed={r['seed']} | t={i/25:.2f}s | New FOVY90",
                    f"LEFT: {names[why[0]]}   RIGHT: {names[why[1]]}",
                    f"right-start offset={r['actual_offset_steps']*r['physics_dt_s']:.3f}s"]
+            if 'physics/stage_index' in h:
+                stage_index=int(h['physics/stage_index'][steps[i]])
+                stage=r['stages'][stage_index]['stage'] if stage_index>=0 else 'settle'
+                texts[2]=(f"stage={stage} | delay={r['first']} first, {100*r['delay_fraction']:.1f}% | "
+                          f"idle L={int(h['retime/left_idle'][i])} R={int(h['retime/right_idle'][i])}")
             for line,text in enumerate(texts):
                 cv2.putText(frame,text,(8,260+21*line),cv2.FONT_HERSHEY_SIMPLEX,.48,(240,240,240),1)
             pipe.stdin.write(frame.tobytes())
