@@ -46,6 +46,8 @@ class scan_object_ctr(TimedSetup, scan_object):
                     if entity == actor:
                         matrix = entity.get_pose().to_transformation_matrix()
                         points.extend(corners@matrix[:3,:3].T+matrix[:3,3])
+            if not points:
+                raise RuntimeError(f'missing projection geometry for {name}')
             points = np.asarray(points)
             projected = (np.c_[points,np.ones(len(points))]@extrinsic.T)@intrinsic.T
             if np.any(projected[:,2] <= 0):

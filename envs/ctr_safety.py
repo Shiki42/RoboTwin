@@ -23,7 +23,7 @@ class CrossArmSafety:
     def add(self, entity, side):
         self.entities[entity] = side
         for body in entity.get_components():
-            if not isinstance(body,sapien.physx.PhysxRigidBodyComponent):
+            if not isinstance(body,sapien.physx.PhysxRigidBaseComponent):
                 continue
             for shape in body.get_collision_shapes():
                 if isinstance(shape,sapien.physx.PhysxCollisionShapeBox):
