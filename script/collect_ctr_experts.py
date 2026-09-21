@@ -71,7 +71,7 @@ def collect_episode(args, task=None):
                      stages=program.stages,provenance=identity,minimum_clearance_m=task.recorded_expert.safety.minimum_clearance if args.task=='blocks_ranking_rgb_ctr' else None)
         if args.task=='scan_object_ctr':
             receipt.update(scan_angle=task.scan_angle,scan_offset=task.scan_offset.tolist(),
-                           scanner_base_functional_target=task.scanner_base_functional_target,indicator_projection=task.indicator_projection)
+                           scanner_base_functional_target=task.scanner_base_functional_target,indicator_projection=task.indicator_projection,scan_translation_audit=task.scan_translation_audit)
         json_write(args.output/'source.json',receipt)
         task.close_env()
         del task.recorded_expert
@@ -95,8 +95,12 @@ def collect_episode(args, task=None):
             controls,why,index,end=clock.next()
             for side,row in controls.items():apply_control(task,side,row)
             task.scene.step();safety.check(step)
+            if args.task=='scan_object_ctr' and clock.name=='scan_align':
+                task.validate_scan_translation()
             reasons.append(why);indices.append(index);stage_indices.append(stage_index)
             if end:
+                if args.task=='scan_object_ctr' and clock.name=='prepare':
+                    task.begin_scan_translation()
                 stage_geometry.append(dict(stage=clock.name,step=clock.step,actors={name:np.r_[getattr(task,name).get_pose().p,getattr(task,name).get_pose().q].tolist() for name in task.record_actor_names}))
                 if clock.name=='scan_align':
                     task.complete_scan();scan_steps.append(clock.step)
@@ -119,6 +123,8 @@ def collect_episode(args, task=None):
                      source_program_sha256=sha(args.source/'program.npz'),control_hashes=hashes,stage_geometry=stage_geometry,
                      minimum_clearance_m=safety.minimum_clearance if args.task=='blocks_ranking_rgb_ctr' else None,provenance=identity,settling_steps=settling,
                      idle_definition='imposed_independent_stage_start_delay_only',result_lifecycle='reported_audit_pending')
+        if args.task=='scan_object_ctr':
+            receipt['scan_translation_audit']=task.scan_translation_audit
         masks=delay_masks(reasons,writer.steps)
         writer.f.create_dataset('observation/arm_active_mask',data=(~masks).astype(np.float32))
         for side,values in zip(SIDES,masks.T):writer.f.create_dataset('retime/'+side+'_idle',data=values)

@@ -6,6 +6,13 @@ from .timed_expert import TimedSetup
 from .ctr_timing import StageRecorder
 from .utils import ArmTag, create_box
 
+class ScanRecorder(StageRecorder):
+    def tick(self, controls, step):
+        super().tick(controls, step)
+        if self.phase['right'] == 'scan_align':
+            self.task.validate_scan_translation()
+
+
 class scan_object_ctr(TimedSetup, scan_object):
     record_actor_names = ('object', 'scanner')
     display_name = 'scan object-CTR'
@@ -19,8 +26,8 @@ class scan_object_ctr(TimedSetup, scan_object):
         self.scan_offset = np.array([0, .1*np.cos(self.scan_angle), .1*np.sin(self.scan_angle)])
         self.scan_complete = False
         self.return_complete = False
-        self.scan_indicator = create_box(self.scene, sapien.Pose([0, -.20, 1.14]),
-                                        (.05, .012, .016), color=(1,0,0),
+        self.scan_indicator = create_box(self.scene, sapien.Pose([-.032, -.20, 1.155]),
+                                        (.04, .0096, .0128), color=(1,0,0),
                                         is_static=True, name='SCAN_indicator')
 
     def setup_demo(self, **kwargs):
@@ -63,6 +70,32 @@ class scan_object_ctr(TimedSetup, scan_object):
                 raise RuntimeError(f'scan indicator obscures initial {name} region')
         self.indicator_projection = {name:rectangle.tolist() for name,rectangle in rectangles.items()}
 
+    def begin_scan_translation(self):
+        self.scan_reference_quaternion = np.array(self.scanner.get_pose().q)
+        self.scan_translation_audit = dict(max_orientation_error_deg=0.0, max_tilt_deg=0.0,
+                                           tolerance_deg=2.0, physics_steps=0)
+        self.validate_scan_translation()
+
+    def validate_scan_translation(self):
+        q = np.array(self.scanner.get_pose().q)
+        cosine = np.clip(abs(np.dot(q,self.scan_reference_quaternion))/(np.linalg.norm(q)*np.linalg.norm(self.scan_reference_quaternion)),0,1)
+        angle = float(np.degrees(2*np.arccos(cosine)))
+        direction = self.scanner.get_functional_point(0,'matrix')[:3,:3]@np.array([0,0,-1])
+        tilt = float(np.degrees(np.arcsin(np.clip(abs(direction[2])/np.linalg.norm(direction),0,1))))
+        audit = self.scan_translation_audit
+        audit['max_orientation_error_deg'] = max(audit['max_orientation_error_deg'],angle)
+        audit['max_tilt_deg'] = max(audit['max_tilt_deg'],tilt)
+        audit['physics_steps'] += 1
+        if angle > audit['tolerance_deg'] or tilt > audit['tolerance_deg']:
+            raise RuntimeError(f'scanner failed horizontal translation: {audit}')
+
+    def translate_scanner(self, position):
+        pose = np.array(self.get_arm_pose('right'))
+        pose[:3] = position
+        arm,actions = self.move_to_pose(ArmTag('right'),pose)
+        actions[0].args['constraint_pose'] = [1,1,1,0,0,0]
+        return arm,actions
+
     def complete_scan(self):
         if not scan_object.check_success(self):
             raise RuntimeError('scanner failed native alignment geometry')
@@ -73,7 +106,7 @@ class scan_object_ctr(TimedSetup, scan_object):
                     shape.material.base_color = [0,1,0,1]
 
     def play_once(self):
-        driver = StageRecorder(self)
+        driver = ScanRecorder(self)
         def prepare(side, actor):
             arm = ArmTag(side)
             yield from driver.motion('grasp', self.grasp_actor(actor, arm, pre_grasp_dis=.08))
@@ -88,13 +121,21 @@ class scan_object_ctr(TimedSetup, scan_object):
                 target = np.array(self.object.get_functional_point(1))
                 target[:3] -= self.scan_offset
                 self.scanner_base_functional_target = target.tolist()
-                actions = self.place_actor(actor, arm, target, functional_point_id=0,
+                _, ready_actions = self.place_actor(actor, arm, target, functional_point_id=0,
                                            pre_dis=.05, dis=.05, is_open=False)
+                ready_pose = np.array(ready_actions[-1].target_pose)
+                # Establish horizontal scan orientation while clear of the center,
+                # then retain that orientation throughout both translations.
+                orient_pose = np.array(self.get_arm_pose(arm))
+                orient_pose[3:] = ready_pose[3:]
+                yield from driver.motion('ready', self.move_to_pose(arm,orient_pose))
+                actions = self.translate_scanner(ready_pose[:3])
             yield from driver.motion('ready', actions)
         driver.stage('prepare', {'left':prepare('left',self.object), 'right':prepare('right',self.scanner)})
-        driver.stage('scan_align', {'right':driver.motion('scan_align', self.place_actor(
-            self.scanner, ArmTag('right'), self.object.get_functional_point(1),
-            functional_point_id=0, pre_dis=.05, dis=.05, is_open=False))}, independent=False)
+        self.begin_scan_translation()
+        destination = np.array(self.get_arm_pose('right')[:3]) + self.scan_offset
+        driver.stage('scan_align', {'right':driver.motion('scan_align',
+            self.translate_scanner(destination))}, independent=False)
         self.complete_scan()
         def put_back(side, actor):
             arm = ArmTag(side)

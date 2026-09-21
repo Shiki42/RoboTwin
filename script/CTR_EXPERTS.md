@@ -43,7 +43,7 @@ scanner alignment for the unshifted object center, derived from that geometry.
    are episode-invariant; actor center height depends on the asset's support height.
    Initial actor orientation is restored. Reuse first arm and p.
 
-The indicator is at [0,-.20,1.14] m with half extents [.05,.012,.016]. Its collision
+The indicator is at [-.032,-.20,1.155] m with half extents [.04,.0096,.0128]. Its collision
 geometry must project entirely into the head image and not overlap the projected
 initial object/scanner collision bounds. Scan success is latched separately from
 whole-task success; both returned actors must be stationary and both arms home.
@@ -109,3 +109,9 @@ Audit a completed 16-episode review root (containing review-plan.json):
 ```bash
 /path/to/runtime/python script/audit_ctr_experts.py /external/review-root
 ```
+
+Scanner correction: establish the native horizontal scan orientation outside the
+interaction area, then move to ready and align with rotation constrained by the
+existing native planner hold vector [1,1,1,0,0,0]. Alignment applies only the
+sampled y-z translation, preserving the ready quaternion. Every alignment physics
+step verifies scanner orientation drift and horizontal beam tilt <=2 degrees.
