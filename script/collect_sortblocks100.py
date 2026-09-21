@@ -16,6 +16,7 @@ def write(path,value):
     tmp=path.with_suffix('.tmp');tmp.write_text(json.dumps(value,indent=2)+'\n');tmp.replace(path)
 
 def candidate(job, destination):
+    os.chdir(ROOT)
     sys.path.insert(0,str(ROOT));sys.path.insert(0,str(ROOT/'script'))
     from collect_ctr_experts import collect_episode
     from envs.blocks_ranking_rgb_ctr import blocks_ranking_rgb_ctr
