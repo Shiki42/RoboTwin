@@ -20,7 +20,7 @@ def preview(directory,target):
         steps=h['physics_step'][:]
         pipe=subprocess.Popen(['ffmpeg','-y','-v','error','-f','rawvideo','-pix_fmt','rgb24',
             '-s','960x310','-r','25','-i','-','-an','-c:v','libx264','-threads','1',
-            '-crf','20','-pix_fmt','yuv420p',str(target)],stdin=subprocess.PIPE)
+            '-crf','20','-pix_fmt','yuv420p','-movflags','+faststart',str(target)],stdin=subprocess.PIPE)
         for i in range(n):
             tiles=[]
             for cam in CAMS:

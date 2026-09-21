@@ -34,3 +34,10 @@ def test_idle_only_imposed_delay_and_entire_action_interval():
 def test_barrier_cannot_be_released_early():
     with pytest.raises(RuntimeError,match='barrier'):
         StageClock(program()).advance_stage()
+
+@pytest.mark.parametrize('arguments', [{'u':-0.1},{'u':1.1},{'u':float('nan')},
+    {'delay_fraction':.5},{'first':'left','delay_fraction':1.1},
+    {'first':'right','delay_fraction':.2,'u':.5}])
+def test_ambiguous_and_out_of_range_timing_is_rejected(arguments):
+    with pytest.raises(ValueError):
+        StageClock(program(),**arguments)

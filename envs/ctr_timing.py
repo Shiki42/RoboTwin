@@ -62,6 +62,10 @@ class StageRecorder(TimedExpert):
 
 class StageClock:
     def __init__(self, program, *, u=None, first=None, delay_fraction=None):
+        if u is not None and (not math.isfinite(u) or not 0 <= u <= 1):
+            raise ValueError('uniform u must lie in [0,1]')
+        if first is None and delay_fraction is not None:
+            raise ValueError('delay_fraction requires an explicit first arm')
         self.program = program
         first_stage = program.stages[0]['name']
         lengths = {s:len(program.arrays[first_stage+'/'+s]) for s in SIDES}

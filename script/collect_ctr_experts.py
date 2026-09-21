@@ -115,6 +115,7 @@ def main():
                      minimum_clearance_m=safety.minimum_clearance if args.task=='blocks_ranking_rgb_ctr' else None,provenance=identity,settling_steps=settling,
                      idle_definition='imposed_independent_stage_start_delay_only',result_lifecycle='reported_audit_pending')
         masks=delay_masks(reasons,writer.steps)
+        writer.f.create_dataset('observation/arm_active_mask',data=(~masks).astype(np.float32))
         for side,values in zip(SIDES,masks.T):writer.f.create_dataset('retime/'+side+'_idle',data=values)
         writer.f.create_dataset('physics/reasons',data=np.asarray(reasons,dtype=np.uint8),compression='lzf')
         writer.f.create_dataset('physics/source_index',data=np.asarray(indices,dtype=np.int32),compression='lzf')

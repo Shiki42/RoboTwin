@@ -73,6 +73,10 @@ the **entire observation-to-next-target action interval** belongs to an imposed
 independent-stage start delay. Completed terminal holds, synchronization barriers,
 cooperative holds and necessary settling are false. There is no `retime/overlap`
 field. It is derivable from physics reasons/source advancement when needed.
+The float32 `[left,right]` field `observation/arm_active_mask` is the inverse
+of the delay-only idle flags and has N-1 rows, aligned with the action intervals.
+Masks on Sequential/Concurrent previews are diagnostic metadata; those training
+groups do not enable IdleMask. No training is part of this delivery.
 
 Each variant includes `episode.hdf5`, `result.json`, and a synchronized 25 FPS
 three-camera `preview.mp4` with stage and idle fields. HDF5 stores measured state,
@@ -99,3 +103,9 @@ CUDA_VISIBLE_DEVICES=0 /path/to/runtime/python script/collect_ctr_experts.py \
 Replace the task ID for blocks. Source failures require a stated correction or
 bounded retry reason; no automatic retry, seed search or relaxed acceptance gates.
 Results are reported/audit-pending until the user approves archival.
+
+Audit a completed 16-episode review root (containing review-plan.json):
+
+```bash
+/path/to/runtime/python script/audit_ctr_experts.py /external/review-root
+```
