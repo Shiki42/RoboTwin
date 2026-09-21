@@ -24,9 +24,9 @@ def start_steps(left_steps, right_steps, *, u=None):
     return dict(left=max(0,-delta), right=max(0,delta)), raw, delta
 
 
-def encode_control(arm, control, phase):
+def encode_control(arm, control, phase, phases=PHASES):
     row = np.zeros(16, dtype=np.float64)
-    row[1] = PHASES.index(phase)
+    row[1] = phases.index(phase)
     if arm+'_arm' in control:
         plan = control[arm+'_arm']
         row[0] = 0

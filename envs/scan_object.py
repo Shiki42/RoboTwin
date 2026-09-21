@@ -8,8 +8,11 @@ class scan_object(Base_Task):
     def setup_demo(self, **kwags):
         super()._init_task_env_(**kwags)
 
+    def sample_scanner_side(self):
+        return np.random.randint(2)
+
     def load_actors(self):
-        tag = np.random.randint(2)
+        tag = self.sample_scanner_side()
         if tag == 0:
             scanner_x_lim = [-0.25, -0.05]
             object_x_lim = [0.05, 0.25]

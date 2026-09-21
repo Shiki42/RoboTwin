@@ -147,8 +147,9 @@ class H5Capture:
         for side in ('left','right'):
             self.append('physics_qpos/'+side, getattr(self.task.robot,side+'_entity').get_qpos())
         self.append('command/gripper',self.task.robot.get_normal_real_gripper_val())
-        names={'pick_dual_bottles':['bottle1','bottle2'], 'scan_object':['scanner','object'],
-               'place_dual_shoes':['left_shoe','right_shoe','shoe_box']}[self.task.task_name]
+        names = self.task.record_actor_names if hasattr(self.task, 'record_actor_names') else {
+            'pick_dual_bottles':['bottle1','bottle2'], 'scan_object':['scanner','object'],
+            'place_dual_shoes':['left_shoe','right_shoe','shoe_box']}[self.task.task_name]
         for name in names:
             pose=getattr(self.task,name).get_pose()
             self.append('actor_pose/'+name,np.r_[pose.p,pose.q])
