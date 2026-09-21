@@ -129,3 +129,7 @@ its grasp-specific starting height until lowering. Mirroring applies to motion
 structure and outward displacement; final tool poses account for distinct grasps.
 Both rise above the initial height and any intermediate vertical rebound are
 measured at every physics step; qualification requires <=8mm before release.
+
+Base-frame held components are anchored to the current planner FK after the native
+calibration transform; this keeps level/vertical motion exact in the planner
+without weakening the native start-goal constraint or collision checks.

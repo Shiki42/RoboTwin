@@ -132,6 +132,16 @@ try:
                 torch.tensor(joint_angles).cuda().reshape(1, -1),
                 joint_names=self.active_joints_name,
             )
+            # A base-frame hold keeps the current FK coordinate. Anchor locked
+            # components after calibration so small frame biases cannot turn a
+            # requested straight/level motion into contradictory endpoint holds.
+            if constraint_pose is not None and not project_to_goal_frame:
+                start_pose = self.motion_gen.compute_kinematics(start_joint_states).ee_pose.clone()
+                mask = self.motion_gen.tensor_args.to_device(constraint_pose[3:]) > 0
+                goal_pose_of_ee.position[..., mask] = start_pose.position[..., mask]
+                if all(weight > 0 for weight in constraint_pose[:3]):
+                    goal_pose_of_ee.quaternion.copy_(start_pose.quaternion)
+
             # plan
             plan_config = MotionGenPlanConfig(max_attempts=10)
             if constraint_pose is not None:
