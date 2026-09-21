@@ -146,12 +146,13 @@ class scan_object_ctr(TimedSetup, scan_object):
             paths = self.return_paths[side]
             for label,name in (('withdraw','retract'),('return','approach'),('return','lower')):
                 actions = self.move_to_pose(arm,paths[name])
-                if name in ('retract','lower'):
-                    actions[1][0].args['constraint_pose'] = [1,1,1,0,0,0]
+                actions[1][0].args.update(project_to_goal_frame=False, constraint_pose={
+                    'retract':[1,1,1,1,0,1], 'approach':[0,0,0,0,0,1],
+                    'lower':[1,1,1,1,1,0]}[name])
                 yield from driver.motion(label, actions)
             yield from driver.motion('release', self.open_gripper(arm))
             actions = self.move_by_displacement(arm,z=.06)
-            actions[1][0].args['constraint_pose'] = [1,1,1,0,0,0]
+            actions[1][0].args.update(project_to_goal_frame=False, constraint_pose=[1,1,1,1,1,0])
             yield from driver.motion('withdraw', actions)
             yield from driver.motion('home', self.back_to_origin(arm))
         driver.stage('put_back', {'left':put_back('left',self.object),'right':put_back('right',self.scanner)})
@@ -168,24 +169,19 @@ class scan_object_ctr(TimedSetup, scan_object):
             low = sapien.Pose(target.p+np.array([0,0,.012]),target.q)*grasp
             lowers[side] = np.r_[low.p,low.q]
         retract_x = max(abs(p[0]) for p in starts.values())+.08
-        retract_y = np.mean([p[1] for p in starts.values()])
-        approach_x = max(abs(p[0]) for p in lowers.values())
-        approach_y = np.mean([p[1] for p in lowers.values()])
-        approach_z = max(max(p[2] for p in lowers.values())+.025,
-                         min(p[2] for p in starts.values())-.04)
-        retract_z = max(approach_z, min(p[2] for p in starts.values())-.025)
         self.return_paths = {}
         for side,sign in (('left',-1),('right',1)):
             self.return_paths[side] = dict(
-                retract=np.r_[sign*retract_x,retract_y,retract_z,starts[side][3:]],
-                approach=np.r_[sign*approach_x,approach_y,approach_z,lowers[side][3:]],
+                retract=np.r_[sign*retract_x,starts[side][1:]],
+                approach=np.r_[lowers[side][:2],starts[side][2],lowers[side][3:]],
                 lower=lowers[side])
         self.begin_return_audit()
 
     def begin_return_audit(self):
         self.return_released = dict(left=False,right=False)
         self.return_motion_audit = {s:dict(start_position=list(self.get_arm_pose(s)[:3]),
-            max_rise_before_release_m=0.0,physics_samples=0) for s in ('left','right')}
+            max_rise_before_release_m=0.0,max_drawup_before_release_m=0.0,
+            minimum_z_before_release=float(self.get_arm_pose(s)[2]),physics_samples=0) for s in ('left','right')}
 
     def sample_return_audit(self):
         for side in ('left','right'):
@@ -195,6 +191,8 @@ class scan_object_ctr(TimedSetup, scan_object):
             position = np.array(self.get_arm_pose(side)[:3])
             report['max_rise_before_release_m'] = max(report['max_rise_before_release_m'],
                 float(position[2]-report['start_position'][2]))
+            report['minimum_z_before_release']=min(report['minimum_z_before_release'],float(position[2]))
+            report['max_drawup_before_release_m']=max(report['max_drawup_before_release_m'],float(position[2]-report['minimum_z_before_release']))
             report['physics_samples'] += 1
 
     def check_success(self):

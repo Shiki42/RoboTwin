@@ -96,6 +96,7 @@ try:
             target_gripper_pose,
             constraint_pose=None,
             arms_tag=None,
+            project_to_goal_frame=True,
         ):  
             world_base_pose = np.concatenate([
                 np.array(self.robot_origion_pose.p),
@@ -136,11 +137,16 @@ try:
             if constraint_pose is not None:
                 pose_cost_metric = PoseCostMetric(
                     hold_partial_pose=True,
+                    project_to_goal_frame=project_to_goal_frame,
                     hold_vec_weight=self.motion_gen.tensor_args.to_device(constraint_pose),
                 )
                 plan_config.pose_cost_metric = pose_cost_metric
 
-            result = self.motion_gen.plan_single(start_joint_states, goal_pose_of_ee, plan_config)
+            try:
+                result = self.motion_gen.plan_single(start_joint_states, goal_pose_of_ee, plan_config)
+            finally:
+                if not project_to_goal_frame:
+                    self.motion_gen.update_pose_cost_metric(PoseCostMetric(project_to_goal_frame=True))
 
             # output
             res_result = dict()

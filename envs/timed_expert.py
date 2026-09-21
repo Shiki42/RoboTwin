@@ -161,7 +161,8 @@ class TimedExpert:
         for action in sequence:
             if action.action == 'move':
                 plan = getattr(t, arm+'_move_to_pose')(
-                    action.target_pose, constraint_pose=action.args.get('constraint_pose'))
+                    action.target_pose, constraint_pose=action.args.get('constraint_pose'),
+                    project_to_goal_frame=action.args.get('project_to_goal_frame', True))
                 if not t.plan_success:
                     raise RuntimeError(f'planning failed: {arm} {label}')
                 n = len(plan['position'])

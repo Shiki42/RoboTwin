@@ -429,8 +429,9 @@ class Robot:
         use_point_cloud=False,
         use_attach=False,
         last_qpos=None,
+        project_to_goal_frame=True,
     ):
-        if constraint_pose is not None:
+        if constraint_pose is not None and project_to_goal_frame:
             constraint_pose = self.get_constraint_pose(constraint_pose, arm_tag="left")
         if last_qpos is None:
             now_qpos = self.left_entity.get_qpos()
@@ -445,6 +446,7 @@ class Robot:
                 "qpos": now_qpos,
                 "target_pose": trans_target_pose,
                 "constraint_pose": constraint_pose,
+                "project_to_goal_frame": project_to_goal_frame,
                 "arms_tag": "left",
             })
             return self.left_conn.recv()
@@ -453,6 +455,7 @@ class Robot:
                 now_qpos,
                 trans_target_pose,
                 constraint_pose=constraint_pose,
+                project_to_goal_frame=project_to_goal_frame,
                 arms_tag="left",
             )
 
@@ -463,8 +466,9 @@ class Robot:
         use_point_cloud=False,
         use_attach=False,
         last_qpos=None,
+        project_to_goal_frame=True,
     ):
-        if constraint_pose is not None:
+        if constraint_pose is not None and project_to_goal_frame:
             constraint_pose = self.get_constraint_pose(constraint_pose, arm_tag="right")
         if last_qpos is None:
             now_qpos = self.right_entity.get_qpos()
@@ -479,6 +483,7 @@ class Robot:
                 "qpos": now_qpos,
                 "target_pose": trans_target_pose,
                 "constraint_pose": constraint_pose,
+                "project_to_goal_frame": project_to_goal_frame,
                 "arms_tag": "right",
             })
             return self.right_conn.recv()
@@ -487,6 +492,7 @@ class Robot:
                 now_qpos,
                 trans_target_pose,
                 constraint_pose=constraint_pose,
+                project_to_goal_frame=project_to_goal_frame,
                 arms_tag="right",
             )
 
@@ -686,6 +692,7 @@ def planner_process_worker(conn, args):
                     msg["target_pose"],
                     constraint_pose=msg.get("constraint_pose", None),
                     arms_tag=msg["arms_tag"],
+                    project_to_goal_frame=msg["project_to_goal_frame"],
                 )
                 conn.send(result)
 

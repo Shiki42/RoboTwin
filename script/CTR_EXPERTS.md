@@ -120,3 +120,12 @@ The existing native planner executes these mirrored pose goals. Retract and lowe
 segments hold orientation; the approach changes position and return orientation
 together. Planning failure is terminal, with no alternate-planner fallback. Per-physics-step return
 height diagnostics expose any pre-release upward excursion.
+
+Return constraints use the robot base frame, not the rotating goal-tool frame:
+base X/Z are held on lateral retraction (Aloha base Y is world lateral), base Z
+is held while orienting/approaching above the table, and base X/Y plus orientation
+are held during vertical lowering and post-release clearance. Each arm retains
+its grasp-specific starting height until lowering. Mirroring applies to motion
+structure and outward displacement; final tool poses account for distinct grasps.
+Both rise above the initial height and any intermediate vertical rebound are
+measured at every physics step; qualification requires <=8mm before release.

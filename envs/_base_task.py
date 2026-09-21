@@ -732,6 +732,7 @@ class Base_Task(gym.Env):
         use_point_cloud=False,
         use_attach=False,
         save_freq=-1,
+        project_to_goal_frame=True,
     ):
         """
         Interpolative planning with screw motion.
@@ -746,7 +747,7 @@ class Base_Task(gym.Env):
             pose = pose.p.tolist() + pose.q.tolist()
 
         if self.need_plan:
-            left_result = self.robot.left_plan_path(pose, constraint_pose=constraint_pose)
+            left_result = self.robot.left_plan_path(pose, constraint_pose=constraint_pose, project_to_goal_frame=project_to_goal_frame)
             self.left_joint_path.append(deepcopy(left_result))
         else:
             left_result = deepcopy(self.left_joint_path[self.left_cnt])
@@ -765,6 +766,7 @@ class Base_Task(gym.Env):
         use_point_cloud=False,
         use_attach=False,
         save_freq=-1,
+        project_to_goal_frame=True,
     ):
         """
         Interpolative planning with screw motion.
@@ -779,7 +781,7 @@ class Base_Task(gym.Env):
             pose = pose.p.tolist() + pose.q.tolist()
 
         if self.need_plan:
-            right_result = self.robot.right_plan_path(pose, constraint_pose=constraint_pose)
+            right_result = self.robot.right_plan_path(pose, constraint_pose=constraint_pose, project_to_goal_frame=project_to_goal_frame)
             self.right_joint_path.append(deepcopy(right_result))
         else:
             right_result = deepcopy(self.right_joint_path[self.right_cnt])
