@@ -195,7 +195,7 @@ def action_masks(reasons, sample_steps):
         segment = reasons[a:b]
         if len(segment)==0:
             raise ValueError('empty action interval')
-        masks.append(np.all(np.isin(segment,[START,DONE]),axis=0))
+        masks.append(np.all(segment == START,axis=0))
         overlap.append(bool(np.any(np.all(segment==ACTIVE,axis=1))))
     masks = np.asarray(masks,dtype=bool)
     if np.any(np.all(masks,axis=1)):

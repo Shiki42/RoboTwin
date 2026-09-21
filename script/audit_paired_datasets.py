@@ -18,6 +18,8 @@ def audit(source,required_slots=None):
         groups=json.loads(manifest.read_text()) if manifest.exists() else []
         if required_slots is not None and len(groups)!=required_slots:
             raise AssertionError(f'{task}: {len(groups)} != {required_slots} complete slots')
+        plan=json.loads((source/'plan.json').read_text())['tasks'][task]
+        assert not {g['seed'] for g in groups}&set(plan['excluded_seeds'])
         reports[task]={'seeds':[g['seed'] for g in groups],'groups':len(groups),'episodes':5*len(groups)}
         for group in groups:
             with np.load(Path(group['path'])/'program.npz',allow_pickle=False) as data:
@@ -45,11 +47,16 @@ def audit(source,required_slots=None):
                     assert np.all(np.diff(steps)>0) and np.all(np.diff(steps)<=10)
                     np.testing.assert_array_equal(steps[:-1],np.arange(len(steps)-1)*10)
                     assert np.isfinite(h['observation/state'][:]).all()
+                    for a,side in enumerate(('left','right')):
+                        raw=h['physics_qpos/'+side][:]
+                        scale=h.attrs[side+'_gripper_scale'];index=h.attrs[side+'_gripper_index']
+                        measured=np.clip((raw[:,index]-scale[0])/(scale[1]-scale[0]),0,1)
+                        np.testing.assert_allclose(h['observation/state'][:,a*7+6],measured,atol=1e-7,rtol=0)
                     assert np.isfinite(h['joint_action/vector'][:]).all()
                     stored=np.column_stack([h['retime/'+s+'_idle'][:] for s in ('left','right')])
                     assert not np.any(stored.all(axis=1))
                     for frame,(a,b) in enumerate(zip(steps[:-1],steps[1:])):
-                        expected=np.all((reasons[a:b]==1)|(reasons[a:b]==2),axis=0)
+                        expected=np.all(reasons[a:b]==1,axis=0)
                         np.testing.assert_array_equal(stored[frame],expected)
                         assert bool(h['retime/overlap'][frame])==bool(np.any(np.all(reasons[a:b]==0,axis=1)))
                     barrier=[e['step'] for e in result['events'] if e['event']=='scan_barrier_release']

@@ -616,6 +616,17 @@ class Robot:
             joint.set_drive_target(target_position[j])
             joint.set_drive_velocity_target(target_velocity[j])
 
+    def get_measured_gripper_val(self):
+        """Normalized measured base-finger positions, never drive targets."""
+        values = []
+        for side in ("left", "right"):
+            entity = getattr(self, side + "_entity")
+            joint = getattr(self, side + "_gripper")[0][0]
+            scale = getattr(self, side + "_gripper_scale")
+            position = entity.get_qpos()[entity.get_active_joints().index(joint)]
+            values.append(float(np.clip((position - scale[0]) / (scale[1] - scale[0]), 0, 1)))
+        return values
+
     def get_normal_real_gripper_val(self):
         normal_left_gripper_val = (self.left_gripper[0][0].get_drive_target()[0] - self.left_gripper_scale[0]) / (
             self.left_gripper_scale[1] - self.left_gripper_scale[0])

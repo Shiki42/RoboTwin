@@ -114,6 +114,13 @@ class H5Capture:
         self.task=task
         self.f=h5py.File(path,'w')
         self.datasets={}
+        self.command_grippers=np.asarray(task.robot.get_normal_real_gripper_val(),dtype=float)
+        np.testing.assert_allclose(self.command_grippers,[1,1],atol=1e-5)
+        for side in SIDES:
+            entity=getattr(task.robot,side+'_entity');joints=entity.get_active_joints()
+            self.f.attrs[side+'_qpos_joint_names']=json.dumps([j.get_name() for j in joints])
+            self.f.attrs[side+'_gripper_index']=joints.index(getattr(task.robot,side+'_gripper')[0][0])
+            self.f.attrs[side+'_gripper_scale']=getattr(task.robot,side+'_gripper_scale')
         self.steps=[]
         self.dt=float(task.scene.get_timestep())
 
@@ -133,12 +140,17 @@ class H5Capture:
     def capture(self,step):
         if self.steps and self.steps[-1]==step: return
         obs=self.task.get_obs()
+        # Native requested getter is stale before the first explicit gripper command.
+        obs['joint_action']['vector'][6]=self.command_grippers[0]
+        obs['joint_action']['vector'][13]=self.command_grippers[1]
+        for side in SIDES:
+            self.append('physics_qpos/'+side,getattr(self.task.robot,side+'_entity').get_qpos())
         camera_validation=self.task.validate_wrist_cameras()
         for side,v in camera_validation.items():
             self.append('camera_validation/'+side+'_mount',v['actual_mount'])
             self.append('camera_validation/'+side+'_fovy_deg',v['fovy_deg'])
         real=np.asarray(self.task.robot.get_left_arm_real_jointState()+self.task.robot.get_right_arm_real_jointState())
-        real_grippers=self.task.robot.get_normal_real_gripper_val()
+        real_grippers=self.task.robot.get_measured_gripper_val()
         real[6],real[13]=real_grippers
         self.append('observation/state',real)
         names={'pick_dual_bottles':['bottle1','bottle2'], 'scan_object':['scanner','object'],
@@ -196,7 +208,9 @@ def replay(task,p,task_name,u,path,expected_scene):
             step=clock.step
             if step%10==0: writer.capture(step)
             controls,why,source_index=clock.next()
-            for s,row in controls.items(): apply_control(task,s,row)
+            for s,row in controls.items():
+                apply_control(task,s,row)
+                if row[0]==1:writer.command_grippers[SIDES.index(s)]=np.clip(row[14],0,1)
             for a,s in enumerate(SIDES):
                 if why[a]==WORKSPACE: validate_wait(driver,s)
             collision_step(driver,step)
@@ -225,21 +239,17 @@ def replay(task,p,task_name,u,path,expected_scene):
         writer.close()
 
 
-def excluded_seeds(ctr,task):
-    path=ctr/'eval/robotwin/seeds'/f'{task}.json'
-    if not path.exists(): return set()
-    return set(json.loads(path.read_text())['seeds'])
-
-
 def collect(args):
     os.chdir(ROOT)
     output=args.output.resolve(); output.mkdir(parents=True,exist_ok=True)
     tasks=list(TASKS) if args.task=='all' else [args.task]
+    plan=json.loads(args.plan.read_text())
+    assert plan['slots']==args.slots and plan['max_candidates']==args.max_candidates
     identity=dict(source_commit=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
                   host=socket.gethostname(),account=getpass.getuser(),
                   gpu=subprocess.check_output(['nvidia-smi','--query-gpu=index,uuid','--format=csv,noheader'],text=True).strip(),
                   runtime=sys.executable,cuda_visible_devices=os.environ.get('CUDA_VISIBLE_DEVICES'),
-                  requested_slots=args.slots,max_candidates=args.max_candidates)
+                  requested_slots=args.slots,max_candidates=args.max_candidates,plan_sha256=sha(args.plan))
     json_write(output/'invocation.json',identity)
     for name in tasks:
         start=time.monotonic()
@@ -250,15 +260,18 @@ def collect(args):
         attempts_path=directory/'attempts.jsonl'
         attempts=[json.loads(line) for line in attempts_path.read_text().splitlines()] if attempts_path.exists() else []
         # A seed with an explicit rejection is never silently retried on resume.
-        seed_start=max([a['seed'] for a in attempts]+[-1])+1
-        blocked=excluded_seeds(args.ctr_root,name)
+        tried={a['seed'] for a in attempts}|{a['seed'] for a in accepted}
+        candidates=plan['tasks'][name]['candidates']
+        assert len(candidates)==args.max_candidates and len(set(candidates))==len(candidates)
+        assert not set(candidates)&set(plan['tasks'][name]['excluded_seeds'])
+        assert all(r['seed'] in candidates for r in accepted)
         cls=getattr(importlib.import_module('envs.'+name+'_timed'),name+'_timed')
         task=cls(); task.expert_driver_type=RecordExpert
         cfg=config(name)
         cfg_hash=hashlib.sha256(json.dumps(cfg,sort_keys=True).encode()).hexdigest()
-        for seed in range(seed_start,args.max_candidates):
+        for seed in candidates:
             if len(accepted)==args.slots: break
-            if seed in blocked: continue
+            if seed in tried: continue
             slot=len(accepted)
             stage='source'; attempt_start=time.monotonic()
             staging=directory/f'.candidate-{seed}'
@@ -321,7 +334,7 @@ def collect(args):
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--output',type=Path,required=True)
-    p.add_argument('--ctr-root',type=Path,required=True)
+    p.add_argument('--plan',type=Path,required=True)
     p.add_argument('--task',choices=['all',*TASKS],default='all')
     p.add_argument('--slots',type=int,default=50)
     p.add_argument('--max-candidates',type=int,default=500)

@@ -40,12 +40,12 @@ def intervals(values):
     return [[int(a),int(b)] for a,b in zip(np.flatnonzero(changes==1),np.flatnonzero(changes==-1))]
 
 
-def features():
+def features(variant):
     joints=[f'{s}_joint_{i}.pos' for s in ('left','right') for i in range(1,7)]
     joints=joints[:6]+['left_gripper.pos']+joints[6:]+['right_gripper.pos']
     result={k:dict(dtype='float32',shape=(14,),names=joints) for k in ('observation.state','action')}
-    for name in ('left_idle','right_idle','overlap'):
-        result['retime.'+name]=dict(dtype='bool',shape=(1,),names=None)
+    if variant=='uniform':
+        result['observation.arm_active_mask']=dict(dtype='float32',shape=(2,),names=['left','right'])
     for name in ('source_seed','source_slot','grid_index'):
         result['retime.'+name]=dict(dtype='int64',shape=(1,),names=None)
     for name in ('u','offset_s'):
@@ -80,7 +80,7 @@ def tracking_audit(h,program_path,receipt):
     samples=h['physics_step'][:];state=h['observation/state'][:]
     tail=[e['step'] for e in receipt['events'] if e['event']=='scan_barrier_release']
     tail_start=tail[0] if tail else len(reasons)
-    expected=state[0].copy();errors=[];cursor=0
+    expected=h['joint_action/vector'][0].copy();expected[[6,13]]=1;errors=[];cursor=0
     for frame,end in enumerate(samples):
         while cursor<end:
             for a,side in enumerate(('left','right')):
@@ -90,6 +90,7 @@ def tracking_audit(h,program_path,receipt):
                 if row[0]==0:expected[a*7:a*7+6]=row[2:8]
                 else:expected[a*7+6]=row[14]
             cursor+=1
+        np.testing.assert_allclose(h['joint_action/vector'][frame],expected,atol=1e-6,rtol=0)
         errors.append(state[frame]-expected)
     error=np.asarray(errors)
     camera_hashes={}
@@ -101,6 +102,35 @@ def tracking_audit(h,program_path,receipt):
     return dict(control_hashes=hashes,camera_intrinsic_hashes=camera_hashes,
                 joint_tracking_max_abs_rad={s:float(np.abs(error[:,a*7:a*7+6]).max()) for a,s in enumerate(('left','right'))},
                 joint_tracking_rms_rad={s:float(np.sqrt(np.mean(error[:,a*7:a*7+6]**2))) for a,s in enumerate(('left','right'))})
+
+
+def exact_stats(values):
+    values=np.asarray(values,dtype=np.float64)
+    assert values.ndim==2 and np.isfinite(values).all()
+    result={k:v.tolist() for k,v in dict(mean=values.mean(axis=0),std=values.std(axis=0),min=values.min(axis=0),max=values.max(axis=0)).items()}
+    for q in (.01,.1,.5,.9,.99):result[f'q{int(q*100):02d}']=np.quantile(values,q,axis=0,method='linear').tolist()
+    result['count']=[len(values)]
+    assert np.all(np.array(result['q01'])<=result['q99'])
+    return result
+
+def refresh_statistics(target, tables):
+    stats_path=target/'meta/stats.json';stats=json.loads(stats_path.read_text())
+    details={}
+    for key in stats:
+        if key.startswith('observation.images.'):
+            stats[key]={k:v for k,v in stats[key].items() if not k.startswith('q')}
+            continue
+        values=np.concatenate([np.asarray(table[key].to_pylist(),dtype=np.float64) for table in tables])
+        if values.ndim==1:values=values[:,None]
+        stats[key]=exact_stats(values)
+        details[key]=dict(dimensions=values.shape[1],constant_dimensions=np.flatnonzero(values.min(axis=0)==values.max(axis=0)).tolist(),
+                          zero_quantile_interval_dimensions=np.flatnonzero(np.array(stats[key]['q01'])==stats[key]['q99']).tolist())
+    dump(stats_path,stats)
+    commit=subprocess.check_output(['git','-C',str(Path(__file__).resolve().parents[1]),'rev-parse','HEAD'],text=True).strip()
+    dump(target/'meta/exact_global_statistics.json',dict(algorithm='numpy.quantile',method='linear',values='all published numeric rows promoted to float64',
+        sampling='all valid rows once; no padding or mask exclusion; no per-episode quantile averaging',quantiles=[.01,.1,.5,.9,.99],
+        features=list(details),feature_details=details,frames=sum(len(t) for t in tables),stats_sha256=sha(stats_path),implementation_commit=commit,
+        image_statistics='Native LeRobot sampled image mean/std/min/max/count retained; image quantiles are omitted.'))
 
 
 def export_one(source,output,task,variant,slots):
@@ -115,7 +145,7 @@ def export_one(source,output,task,variant,slots):
         return old
     if target.exists():raise FileExistsError(f'incomplete export requires explicit recovery: {target}')
     dataset=LeRobotDataset.create(repo_id='CTR/'+target.name,root=target,fps=25,
-            robot_type='aloha_agilex',features=features(),streaming_encoding=True,
+            robot_type='aloha_agilex',features=features(variant),streaming_encoding=True,
             encoder_threads=1,metadata_buffer_size=1,
             rgb_encoder=RGBEncoderConfig(vcodec='h264',g=25,crf=18,preset='fast'))
     episode_meta=[];frames_total=0
@@ -143,8 +173,8 @@ def export_one(source,output,task,variant,slots):
                     frame['retime.'+key]=np.array([value],dtype=np.int64)
                 for key,value in [('u',u),('offset_s',r['actual_offset_steps']*r['physics_dt_s'])]:
                     frame['retime.'+key]=np.array([value],dtype=np.float32)
-                for key,value in [('left_idle',masks[i,0]),('right_idle',masks[i,1]),('overlap',overlap[i])]:
-                    frame['retime.'+key]=np.array([value],dtype=bool)
+                if variant=='uniform':
+                    frame['observation.arm_active_mask']=(~masks[i]).astype(np.float32)
                 for original,name in CAMS.items():
                     image=cv2.imdecode(h['observation/'+original+'/rgb'][i],cv2.IMREAD_COLOR)
                     if image is None:raise ValueError('invalid JPEG observation')
@@ -178,9 +208,11 @@ def export_one(source,output,task,variant,slots):
     tables=[pq.read_table(p) for p in sorted((target/'data').rglob('*.parquet'))]
     if sum(len(t) for t in tables)!=frames_total:raise AssertionError('parquet frame count differs')
     for table in tables:
-        l=np.asarray(table['retime.left_idle'].to_pylist()).reshape(-1)
-        rr=np.asarray(table['retime.right_idle'].to_pylist()).reshape(-1)
-        if np.any(l & rr):raise AssertionError('both-idle exported row')
+        if variant=='uniform':
+            active=np.asarray(table['observation.arm_active_mask'].to_pylist())
+            if not np.isin(active,[0,1]).all() or not np.all(active.any(axis=1)):
+                raise AssertionError('invalid exported arm mask')
+    refresh_statistics(target,tables)
     with (target/'SHA256SUMS').open('w') as f:
         for path in sorted(target.rglob('*')):
             if path.is_file() and path.name!='SHA256SUMS':f.write(f'{sha(path)}  {path.relative_to(target)}\n')
@@ -205,7 +237,9 @@ def make_reports(source,output,slots):
         for r in exported:
             if r['unique_seeds']!=sorted(seeds):raise AssertionError('seed coverage mismatch')
         attempts=[json.loads(x) for x in (source/task/'attempts.jsonl').read_text().splitlines()]
-        summaries[task]=dict(seeds=seeds,intersection=sorted(seeds),differences={v:[] for v in VARIANTS},
+        plan=json.loads((source/'plan.json').read_text())['tasks'][task]
+        assert not set(seeds)&set(plan['excluded_seeds'])
+        summaries[task]=dict(seeds=seeds,prior_batch_overlap=[],prior_batch_seeds=plan['prior_seeds'],intersection=sorted(seeds),differences={v:[] for v in VARIANTS},
                             accepted=slots,candidates=len(attempts),rejected=[x for x in attempts if x['status']=='rejected'],
                             datasets=exported)
         for v in VARIANTS:
@@ -216,7 +250,7 @@ def make_reports(source,output,slots):
                 waits={s:float(np.count_nonzero(reasons[:,a]==4)*dt) for a,s in enumerate(('left','right'))}
                 overlap_s=float(np.count_nonzero(np.all(reasons==0,axis=1))*dt)
                 records.append(dict(task=task,dataset=v,episode_index=episode,seed=r['seed'],slot=r['slot'],
-                    source_variant=label,u=r['u'],requested_offset_s=r['nominal_offset_steps']*r['physics_dt_s'],
+                    source_variant=label,prior_batch_overlap=False,u=r['u'],requested_offset_s=r['nominal_offset_steps']*r['physics_dt_s'],
                     actual_offset_s=r['actual_offset_steps']*r['physics_dt_s'],
                     left_wait_s=r['workspace_wait_steps']['left']*dt+waits['left'],
                     right_wait_s=r['workspace_wait_steps']['right']*dt+waits['right'],
@@ -236,7 +270,7 @@ def make_reports(source,output,slots):
         lines.append(f'| {task} | {slots} | {s["candidates"]} | {len(s["rejected"])} | {slots} | {slots} | {slots} | {2*slots} |')
     for task,s in summaries.items():
         lines.extend(['',f'## {task}','', '共同 seed（按槽位顺序）：'+', '.join(map(str,s['seeds'])),
-                      '', '四个集合的 seed 差集均为空。Uniform 中每个 seed 出现两次。'])
+                      '', '四个集合的 seed 差集均为空。Uniform 中每个 seed 出现两次；与上一批 seed 交集为空。'])
     lines.extend(['','每条 Episode 的偏移、必要等待及映射见同目录 CSV/JSON；失败原因保存在 JSON 中。',
                   '结果已报告；实验归档确认仍需单独的审计批准。'])
     (reports/'seed-report.md').write_text('\n'.join(lines)+'\n')

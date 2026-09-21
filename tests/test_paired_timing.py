@@ -77,3 +77,11 @@ def test_program_roundtrip(tmp_path):
     p=program(gate=True);path=tmp_path/'program.npz';p.save(path)
     assert m.Program.load(path).hashes()==p.hashes()
     assert m.Program.load(path).gate==p.gate
+
+
+def test_finished_hold_is_supervised_and_delay_is_prefix_only():
+    _,reasons,_=execute(program(),u=0)
+    idle,_=m.action_masks(reasons,list(range(len(reasons)+1)))
+    assert not idle[:,0].any()
+    np.testing.assert_array_equal(idle[:,1],np.arange(len(reasons))<20)
+    assert not idle[reasons[:,0]==m.DONE,0].any()
