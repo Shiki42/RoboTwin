@@ -68,7 +68,9 @@ def main():
     # The manifest's fixed slot order makes failures stop before another source.
     if plan['workers'] != 1:
         raise ValueError('this paired collection requires one sequential worker')
-    for slot in range(plan['slots']):
+    if sorted(plan['slot_order']) != list(range(plan['slots'])):
+        raise ValueError('slot order must cover every source once')
+    for slot in plan['slot_order']:
         result=run_slot(slot);manifest.append(result)
         write(args.output/'manifest.json',manifest)
         print(json.dumps(dict(accepted=len(manifest),target=plan['slots'],slot=result['slot'],seed=result['seed'],elapsed_s=time.time()-started)),flush=True)

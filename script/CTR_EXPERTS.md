@@ -163,3 +163,10 @@ and `--method`. It reuses the existing measured-state/next-command export,
 checks multi-stage controls and exports IdleMask only for CTR. Mixed reads the
 selected collected episodes without another simulation. Numeric normalization
 uses exact global quantiles across all valid rows; image quantiles are omitted.
+
+Scan-align alone caps source joint speed at0.8rad/s, using both native velocity
+and finite-difference joint targets. This reduces scanner motion within the
+gripper on geometries requiring rapid compensating wrist rotation. The accepted
+1-second outward return is unchanged. Scene collection order is explicitly frozen
+in slot_order and may prioritize a previously failing seed; dataset order still
+follows the unchanged per-method recipe.

@@ -13,6 +13,6 @@ def recipe(runtime):
         variants=[dict(variant='left_first',first='left',delay_fraction=1.),dict(variant='right_first',first='right',delay_fraction=1.),dict(variant='concurrent')]
         variants += [dict(variant='ctr_'+str(k),u=(i+50*k)/100) for k in range(2)]
         candidates.append(dict(slot=i,seed=i,task='scan_object_ctr',variants=variants))
-    return dict(schema='ctr.scan50.recipe.v1',runtime=runtime,slots=50,workers=1,candidates=candidates,
+    return dict(schema='ctr.scan50.recipe.v1',runtime=runtime,slots=50,workers=1,slot_order=list(range(50)),candidates=candidates,
         prompt='Pick up the object with the left arm and the scanner with the right arm, align to scan, then return both items to their fixed positions and return home.',
         datasets={method:dict(repo_id=f'local/scan-object-ctr-{method}-{len(rows)}ep',episodes=rows) for method,rows in groups.items()})

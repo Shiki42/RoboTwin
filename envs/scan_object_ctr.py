@@ -101,7 +101,8 @@ class scan_object_ctr(TimedSetup, scan_object):
         arm,actions = self.move_to_pose(ArmTag('right'),pose)
         # Anchor orientation to current FK, avoiding calibration-induced rotation
         # of an otherwise translation-only goal. Prioritize rotation throughout.
-        actions[0].args.update(constraint_pose=[4,4,4,0,0,0], project_to_goal_frame=False)
+        actions[0].args.update(constraint_pose=[4,4,4,0,0,0], project_to_goal_frame=False,
+                               max_joint_speed_rad_s=.8)
         return arm,actions
 
     def complete_scan(self):
