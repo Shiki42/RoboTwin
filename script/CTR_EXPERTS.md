@@ -116,7 +116,8 @@ Audit a completed 16-episode review root (containing review-plan.json):
 After grasp and lift, the right arm uses one native SE(3) move to reach the ready
 position and horizontal orientation together. There is no in-place leveling
 substep or additional outward preparation waypoint. Scan-align alone holds the
-ready quaternion with [1,1,1,0,0,0] and checks <=2 degrees of actual orientation
+ready quaternion anchored to current planner FK with [4,4,4,0,0,0]
+in the robot base frame and checks <=2 degrees of actual orientation
 drift and horizontal tilt at every physics step.
 
 After scan success, return paths are computed once from the actual grasp geometry.

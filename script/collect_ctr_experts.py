@@ -56,7 +56,15 @@ def collect_episode(args, task=None):
     initial=signature(task)
     identity=provenance()
     if args.source is None:
-        task.play_once()
+        try:
+            task.play_once()
+        except RuntimeError as error:
+            task.recorded_expert.program().save(args.output/'failed-program.npz')
+            json_write(args.output/'failure.json',dict(error=str(error),initial=initial,
+                final=signature(task),provenance=identity,
+                scan_translation_audit=getattr(task,'scan_translation_audit',None),
+                events=task.recorded_expert.timeline.events))
+            raise
         settling=0
         while not task.check_success() and settling<750:
             task.scene.step();task.recorded_expert.safety.check(settling);settling+=1

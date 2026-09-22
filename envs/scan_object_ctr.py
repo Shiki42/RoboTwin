@@ -99,7 +99,9 @@ class scan_object_ctr(TimedSetup, scan_object):
         pose = np.array(self.get_arm_pose('right'))
         pose[:3] = position
         arm,actions = self.move_to_pose(ArmTag('right'),pose)
-        actions[0].args['constraint_pose'] = [1,1,1,0,0,0]
+        # Anchor orientation to current FK, avoiding calibration-induced rotation
+        # of an otherwise translation-only goal. Prioritize rotation throughout.
+        actions[0].args.update(constraint_pose=[4,4,4,0,0,0], project_to_goal_frame=False)
         return arm,actions
 
     def complete_scan(self):
