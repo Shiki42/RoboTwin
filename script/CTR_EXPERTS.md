@@ -116,8 +116,7 @@ Audit a completed 16-episode review root (containing review-plan.json):
 After grasp and lift, the right arm uses one native SE(3) move to reach the ready
 position and horizontal orientation together. There is no in-place leveling
 substep or additional outward preparation waypoint. Scan-align alone holds the
-ready quaternion anchored to current planner FK with [4,4,4,0,0,0]
-in the robot base frame and checks <=2 degrees of actual orientation
+ready quaternion with [1,1,1,0,0,0] and checks <=2 degrees of actual orientation
 drift and horizontal tilt at every physics step.
 
 After scan success, return paths are computed once from the actual grasp geometry.
@@ -146,27 +145,22 @@ measured at every physics step until release. Qualification requires <=8 mm for
 both arms in the source and all eight review replays. The generated review page
 reports actual values, horizontal scan checks, and links to per-episode receipts.
 
-## Paired50 Scan collection
+## Shared50 qualified Scan cohort
 
-`script/scan50_recipe.py` freezes seeds0..49. Sequential contains50 left-first
-then50 right-first episodes; Concurrent contains50 simultaneous episodes.
-CTR contains two variants per seed in seed-major order: u=i/100 and(i+50)/100,
-covering the100 distinct points0%..99%. Mixed selects left-first seeds0..33,
-right-first0..32, then concurrent17..49, covering all50 scenes in100 episodes.
+`scan50_recipe.py` freezes candidate seeds0..199 and50 output slots. The collector
+`collect_ctr_batch.py` tries each candidate once, in order, and accepts it only
+when its source and all five prescribed physical timing replays pass. A rejected
+candidate does not advance the output slot. Unexpected infrastructure errors stop
+the run; exhausting200 candidates before50 accepted scenes also stops. There are
+no source replans, threshold relaxations or unbounded seed searches. Native scene,
+scan orientation and collision failures retain their checks and are recorded as
+candidate rejections. Motion is the user-approved cd624178 expert.
 
-`script/collect_ctr_batch.py --plan PLAN --output NEW_DIRECTORY` consumes the
-explicit task/seed/variant candidate list. One source and five frozen physical
-replays are collected per seed. This recipe has one candidate per seed, one
-worker and no seed replacement or automatic retry. `script/export_ctr_batch.py`
-requires the same `--plan` plus `--collection`, `--collection-exit`, `--output`
-and `--method`. It reuses the existing measured-state/next-command export,
-checks multi-stage controls and exports IdleMask only for CTR. Mixed reads the
-selected collected episodes without another simulation. Numeric normalization
-uses exact global quantiles across all valid rows; image quantiles are omitted.
-
-Scan-align alone caps source joint speed at0.8rad/s, using both native velocity
-and finite-difference joint targets. This reduces scanner motion within the
-gripper on geometries requiring rapid compensating wrist rotation. The accepted
-1-second outward return is unchanged. Scene collection order is explicitly frozen
-in slot_order and may prioritize a previously failing seed; dataset order still
-follows the unchanged per-method recipe.
+All methods share the selected50 seeds and their frozen source controls.
+Sequential contains50 left-first then50 right-first episodes; Concurrent has50.
+CTR has100 in accepted-scene-major order: slot i uses u=i/100 and(i+50)/100.
+Mixed selects left-first slots0..33, right-first0..32, and concurrent17..49.
+Actual seeds and output slots are recorded separately; Mixed covers all50 scenes.
+`export_ctr_batch.py` consumes the same plan, verifies multistage command identity,
+exports masks only forCTR and computes exact global numeric quantiles. Artifacts
+and candidate rejection traces stay outside Git. No publication is implied.

@@ -13,4 +13,8 @@ def test_requested_counts_seed_pairing_order_and_uniform_grid():
     m=d['mixed']['episodes'];assert len({r['slot'] for r in m})==50
     assert m==s[:34]+s[50:83]+d['concurrent']['episodes'][17:50]
     assert len({(r['slot'],r['variant']) for r in m})==100
-    assert len(p['candidates'])==50 and all(len(c['variants'])==5 for c in p['candidates'])
+    assert len(p['slot_jobs'])==50 and all(len(c['variants'])==5 for c in p['slot_jobs'])
+    assert p['candidate_seeds']==list(range(200))
+    assert module.candidate_job(p,0,1)['seed']==1
+    assert module.candidate_job(p,0,1)['variants']==module.candidate_job(p,0,0)['variants']
+    assert module.candidate_job(p,1,7)['variants'][-2]['u']==.01

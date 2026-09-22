@@ -165,26 +165,16 @@ class TimedExpert:
                     project_to_goal_frame=action.args.get('project_to_goal_frame', True))
                 if not t.plan_success:
                     raise RuntimeError(f'planning failed: {arm} {label}')
-                # Source-only timing constraints; frozen replay never resamples.
+                # Explicit source duration; frozen timing replay never resamples.
                 duration = action.args.get('duration_s')
-                speed_limit = action.args.get('max_joint_speed_rad_s')
-                if duration is not None and speed_limit is not None:
-                    raise ValueError('choose an explicit duration or a speed limit')
-                if duration is not None or speed_limit is not None:
+                if duration is not None:
                     import numpy as np
+                    if not math.isfinite(duration) or duration < 2*self.timeline.dt:
+                        raise ValueError('duration_s must span at least two physics steps')
                     count = len(plan['position'])
                     if count < 2:
-                        raise ValueError('cannot retime a one-sample trajectory')
-                    if duration is not None:
-                        if not math.isfinite(duration) or duration < 2*self.timeline.dt:
-                            raise ValueError('duration_s must span at least two physics steps')
-                        target_count = int(math.floor(duration/self.timeline.dt+.5))
-                    else:
-                        if not math.isfinite(speed_limit) or speed_limit <= 0:
-                            raise ValueError('joint speed limit must be finite and positive')
-                        peak = max(float(np.max(np.abs(plan['velocity']))),
-                            float(np.max(np.abs(np.diff(plan['position'],axis=0))))/self.timeline.dt)
-                        target_count = max(count,math.ceil((count-1)*peak/speed_limit)+1)
+                        raise ValueError('cannot set duration for a one-sample trajectory')
+                    target_count = int(math.floor(duration/self.timeline.dt+.5))
                     samples = np.linspace(0,count-1,target_count)
                     effective_scale = (target_count-1)/(count-1)
                     plan = {key:np.stack([np.interp(samples,np.arange(count),column)

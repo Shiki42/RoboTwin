@@ -4,6 +4,7 @@ import sapien
 from .scan_object import scan_object
 from .timed_expert import TimedSetup
 from .ctr_timing import StageRecorder
+from .paired_timing import CandidateRejected
 from .utils import ArmTag, create_box
 
 class ScanRecorder(StageRecorder):
@@ -64,16 +65,16 @@ class scan_object_ctr(TimedSetup, scan_object):
             points = np.asarray(points)
             projected = (np.c_[points,np.ones(len(points))]@extrinsic.T)@intrinsic.T
             if np.any(projected[:,2] <= 0):
-                raise RuntimeError('indicator or initial actor is behind the head camera')
+                raise CandidateRejected('indicator or initial actor is behind the head camera')
             uv = projected[:,:2]/projected[:,2:]
             rectangles[name] = np.array([uv.min(axis=0),uv.max(axis=0)])
         indicator = rectangles['scan_indicator']
         if np.any(indicator[0] < [0,0]) or np.any(indicator[1] >= [320,240]):
-            raise RuntimeError(f'scan indicator outside head image: {indicator}')
+            raise CandidateRejected(f'scan indicator outside head image: {indicator}')
         for name in self.record_actor_names:
             rectangle = rectangles[name]
             if np.all(indicator[0] < rectangle[1]) and np.all(rectangle[0] < indicator[1]):
-                raise RuntimeError(f'scan indicator obscures initial {name} region')
+                raise CandidateRejected(f'scan indicator obscures initial {name} region')
         self.indicator_projection = {name:rectangle.tolist() for name,rectangle in rectangles.items()}
 
     def begin_scan_translation(self):
@@ -93,21 +94,18 @@ class scan_object_ctr(TimedSetup, scan_object):
         audit['max_tilt_deg'] = max(audit['max_tilt_deg'],tilt)
         audit['physics_steps'] += 1
         if angle > audit['tolerance_deg'] or tilt > audit['tolerance_deg']:
-            raise RuntimeError(f'scanner failed horizontal translation: {audit}')
+            raise CandidateRejected(f'scanner failed horizontal translation: {audit}')
 
     def translate_scanner(self, position):
         pose = np.array(self.get_arm_pose('right'))
         pose[:3] = position
         arm,actions = self.move_to_pose(ArmTag('right'),pose)
-        # Anchor orientation to current FK, avoiding calibration-induced rotation
-        # of an otherwise translation-only goal. Prioritize rotation throughout.
-        actions[0].args.update(constraint_pose=[4,4,4,0,0,0], project_to_goal_frame=False,
-                               max_joint_speed_rad_s=.8)
+        actions[0].args['constraint_pose'] = [1,1,1,0,0,0]
         return arm,actions
 
     def complete_scan(self):
         if not scan_object.check_success(self):
-            raise RuntimeError('scanner failed native alignment geometry')
+            raise CandidateRejected('scanner failed native alignment geometry')
         self.scan_complete = True
         for component in self.scan_indicator.actor.get_components():
             if isinstance(component, sapien.render.RenderBodyComponent):

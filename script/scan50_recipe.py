@@ -12,7 +12,14 @@ def recipe(runtime):
     for i in range(50):
         variants=[dict(variant='left_first',first='left',delay_fraction=1.),dict(variant='right_first',first='right',delay_fraction=1.),dict(variant='concurrent')]
         variants += [dict(variant='ctr_'+str(k),u=(i+50*k)/100) for k in range(2)]
-        candidates.append(dict(slot=i,seed=i,task='scan_object_ctr',variants=variants))
-    return dict(schema='ctr.scan50.recipe.v1',runtime=runtime,slots=50,workers=1,slot_order=list(range(50)),candidates=candidates,
+        candidates.append(dict(slot=i,task='scan_object_ctr',variants=variants))
+    return dict(schema='ctr.scan50.qualified_pool.v1',runtime=runtime,slots=50,workers=1,
+        candidate_seeds=list(range(200)),slot_jobs=candidates,
         prompt='Pick up the object with the left arm and the scanner with the right arm, align to scan, then return both items to their fixed positions and return home.',
         datasets={method:dict(repo_id=f'local/scan-object-ctr-{method}-{len(rows)}ep',episodes=rows) for method,rows in groups.items()})
+
+
+def candidate_job(plan, slot, seed_index):
+    if not 0 <= slot < plan['slots'] or not 0 <= seed_index < len(plan['candidate_seeds']):
+        raise ValueError('candidate assignment outside frozen plan')
+    return dict(plan['slot_jobs'][slot],seed=plan['candidate_seeds'][seed_index])

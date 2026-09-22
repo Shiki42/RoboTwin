@@ -8,6 +8,7 @@ import subprocess
 import sys
 import time
 from types import SimpleNamespace
+from scan50_recipe import candidate_job
 
 ROOT=Path(__file__).resolve().parents[1]
 
@@ -43,37 +44,52 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--plan',type=Path,required=True)
     parser.add_argument('--output',type=Path,required=True)
-    parser.add_argument('--candidate-index',type=int)
+    parser.add_argument('--seed-index',type=int)
+    parser.add_argument('--slot',type=int)
     args=parser.parse_args();plan=json.loads(args.plan.read_text())
-    if args.candidate_index is not None:
-        job=plan['candidates'][args.candidate_index]
-        candidate(job,args.output)
+    if args.seed_index is not None or args.slot is not None:
+        if args.seed_index is None or args.slot is None:
+            raise ValueError('worker requires both seed-index and slot')
+        candidate(candidate_job(plan,args.slot,args.seed_index),args.output)
         return
+    if plan['workers'] != 1 or len(plan['slot_jobs']) != plan['slots']:
+        raise ValueError('invalid sequential slot plan')
+    pool=plan['candidate_seeds']
+    if len(pool)!=len(set(pool)) or len(pool)<plan['slots']:
+        raise ValueError('candidate pool must be unique and cover requested slots')
     args.output.mkdir(parents=True,exist_ok=False)
-    runtime=plan['runtime'];manifest=[];started=time.time()
-    def run_slot(slot):
-        jobs=[(i,j) for i,j in enumerate(plan['candidates']) if j['slot']==slot]
-        for index,job in jobs:
-            path=args.output/f'slot-{slot:03d}'/f'seed-{job["seed"]:04d}'
-            path.parent.mkdir(parents=True,exist_ok=True)
-            log=path.parent/f'seed-{job["seed"]:04d}.log'
-            command=[runtime,str(Path(__file__).resolve()),'--plan',str(args.plan.resolve()),'--output',str(path),'--candidate-index',str(index)]
-            with log.open('w') as stream:
-                process=subprocess.run(command,stdout=stream,stderr=subprocess.STDOUT,env=dict(os.environ,CUDA_VISIBLE_DEVICES='0'))
-            if process.returncode:
-                raise RuntimeError(f'candidate infrastructure error; no retry: {log}, exit={process.returncode}')
-            result=json.loads((path/'candidate.json').read_text())
-            if result['status']=='accepted':return result
-        raise RuntimeError(f'finite candidate list exhausted for slot {slot}')
-    # The manifest's fixed slot order makes failures stop before another source.
-    if plan['workers'] != 1:
-        raise ValueError('this paired collection requires one sequential worker')
-    if sorted(plan['slot_order']) != list(range(plan['slots'])):
-        raise ValueError('slot order must cover every source once')
-    for slot in plan['slot_order']:
-        result=run_slot(slot);manifest.append(result)
-        write(args.output/'manifest.json',manifest)
-        print(json.dumps(dict(accepted=len(manifest),target=plan['slots'],slot=result['slot'],seed=result['seed'],elapsed_s=time.time()-started)),flush=True)
-    write(args.output/'complete.json',dict(success=True,slots=len(manifest),episodes=sum(len(r['variants']) for r in manifest),elapsed_s=time.time()-started))
+    runtime=plan['runtime'];manifest=[];attempts=[];started=time.time()
+    for index,seed in enumerate(pool):
+        if len(manifest)==plan['slots']:
+            break
+        slot=len(manifest);job=candidate_job(plan,slot,index)
+        path=args.output/f'slot-{slot:03d}'/f'seed-{seed:04d}'
+        path.parent.mkdir(parents=True,exist_ok=True)
+        log=path.parent/f'seed-{seed:04d}.log'
+        command=[runtime,str(Path(__file__).resolve()),'--plan',str(args.plan.resolve()),
+                 '--output',str(path),'--seed-index',str(index),'--slot',str(slot)]
+        with log.open('w') as stream:
+            process=subprocess.run(command,stdout=stream,stderr=subprocess.STDOUT,
+                                   env=dict(os.environ,CUDA_VISIBLE_DEVICES='0'))
+        if process.returncode:
+            attempts.append(dict(seed=seed,slot=slot,status='infrastructure_error',exit_code=process.returncode,log=str(log)))
+            write(args.output/'attempts.json',attempts)
+            raise RuntimeError(f'candidate infrastructure error; no retry: {log}, exit={process.returncode}')
+        result=json.loads((path/'candidate.json').read_text())
+        attempts.append(dict(seed=seed,slot=slot,status=result['status'],reason=result.get('reason'),path=str(path)))
+        write(args.output/'attempts.json',attempts)
+        if result['status']=='accepted':
+            if len(result['variants'])!=len(job['variants']):
+                raise ValueError('accepted source lacks required variants')
+            manifest.append(result);write(args.output/'manifest.json',manifest)
+        elif result['status']!='rejected':
+            raise ValueError('unknown candidate outcome')
+        print(json.dumps(dict(accepted=len(manifest),target=plan['slots'],attempts=len(attempts),
+            slot=slot,seed=seed,outcome=result['status'],elapsed_s=time.time()-started)),flush=True)
+    if len(manifest)!=plan['slots']:
+        raise RuntimeError(f'frozen candidate pool exhausted: {len(manifest)}/{plan["slots"]} qualified')
+    write(args.output/'complete.json',dict(success=True,slots=len(manifest),
+        episodes=sum(len(r['variants']) for r in manifest),attempts=len(attempts),
+        selected_seeds=[r['seed'] for r in manifest],elapsed_s=time.time()-started))
 
 if __name__=='__main__':main()
