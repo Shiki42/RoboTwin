@@ -6,6 +6,17 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'script'))
 from merge_paired_cohorts import reconstruct
 
 class FrozenLabelTests(unittest.TestCase):
+    def test_shards_align_by_column_name(self):
+        import tempfile
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+        from merge_paired_cohorts import read_tables
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);(root/'data').mkdir()
+            pq.write_table(pa.table({'seed':[1],'value':[3]}),root/'data/a.parquet')
+            pq.write_table(pa.table({'value':[4],'seed':[2]}),root/'data/b.parquet')
+            self.assertEqual(read_tables(root,'data').to_pydict(),{'seed':[1,2],'value':[3,4]})
+
     def test_json_scalar_shape_encodes_as_scalar(self):
         from datasets import Dataset
         from lerobot.datasets.feature_utils import get_hf_features_from_features

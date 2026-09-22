@@ -37,7 +37,10 @@ def verify_sums(root):
 
 
 def read_tables(root,folder):
-    return pa.concat_tables([pq.read_table(p) for p in sorted((root/folder).rglob('*.parquet'))])
+    tables=[pq.read_table(p) for p in sorted((root/folder).rglob('*.parquet'))]
+    columns=sorted(tables[0].column_names)
+    assert all(set(t.column_names)==set(columns) for t in tables)
+    return pa.concat_tables([t.select(columns) for t in tables])
 
 
 def reconstruct(program,steps,reasons,indices,events):
@@ -105,6 +108,8 @@ def normalize(source,target,cohort,task,variant):
     if variant=='uniform':features['observation.arm_active_mask']=dict(dtype='float32',shape=[2],names=['left','right'])
     else:features.pop('observation.arm_active_mask',None)
     features['retime.source_cohort']=dict(dtype='int64',shape=[1],names=None)
+    features={k:features[k] for k in sorted(features)}
+    info['features']=features
     data=read_tables(source,'data').to_pydict()
     for name in ('retime.left_idle','retime.right_idle','retime.overlap'):data.pop(name,None)
     rows=json.loads((source/'meta/retime_manifest.json').read_text())
@@ -219,7 +224,7 @@ This is a physical-video merge, with no resimulation, cross-time image compositi
 Source videos are copied without re-encoding, and video files remain separate across source boundaries.
 
 The first cohort is the20260911 paired750 collection; the second is E742 paired750.
-Historical first-cohort stale pre-command zero gripper targets are corrected to the frozen initial-open command;
+Requested gripper targets are checked against frozen controls. Any stale first-cohort pre-command zero labels are corrected only to the verified initial-open command;
 all other action values and all observation values are preserved. First-cohort observations retain their original
 capture/accessor provenance; unavailable historical raw physical qpos is not reconstructed. E742 records measured
 qpos and normalized measured grippers. Per-source corrections and hashes are in meta/source_provenance.json.
