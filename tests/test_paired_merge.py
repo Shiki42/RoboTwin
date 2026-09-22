@@ -6,6 +6,14 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'script'))
 from merge_paired_cohorts import reconstruct
 
 class FrozenLabelTests(unittest.TestCase):
+    def test_json_scalar_shape_encodes_as_scalar(self):
+        from datasets import Dataset
+        from lerobot.datasets.feature_utils import get_hf_features_from_features
+        features={'retime.source_cohort':{'dtype':'int64','shape':[1]}}
+        hf=get_hf_features_from_features({k:{**v,'shape':tuple(v['shape'])} for k,v in features.items()})
+        data=Dataset.from_dict({'retime.source_cohort':[0,1]},features=hf)
+        self.assertEqual(list(data['retime.source_cohort']),[0,1])
+
     def test_initial_delay_and_finished_hold(self):
         left=np.zeros((2,16));left[:,0]=1;left[:,14]=[.5,0]
         right=left.copy();right[:,14]=[.8,.2]

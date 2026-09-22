@@ -15,7 +15,6 @@ import pyarrow.parquet as pq
 from datasets import Dataset
 from lerobot.datasets.aggregate import aggregate_datasets
 from lerobot.datasets.feature_utils import get_hf_features_from_features
-from lerobot.datasets.compute_stats import aggregate_stats
 from export_paired_lerobot import exact_stats, sha, dump
 
 TASKS=('pick_dual_bottles','scan_object','place_dual_shoes')
@@ -139,7 +138,7 @@ def normalize(source,target,cohort,task,variant):
     if variant=='uniform':data['observation.arm_active_mask']=np.concatenate(masks).tolist()
     else:data.pop('observation.arm_active_mask',None)
     data_path=target/'data/chunk-000/file-000.parquet';data_path.parent.mkdir(parents=True)
-    Dataset.from_dict(data,features=get_hf_features_from_features(features)).to_parquet(data_path)
+    Dataset.from_dict(data,features=get_hf_features_from_features({k:{**v,'shape':tuple(v['shape'])} for k,v in features.items()})).to_parquet(data_path)
     metadata=read_tables(source,'meta/episodes').to_pylist()
     for row in metadata:row['data/chunk_index']=0;row['data/file_index']=0;row['meta/episodes/chunk_index']=0;row['meta/episodes/file_index']=0
     meta_path=target/'meta/episodes/chunk-000/file-000.parquet';meta_path.parent.mkdir(parents=True,exist_ok=True);pq.write_table(pa.Table.from_pylist(metadata),meta_path)
