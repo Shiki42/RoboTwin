@@ -1,6 +1,6 @@
-"""Execute the CPU-frozen 100-slot, finite candidate manifest; no source replans."""
+"""Execute an explicit task/seed/variant manifest with frozen per-scene controls."""
 import argparse
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import importlib
 import json
 import os
 from pathlib import Path
@@ -19,10 +19,10 @@ def candidate(job, destination):
     os.chdir(ROOT)
     sys.path.insert(0,str(ROOT));sys.path.insert(0,str(ROOT/'script'))
     from collect_ctr_experts import collect_episode
-    from envs.blocks_ranking_rgb_ctr import blocks_ranking_rgb_ctr
     from envs.paired_timing import CandidateRejected
-    task=blocks_ranking_rgb_ctr()
-    base=dict(task='blocks_ranking_rgb_ctr',seed=job['seed'],u=None,first=None,delay_fraction=None)
+    task_name=job['task']
+    task=getattr(importlib.import_module('envs.'+task_name),task_name)()
+    base=dict(task=task_name,seed=job['seed'],u=None,first=None,delay_fraction=None)
     start=time.time()
     try:
         source=destination/'source'
@@ -65,16 +65,13 @@ def main():
             result=json.loads((path/'candidate.json').read_text())
             if result['status']=='accepted':return result
         raise RuntimeError(f'finite candidate list exhausted for slot {slot}')
-    with ThreadPoolExecutor(max_workers=plan['workers']) as executor:
-        futures={executor.submit(run_slot,slot):slot for slot in range(plan['slots'])}
-        try:
-            for future in as_completed(futures):
-                result=future.result();manifest.append(result);manifest.sort(key=lambda r:r['slot'])
-                write(args.output/'manifest.json',manifest)
-                print(json.dumps(dict(accepted=len(manifest),target=plan['slots'],slot=result['slot'],seed=result['seed'],elapsed_s=time.time()-started)),flush=True)
-        finally:
-            for future in futures:
-                future.cancel()
-    write(args.output/'complete.json',dict(success=True,slots=len(manifest),episodes=3*len(manifest),elapsed_s=time.time()-started))
+    # The manifest's fixed slot order makes failures stop before another source.
+    if plan['workers'] != 1:
+        raise ValueError('this paired collection requires one sequential worker')
+    for slot in range(plan['slots']):
+        result=run_slot(slot);manifest.append(result)
+        write(args.output/'manifest.json',manifest)
+        print(json.dumps(dict(accepted=len(manifest),target=plan['slots'],slot=result['slot'],seed=result['seed'],elapsed_s=time.time()-started)),flush=True)
+    write(args.output/'complete.json',dict(success=True,slots=len(manifest),episodes=sum(len(r['variants']) for r in manifest),elapsed_s=time.time()-started))
 
 if __name__=='__main__':main()

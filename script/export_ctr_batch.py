@@ -1,4 +1,4 @@
-"""Stream the explicitly selected paired Blocks100 episodes into LeRobot v3."""
+"""Stream explicit paired multi-stage episode recipes into LeRobot v3."""
 import argparse
 import json
 import time
@@ -14,15 +14,8 @@ from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.configs.video import RGBEncoderConfig
 from export_paired_lerobot import features as paired_features, CAMS, dump, sha, intervals
 
-PROMPT='Place the red block to the left of the yellow block on the left side, and the blue block to the left of the green block on the right side.'
 METHODS=('sequential','concurrent','ctr','mixed')
 
-def recipe(method):
-    if method!='mixed':return [(i,method) for i in range(100)]
-    rows=[(i,'sequential') for i in range(34)]+[(i,'sequential') for i in range(50,83)]
-    rows += [(i,'concurrent') for i in list(range(34,50))+list(range(83,100))]
-    assert len(rows)==len({i for i,_ in rows})==100
-    return rows
 
 def features(method):
     result=paired_features()
@@ -80,10 +73,15 @@ def validate_commands(h, program_path):
     expected=np.zeros_like(commands)
     with np.load(program_path,allow_pickle=False) as program:
         for side_index,side in enumerate(('left','right')):
-            rows=program['sort/'+side]
+            stages=json.loads(str(program['stages']))
+            stage_index=h['physics/stage_index'][:]
+            rows=np.concatenate([program[stage['name']+'/'+side] for stage in stages])
             active=np.flatnonzero(reasons[:,side_index]==0)
-            source_indices=indices[active,side_index]
-            assert np.array_equal(source_indices,np.arange(len(rows)))
+            for si,stage in enumerate(stages):
+                selected=(stage_index==si)&(reasons[:,side_index]==0)
+                assert np.array_equal(indices[selected,side_index],np.arange(len(program[stage['name']+'/'+side])))
+            assert len(active)==len(rows)
+            source_indices=np.arange(len(rows))
             for kind,columns,source_columns in ((0,slice(7*side_index,7*side_index+6),slice(2,8)),(1,7*side_index+6,14)):
                 selected=rows[source_indices,0]==kind
                 event_steps=np.r_[0,active[selected]+1]
@@ -97,24 +95,32 @@ def validate_commands(h, program_path):
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--plan',type=Path,required=True)
     parser.add_argument('--collection',type=Path,required=True)
     parser.add_argument('--collection-exit',type=Path,required=True)
     parser.add_argument('--output',type=Path,required=True)
     parser.add_argument('--method',choices=METHODS,required=True)
     args=parser.parse_args();target=args.output
     if target.exists():raise FileExistsError(target)
-    repo_id='Shiki42/ctr-sortblocks-100ep-'+args.method
+    plan=json.loads(args.plan.read_text()); group=plan['datasets'][args.method]
+    selections=group['episodes']; repo_id=group['repo_id']; episode_count=len(selections)
     dataset=LeRobotDataset.create(repo_id=repo_id,root=target,fps=25,robot_type='aloha_agilex',
         features=features(args.method),streaming_encoding=True,encoder_threads=1,metadata_buffer_size=1,
         rgb_encoder=RGBEncoderConfig(vcodec='h264',g=25,crf=18,preset='fast'))
     metadata=[];total=0;camera_intrinsics=None
-    for episode,(slot,label) in enumerate(recipe(args.method)):
+    for episode,selection in enumerate(selections):
+        slot,label=selection['slot'],selection['variant']
         accepted=wait_for_slot(args.collection,slot,args.collection_exit)
         directory=Path(accepted['path'])/label
         receipt=json.loads((directory/'result.json').read_text())
         source=Path(accepted['path'])/'source'
         source_receipt=json.loads((source/'source.json').read_text())
-        assert receipt['success'] and receipt['minimum_clearance_m']>=.1
+        assert receipt['success']
+        if receipt['task']=='blocks_ranking_rgb_ctr':assert receipt['minimum_clearance_m']>=.1
+        if receipt['task']=='scan_object_ctr':
+            assert len(receipt['scan_success_steps'])==1
+            assert receipt['scan_success_steps'][0]==receipt['stages'][2]['start_step']
+            assert max(receipt['scan_translation_audit'][k] for k in ('max_orientation_error_deg','max_tilt_deg'))<=2
         assert receipt['control_hashes']==source_receipt['hashes']
         with h5py.File(directory/'episode.hdf5') as h:
             command_audit=validate_commands(h,source/'program.npz')
@@ -137,10 +143,10 @@ def main():
             if camera_intrinsics is None:camera_intrinsics=intrinsics
             assert intrinsics==camera_intrinsics
             durations=receipt['stages'][0]['durations']
-            u=(slot/100 if label=='ctr' else (0.0 if slot<50 else 1.0) if label=='sequential' else durations['left']/sum(durations.values()))
+            u=selection['u'] if selection['u'] is not None else durations['left']/sum(durations.values())
             for i in range(n):
-                frame={'task':PROMPT,'observation.state':states[i],'action':actions[i]}
-                for key,value in [('source_seed',accepted['seed']),('source_slot',slot),('grid_index',slot if label=='ctr' else -1)]:frame['retime.'+key]=np.array([value],dtype=np.int64)
+                frame={'task':plan['prompt'],'observation.state':states[i],'action':actions[i]}
+                for key,value in [('source_seed',accepted['seed']),('source_slot',slot),('grid_index',selection['grid_index'])]:frame['retime.'+key]=np.array([value],dtype=np.int64)
                 for key,value in [('u',u),('offset_s',receipt['actual_offset_steps']*receipt['physics_dt_s'])]:frame['retime.'+key]=np.array([value],dtype=np.float32)
                 if args.method=='ctr':
                     frame['observation.arm_active_mask']=active[i].astype(np.float32)
@@ -158,13 +164,16 @@ def main():
             if args.method=='ctr':entry['idle_intervals']={s:intervals(idle[:,a]) for a,s in enumerate(('left','right'))}
             metadata.append(entry)
         destination=target/'meta/source_programs'/f'slot-{slot:03d}'
-        destination.mkdir(parents=True)
-        shutil.copyfile(source/'program.npz',destination/'program.npz')
-        dump(destination/'scene.json',dict(seed=accepted['seed'],initial=source_receipt['initial'],hashes=source_receipt['hashes']))
+        if destination.exists():
+            assert sha(destination/'program.npz')==sha(source/'program.npz')
+        else:
+            destination.mkdir(parents=True)
+            shutil.copyfile(source/'program.npz',destination/'program.npz')
+            dump(destination/'scene.json',dict(seed=accepted['seed'],initial=source_receipt['initial'],hashes=source_receipt['hashes']))
         print(json.dumps(dict(method=args.method,episodes=episode+1,frames=total)),flush=True)
     dataset.finalize()
     dump(target/'meta/retime_manifest.json',metadata)
-    info=json.loads((target/'meta/info.json').read_text());assert info['total_episodes']==100 and info['total_frames']==total
+    info=json.loads((target/'meta/info.json').read_text());assert info['total_episodes']==episode_count and info['total_frames']==total
     tables=[pq.read_table(p) for p in sorted((target/'data').rglob('*.parquet'))]
     assert sum(len(t) for t in tables)==total
     refresh_statistics(target,tables)
@@ -178,12 +187,12 @@ def main():
         else:assert not any('mask' in k or k.endswith('_idle') for k in table.column_names)
     export_commit=subprocess.check_output(['git','-C',str(Path(__file__).resolve().parents[1]),'rev-parse','HEAD'],text=True).strip()
     dump(target/'.ctr-revision.json',dict(schema='ctr.generated_dataset_revision.v1',repo_id=repo_id,origin='generated native expert',
-        revision=sha(target/'meta/retime_manifest.json'),revision_kind='sha256-scene-and-control-manifest',exporter_commit=export_commit,episodes=100,frames=total))
-    dump(target/'meta/export-receipt.json',dict(success=True,repo_id=repo_id,episodes=100,frames=total,fps=25,method=args.method,
-        idle_mask=args.method=='ctr',exporter_commit=export_commit,camera_intrinsics=camera_intrinsics,source_slots=[s for s,_ in recipe(args.method)]))
+        revision=sha(target/'meta/retime_manifest.json'),revision_kind='sha256-scene-and-control-manifest',exporter_commit=export_commit,episodes=episode_count,frames=total))
+    dump(target/'meta/export-receipt.json',dict(success=True,repo_id=repo_id,episodes=episode_count,frames=total,fps=25,method=args.method,
+        idle_mask=args.method=='ctr',exporter_commit=export_commit,camera_intrinsics=camera_intrinsics,source_slots=[r['slot'] for r in selections]))
     with (target/'SHA256SUMS').open('w') as f:
         for path in sorted(target.rglob('*')):
             if path.is_file() and path.name!='SHA256SUMS' and '.cache' not in path.parts:f.write(f'{sha(path)}  {path.relative_to(target)}\n')
-    print(json.dumps(dict(method=args.method,complete=True,episodes=100,frames=total)),flush=True)
+    print(json.dumps(dict(method=args.method,complete=True,episodes=episode_count,frames=total)),flush=True)
 
 if __name__=='__main__':main()

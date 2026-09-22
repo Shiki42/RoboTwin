@@ -144,3 +144,21 @@ Both rise above the scan-end height and any intermediate vertical rebound are
 measured at every physics step until release. Qualification requires <=8 mm for
 both arms in the source and all eight review replays. The generated review page
 reports actual values, horizontal scan checks, and links to per-episode receipts.
+
+## Paired50 Scan collection
+
+`script/scan50_recipe.py` freezes seeds0..49. Sequential contains50 left-first
+then50 right-first episodes; Concurrent contains50 simultaneous episodes.
+CTR contains two variants per seed in seed-major order: u=i/100 and(i+50)/100,
+covering the100 distinct points0%..99%. Mixed selects left-first seeds0..33,
+right-first0..32, then concurrent17..49, covering all50 scenes in100 episodes.
+
+`script/collect_ctr_batch.py --plan PLAN --output NEW_DIRECTORY` consumes the
+explicit task/seed/variant candidate list. One source and five frozen physical
+replays are collected per seed. This recipe has one candidate per seed, one
+worker and no seed replacement or automatic retry. `script/export_ctr_batch.py`
+requires the same `--plan` plus `--collection`, `--collection-exit`, `--output`
+and `--method`. It reuses the existing measured-state/next-command export,
+checks multi-stage controls and exports IdleMask only for CTR. Mixed reads the
+selected collected episodes without another simulation. Numeric normalization
+uses exact global quantiles across all valid rows; image quantiles are omitted.
