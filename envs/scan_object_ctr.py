@@ -35,6 +35,7 @@ class scan_object_ctr(TimedSetup, scan_object):
         self.scan_complete = False
         self.return_complete = False
         self.return_motion_audit = None
+        self.ready_diagnostic = None
         self.scan_indicator = create_box(self.scene, sapien.Pose([-.032, -.20, 1.155]),
                                         (.04, .0096, .0128), color=(1,0,0),
                                         is_static=True, name='SCAN_indicator')
@@ -80,6 +81,9 @@ class scan_object_ctr(TimedSetup, scan_object):
         self.indicator_projection = {name:rectangle.tolist() for name,rectangle in rectangles.items()}
 
     def begin_scan_translation(self):
+        if self.ready_diagnostic is not None:
+            self.ready_diagnostic['actual_tool']=list(self.get_arm_pose('right'))
+            self.ready_diagnostic['actual_functional']=self.scanner.get_functional_point(0,'matrix').tolist()
         self.scan_reference_quaternion = np.array(self.scanner.get_pose().q)
         self.scan_translation_audit = dict(max_orientation_error_deg=0.0, max_tilt_deg=0.0,
                                            tolerance_deg=2.0, physics_steps=0)
@@ -128,7 +132,14 @@ class scan_object_ctr(TimedSetup, scan_object):
                 tool_pose=np.array(self.get_arm_pose('right'))
                 tool=sapien.Pose(tool_pose[:3],tool_pose[3:]).to_transformation_matrix()
                 functional=self.scanner.get_functional_point(0,'matrix')
-                ready,target=horizontal_ready_tool(tool,functional,self.object.get_pose().p,self.scan_offset)
+                native_target=np.array(self.object.get_functional_point(1))
+                native_target[:3]-=self.scan_offset
+                _,native_actions=self.place_actor(actor,arm,native_target,functional_point_id=0,pre_dis=.05,dis=.05,is_open=False)
+                native_pose=np.array(native_actions[-1].target_pose)
+                native_tool=sapien.Pose(native_pose[:3],native_pose[3:]).to_transformation_matrix()
+                reference=native_tool@np.linalg.inv(tool)@functional
+                ready,target=horizontal_ready_tool(tool,functional,self.object.get_pose().p,self.scan_offset,reference=reference)
+                self.ready_diagnostic=dict(start_tool=tool.tolist(),start_functional=functional.tolist(),target_tool=ready.tolist(),target_functional=target.tolist())
                 self.scanner_base_functional_target=np.r_[target[:3,3],t3d.quaternions.mat2quat(target[:3,:3])].tolist()
                 ready_pose=np.r_[ready[:3,3],t3d.quaternions.mat2quat(ready[:3,:3])]
                 actions=self.move_to_pose(arm,ready_pose)
