@@ -122,7 +122,7 @@ class scan_object_ctr(TimedSetup, scan_object):
         driver = ScanRecorder(self)
         def prepare(side, actor):
             arm = ArmTag(side)
-            yield from driver.motion('grasp', self.grasp_actor(actor, arm, pre_grasp_dis=.08))
+            yield from driver.motion('grasp', self.grasp_actor(actor, arm, pre_grasp_dis=.08,grasp_dis=.02 if side=='right' else 0))
             yield from driver.motion('lift', self.move_by_displacement(arm, x=-.05 if side=='left' else .05, z=.13))
             if side == 'left':
                 target = np.array(self.left_object_target_pose)
