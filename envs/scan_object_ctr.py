@@ -106,7 +106,7 @@ class scan_object_ctr(TimedSetup, scan_object):
         pose = np.array(self.get_arm_pose('right'))
         pose[:3] = position
         arm,actions = self.move_to_pose(ArmTag('right'),pose)
-        actions[0].args.update(constraint_pose=[1,1,1,0,0,0],project_to_goal_frame=False)
+        actions[0].args.update(constraint_pose=[1,1,1,0,0,0],project_to_goal_frame=False,max_joint_speed_rad_s=.8)
         return arm,actions
 
     def complete_scan(self):
@@ -143,6 +143,7 @@ class scan_object_ctr(TimedSetup, scan_object):
                 self.scanner_base_functional_target=np.r_[target[:3,3],t3d.quaternions.mat2quat(target[:3,:3])].tolist()
                 ready_pose=np.r_[ready[:3,3],t3d.quaternions.mat2quat(ready[:3,:3])]
                 actions=self.move_to_pose(arm,ready_pose)
+                actions[1][0].args['max_joint_speed_rad_s']=.8
             yield from driver.motion('ready', actions)
         driver.stage('prepare', {'left':prepare('left',self.object), 'right':prepare('right',self.scanner)})
         self.begin_scan_translation()

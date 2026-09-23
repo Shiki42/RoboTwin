@@ -40,3 +40,17 @@ def test_common_duration_has_identical_sample_count(count):
     assert len(rows)==250
     np.testing.assert_array_equal(rows[0]['right_arm']['position'],np.zeros((1,6)))
     np.testing.assert_array_equal(rows[-1]['right_arm']['position'],np.ones((1,6)))
+
+
+def test_source_joint_speed_limit_covers_commands_and_discrete_position_steps():
+    def plan(*args,**kwargs):
+        return {'position':np.tile(np.array([0.,.2,.4])[:,None],(1,6)), 'velocity':np.ones((3,6))*2}
+    task=SimpleNamespace(scene=SimpleNamespace(get_timestep=lambda:.004),plan_success=True,right_move_to_pose=plan)
+    action=SimpleNamespace(action='move',target_pose=[0]*7,args={'max_joint_speed_rad_s':10})
+    rows=list(TimedExpert(task).motion('scan_align',('right',[action])))
+    position=np.concatenate([row['right_arm']['position'] for row in rows])
+    velocity=np.concatenate([row['right_arm']['velocity'] for row in rows])
+    assert len(rows)==11
+    assert np.max(np.abs(np.diff(position,axis=0)))/.004 <= 10+1e-10
+    assert np.max(np.abs(velocity)) <= 10
+    np.testing.assert_allclose(position[[0,-1]],[np.zeros(6),np.ones(6)*.4])
