@@ -241,10 +241,7 @@ try:
                 )
                 plan_config.pose_cost_metric = pose_cost_metric
 
-            try:
-                result = self.motion_gen_batch.plan_batch(start_joint_states, goal_pose_of_ee, plan_config)
-            except Exception as e:
-                return {"status": ["Failure" for i in range(10)]}
+            result = self.motion_gen_batch.plan_batch(start_joint_states, goal_pose_of_ee, plan_config)
 
             # output
             res_result = dict()

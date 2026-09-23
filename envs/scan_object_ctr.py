@@ -6,7 +6,7 @@ from .timed_expert import TimedSetup
 from .ctr_timing import StageRecorder
 from .paired_timing import CandidateRejected
 from .utils import ArmTag, create_box
-from .scan_geometry import horizontal_ready_tool
+from .scan_geometry import horizontal_roll_candidates, select_clear_wrist_path
 import transforms3d as t3d
 
 class ScanRecorder(StageRecorder):
@@ -138,12 +138,20 @@ class scan_object_ctr(TimedSetup, scan_object):
                 native_pose=np.array(native_actions[-1].target_pose)
                 native_tool=sapien.Pose(native_pose[:3],native_pose[3:]).to_transformation_matrix()
                 reference=native_tool@np.linalg.inv(tool)@functional
-                ready,target=horizontal_ready_tool(tool,functional,self.object.get_pose().p,self.scan_offset,reference=reference)
-                self.ready_diagnostic=dict(start_tool=tool.tolist(),start_functional=functional.tolist(),target_tool=ready.tolist(),target_functional=target.tolist())
+                candidates,targets=horizontal_roll_candidates(tool,functional,self.object.get_pose().p,self.scan_offset,reference)
+                poses=[np.r_[m[:3,3],t3d.quaternions.mat2quat(m[:3,:3])] for m in candidates]
+                plans=self.robot.right_plan_multi_path(poses)
+                if 'position' not in plans:
+                    raise CandidateRejected('no feasible horizontal scanner roll')
+                try:
+                    selected=select_clear_wrist_path(plans['status'],plans['position'])
+                except ValueError as error:
+                    raise CandidateRejected(str(error)) from error
+                ready,target=candidates[selected],targets[selected]
+                self.ready_diagnostic=dict(start_tool=tool.tolist(),start_functional=functional.tolist(),target_tool=ready.tolist(),target_functional=target.tolist(),selected_roll_index=selected,wrist_envelope_rad=1.4)
                 self.scanner_base_functional_target=np.r_[target[:3,3],t3d.quaternions.mat2quat(target[:3,:3])].tolist()
-                ready_pose=np.r_[ready[:3,3],t3d.quaternions.mat2quat(ready[:3,:3])]
-                actions=self.move_to_pose(arm,ready_pose)
-                actions[1][0].args['max_joint_speed_rad_s']=.8
+                actions=self.move_to_pose(arm,poses[selected])
+                actions[1][0].args.update(max_joint_speed_rad_s=.8,planned_path=dict(position=plans['position'][selected],velocity=plans['velocity'][selected]))
             yield from driver.motion('ready', actions)
         driver.stage('prepare', {'left':prepare('left',self.object), 'right':prepare('right',self.scanner)})
         self.begin_scan_translation()
