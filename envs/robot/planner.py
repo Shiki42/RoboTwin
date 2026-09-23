@@ -80,15 +80,6 @@ try:
 
             self.motion_gen = MotionGen(motion_gen_config)
             self.motion_gen.warmup()
-            motion_gen_config = MotionGenConfig.load_from_robot_config(
-                self.yml_path,
-                world_config,
-                interpolation_dt=1 / 250,
-                num_trajopt_seeds=1,
-                num_graph_seeds=1,
-            )
-            self.motion_gen_batch = MotionGen(motion_gen_config)
-            self.motion_gen_batch.warmup(batch=CONFIGS.ROTATE_NUM)
 
         def plan_path(
             self,
@@ -165,98 +156,27 @@ try:
                 return res_result
             else:
                 res_result["status"] = "Success"
-                res_result["position"] = np.array(result.interpolated_plan.position.to("cpu"))
-                res_result["velocity"] = np.array(result.interpolated_plan.velocity.to("cpu"))
+                res_result["position"] = np.array(result.get_interpolated_plan().position.to("cpu"))
+                res_result["velocity"] = np.array(result.get_interpolated_plan().velocity.to("cpu"))
                 return res_result
 
         def plan_batch(
-            self,
-            curr_joint_pos,
-            target_gripper_pose_list,
-            constraint_pose=None,
-            arms_tag=None,
+            self, curr_joint_pos, target_gripper_pose_list,
+            constraint_pose=None, arms_tag=None,
         ):
-            """
-            Plan a batch of trajectories for multiple target poses.
-
-            Input:
-                - curr_joint_pos: List of current joint angles (1 x n)
-                - target_gripper_pose_list: List of target poses [sapien.Pose, sapien.Pose, ...]
-
-            Output:
-                - result['status']: numpy array of string values indicating "Success"/"Fail" for each pose
-                - result['position']: numpy array of joint positions with shape (n x m x l)
-                  where n is number of target poses, m is number of waypoints, l is number of joints
-                - result['velocity']: numpy array of joint velocities with same shape as position
-            """
-
-            num_poses = len(target_gripper_pose_list)
-            # transformation from world to arm's base
-            world_base_pose = np.concatenate([
-                np.array(self.robot_origion_pose.p),
-                np.array(self.robot_origion_pose.q),
-            ])
-            poses_list = []
-            for target_gripper_pose in target_gripper_pose_list:
-                world_target_pose = np.concatenate([np.array(target_gripper_pose.p), np.array(target_gripper_pose.q)])
-                base_target_pose_p, base_target_pose_q = self._trans_from_world_to_base(world_base_pose, world_target_pose)
-
-                if not ("aloha-agilex" in self.yml_path):
-                    base_target_pose_p[0] += self.frame_bias[0]
-                    base_target_pose_p[1] += self.frame_bias[1]
-                    base_target_pose_p[2] += self.frame_bias[2]
-                else: # patch for aloha-agilex
-                    T_target = t3d.affines.compose(base_target_pose_p, t3d.quaternions.quat2mat(base_target_pose_q), [1, 1, 1])
-                    T_bias = t3d.affines.compose(self.frame_bias, np.eye(3), [1, 1, 1])
-
-                    if arms_tag == "left":
-                        rot = t3d.axangles.axangle2mat([0, 0, 1], -0.02)
-                    elif arms_tag == "right":
-                        rot = t3d.axangles.axangle2mat([0, 0, 1], -0.01)
-                    else:
-                        raise ValueError(f"Invalid arms_tag: {arms_tag}")
-
-                    T_rot = t3d.affines.compose([0, 0, 0], rot, [1, 1, 1])
-                    T_new = T_rot @ T_bias @ T_target
-                    base_target_pose_p = T_new[:3, 3]
-                    base_target_pose_q = t3d.quaternions.mat2quat(T_new[:3, :3])
-
-                base_target_pose_list = list(base_target_pose_p) + list(base_target_pose_q)
-                poses_list.append(base_target_pose_list)
-
-            poses_cuda = torch.tensor(poses_list, dtype=torch.float32).cuda()
-            goal_pose_of_ee = CuroboPose(poses_cuda[:, :3], poses_cuda[:, 3:])
-            joint_indices = [self.all_joints.index(name) for name in self.active_joints_name if name in self.all_joints]
-            joint_angles = [curr_joint_pos[index] for index in joint_indices]
-            joint_angles = [round(angle, 5) for angle in joint_angles]  # avoid the precision problem
-            joint_angles_cuda = (torch.tensor(joint_angles, dtype=torch.float32).cuda().reshape(1, -1))
-            joint_angles_cuda = torch.cat([joint_angles_cuda] * num_poses, dim=0)
-            start_joint_states = JointState.from_position(joint_angles_cuda, joint_names=self.active_joints_name)
-            # plan
-            plan_config = MotionGenPlanConfig(max_attempts=10)
-            if constraint_pose is not None:
-                pose_cost_metric = PoseCostMetric(
-                    hold_partial_pose=True,
-                    hold_vec_weight=self.motion_gen.tensor_args.to_device(constraint_pose),
-                )
-                plan_config.pose_cost_metric = pose_cost_metric
-
-            result = self.motion_gen_batch.plan_batch(start_joint_states, goal_pose_of_ee, plan_config)
-
-            # output
-            res_result = dict()
-            # Convert boolean success values to "Success"/"Failure" strings
-            success_array = result.success.cpu().numpy()
-            status_array = np.array(["Success" if s else "Failure" for s in success_array], dtype=object)
-            res_result["status"] = status_array
-
-            if np.all(res_result["status"] == "Failure"):
-                return res_result
-
-            paths = result.get_paths()
-            res_result["position"] = [np.array(path.position.to("cpu")) for path in paths]
-            res_result["velocity"] = [np.array(path.velocity.to("cpu")) for path in paths]
-            return res_result
+            # Evaluate each candidate through the same native single-goal planner.
+            # The installed cuRobo batched retry implementation corrupts mixed
+            # IK-success tensor shapes; never hide these as infeasible grasps.
+            results = [self.plan_path(curr_joint_pos, pose, constraint_pose=constraint_pose,
+                                      arms_tag=arms_tag)
+                       for pose in target_gripper_pose_list]
+            return dict(
+                status=[result['status'] for result in results],
+                position=[result['position'] if result['status']=='Success' else np.empty((0,6))
+                          for result in results],
+                velocity=[result['velocity'] if result['status']=='Success' else np.empty((0,6))
+                          for result in results],
+            )
 
         def plan_grippers(self, now_val, target_val):
             num_step = 200
