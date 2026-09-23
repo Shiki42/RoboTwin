@@ -15,3 +15,14 @@ def accepted_list(rows,training_seeds,target=100):
         raise ValueError('duplicate or training-overlapping evaluation seed')
     if len(selected)>target:raise ValueError('too many evaluation seeds')
     return selected
+
+
+def ordered_prefix(candidate_seeds,results,target):
+    """Only a resolved candidate prefix can determine the first target successes."""
+    prefix=[];successes=0
+    for seed in candidate_seeds:
+        if seed not in results:break
+        row=results[seed];prefix.append(row)
+        successes+=row['status']=='accepted'
+        if successes==target:break
+    return prefix

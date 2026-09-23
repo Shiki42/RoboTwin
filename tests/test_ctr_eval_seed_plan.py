@@ -9,3 +9,15 @@ def test_acceptance_never_uses_training_or_duplicate_seeds():
     assert m.accepted_list([dict(seed=1,status='rejected'),dict(seed=2,status='accepted')],[1])==[2]
     with pytest.raises(ValueError):m.accepted_list([dict(seed=1,status='accepted')],[1])
     with pytest.raises(ValueError):m.accepted_list([dict(seed=2,status='accepted')]*2,[1])
+
+
+def test_parallel_completion_order_cannot_change_selected_seeds():
+    candidates=[1,2,3,4]
+    results={3:dict(seed=3,status='accepted')}
+    assert m.ordered_prefix(candidates,results,1)==[]
+    results[1]=dict(seed=1,status='rejected')
+    assert [r['seed'] for r in m.ordered_prefix(candidates,results,1)]==[1]
+    results[2]=dict(seed=2,status='accepted')
+    assert m.accepted_list(m.ordered_prefix(candidates,results,1),[],1)==[2]
+    results[4]=dict(seed=4,status='accepted')
+    assert m.accepted_list(m.ordered_prefix(candidates,results,1),[],1)==[2]

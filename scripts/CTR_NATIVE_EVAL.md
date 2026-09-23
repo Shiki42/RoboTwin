@@ -77,3 +77,9 @@ failures are recorded; unexpected software errors stop the Run. No policy outcom
 may change the accepted list. Full receipts, initial scene identities, control
 hashes and source version accompany each list. These lists measure success on
 expert-feasible scenes, not an unfiltered random-scene distribution.
+
+Parallel seed screening may use different fixed worker counts per task. Results
+are consumed in frozen candidate order, never completion order. Existing verified
+receipts are reused by SHA-256; no seed is repeated during a concurrency change.
+Already-running candidates beyond the100th accepted cutoff are allowed to finish
+and retained as unused evidence, without entering or changing the evaluation list.
