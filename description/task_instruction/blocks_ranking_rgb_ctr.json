@@ -1,0 +1,11 @@
+{
+  "full_description": "Place red then yellow on the left, blue then green on the right, with red left of yellow and blue left of green.",
+  "schema": "Fixed physical-arm roles; no substitutions required.",
+  "preference": "Describe all task completion requirements.",
+  "seen": [
+    "Place red then yellow on the left, blue then green on the right, with red left of yellow and blue left of green."
+  ],
+  "unseen": [
+    "Sort the left red-yellow pair and the right blue-green pair into their designated positions, then release all four blocks."
+  ]
+}

@@ -283,3 +283,14 @@ Contact [Tianxing Chen](https://tianxingchen.github.io) if you have any question
 
 # 🏷️ License
 This repository is released under the MIT license. See [LICENSE](./LICENSE) for additional details.
+
+## CTR task variants
+
+`scan_object_ctr` and `blocks_ranking_rgb_ctr` are available through the native
+RoboTwin task API and `scripts/eval_policy.sh`. Scan requires a successful scan
+plus both released items resting in fixed table regions; Blocks requires the
+four colored blocks in their ordered target regions. See
+[scripts/CTR_NATIVE_EVAL.md](scripts/CTR_NATIVE_EVAL.md) for evaluation and
+[scripts/CTR_EXPERTS.md](scripts/CTR_EXPERTS.md) for paired expert generation.
+Native expert timing utilities are described in
+[scripts/TIMED_EXPERTS.md](scripts/TIMED_EXPERTS.md).

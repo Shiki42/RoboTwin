@@ -48,3 +48,7 @@ stack_bowls_three: 1200
 stack_bowls_two: 900
 stamp_seal: 400
 turn_switch: 400
+
+# CTR variants include returning both held items / two blocks per arm.
+scan_object_ctr: 1200
+blocks_ranking_rgb_ctr: 1500

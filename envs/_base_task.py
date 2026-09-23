@@ -97,6 +97,7 @@ class Base_Task(gym.Env):
 
         self.now_obs = {}
         self.take_action_cnt = 0
+        self.eval_physics_steps = 0
         self.eval_video_path = kwags.get("eval_video_save_dir", None)
 
         self.save_freq = kwags.get("save_freq")
@@ -739,6 +740,7 @@ class Base_Task(gym.Env):
         use_point_cloud=False,
         use_attach=False,
         save_freq=-1,
+        project_to_goal_frame=True,
     ):
         """
         Interpolative planning with screw motion.
@@ -753,7 +755,7 @@ class Base_Task(gym.Env):
             pose = pose.p.tolist() + pose.q.tolist()
 
         if self.need_plan:
-            left_result = self.robot.left_plan_path(pose, constraint_pose=constraint_pose)
+            left_result = self.robot.left_plan_path(pose, constraint_pose=constraint_pose, project_to_goal_frame=project_to_goal_frame)
             self.left_joint_path.append(deepcopy(left_result))
         else:
             left_result = deepcopy(self.left_joint_path[self.left_cnt])
@@ -772,6 +774,7 @@ class Base_Task(gym.Env):
         use_point_cloud=False,
         use_attach=False,
         save_freq=-1,
+        project_to_goal_frame=True,
     ):
         """
         Interpolative planning with screw motion.
@@ -786,7 +789,7 @@ class Base_Task(gym.Env):
             pose = pose.p.tolist() + pose.q.tolist()
 
         if self.need_plan:
-            right_result = self.robot.right_plan_path(pose, constraint_pose=constraint_pose)
+            right_result = self.robot.right_plan_path(pose, constraint_pose=constraint_pose, project_to_goal_frame=project_to_goal_frame)
             self.right_joint_path.append(deepcopy(right_result))
         else:
             right_result = deepcopy(self.right_joint_path[self.right_cnt])
@@ -1659,6 +1662,7 @@ class Base_Task(gym.Env):
                 now_right_id += 1
 
             self.scene.step()
+            self.eval_physics_steps += 1
             self._update_render()
                 
             if self.check_success():

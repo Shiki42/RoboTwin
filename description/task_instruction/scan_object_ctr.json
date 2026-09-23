@@ -1,0 +1,11 @@
+{
+  "full_description": "Pick up the object with the left arm and the scanner with the right arm, scan the object, then release both in their fixed table regions.",
+  "schema": "Fixed physical-arm roles; no substitutions required.",
+  "preference": "Describe all task completion requirements.",
+  "seen": [
+    "Pick up the object with the left arm and the scanner with the right arm, scan the object, then release both in their fixed table regions."
+  ],
+  "unseen": [
+    "Use the left hand to hold the object while the right hand scans it, then set both items down in their designated areas."
+  ]
+}
