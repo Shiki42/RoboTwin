@@ -3,10 +3,11 @@ import numpy as np
 import sapien
 from .blocks_ranking_rgb import blocks_ranking_rgb
 from .timed_expert import TimedSetup
+from .ctr_success import NativeCtrEvaluation
 from .ctr_timing import StageRecorder
 from .utils import ArmTag, create_box
 
-class blocks_ranking_rgb_ctr(TimedSetup, blocks_ranking_rgb):
+class blocks_ranking_rgb_ctr(NativeCtrEvaluation, TimedSetup, blocks_ranking_rgb):
     record_actor_names = ('red','yellow','blue','green')
     display_name = 'Blocks Ranking RGB-CTR'
 
@@ -57,6 +58,11 @@ class blocks_ranking_rgb_ctr(TimedSetup, blocks_ranking_rgb):
         return driver.finish()
 
     def check_success(self):
+        if self.eval_mode:
+            targets={name:np.array([target[0],target[1],.74+self.table_z_bias+self.block_half_size])
+                     for name,target in self.targets.items()}
+            ordered=self.red.get_pose().p[0] < self.yellow.get_pose().p[0] < self.blue.get_pose().p[0] < self.green.get_pose().p[0]
+            return self.native_targets_success(targets,.025,.015,prerequisite=ordered)
         if not self.return_complete or not self.is_left_gripper_open() or not self.is_right_gripper_open():
             return False
         for name,target in self.targets.items():

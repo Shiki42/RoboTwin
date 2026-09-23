@@ -3,6 +3,7 @@ import numpy as np
 import sapien
 from .scan_object import scan_object
 from .timed_expert import TimedSetup
+from .ctr_success import NativeCtrEvaluation
 from .ctr_timing import StageRecorder
 from .paired_timing import CandidateRejected
 from .utils import ArmTag, create_box
@@ -21,7 +22,7 @@ class ScanRecorder(StageRecorder):
             self.task.sample_return_audit()
 
 
-class scan_object_ctr(TimedSetup, scan_object):
+class scan_object_ctr(NativeCtrEvaluation, TimedSetup, scan_object):
     record_actor_names = ('object', 'scanner')
     display_name = 'scan object-CTR'
 
@@ -217,6 +218,18 @@ class scan_object_ctr(TimedSetup, scan_object):
             report['physics_samples'] += 1
 
     def check_success(self):
+        if self.eval_mode:
+            # Policy evaluation never executes expert stage callbacks. Latch scan
+            # directly from observed geometry, then require both table returns.
+            if not self.scan_complete and scan_object.check_success(self):
+                direction=self.scanner.get_functional_point(0,'matrix')[:3,:3]@np.array([0,0,-1])
+                tilt=np.degrees(np.arcsin(np.clip(abs(direction[2])/np.linalg.norm(direction),0,1)))
+                lifted=all(getattr(self,name).get_pose().p[2] > self.return_poses[side].p[2]+.02
+                           for side,name in (('left','object'),('right','scanner')))
+                if tilt<=2 and lifted:
+                    self.complete_scan()
+            targets={name:self.return_poses[side].p for side,name in (('left','object'),('right','scanner'))}
+            return self.native_targets_success(targets,.035,.035,prerequisite=self.scan_complete)
         if not self.scan_complete or not self.return_complete:
             return False
         if not self.is_left_gripper_open() or not self.is_right_gripper_open():
