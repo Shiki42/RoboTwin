@@ -179,3 +179,21 @@ also enforces the existing8mm pre-release return rise/drawup limit. Failure trac
 include measured ready transforms and contact bodies to distinguish grasp drift,
 tracking error and self contact. Cross-model qualification improves some scenes,
 but every source and timing replay still requires independent success checks.
+
+## Wrist-clearance roll selection
+
+Scanner preparation evaluates ten evenly spaced rolls about the horizontal scan
+axis, all at the same functional-point position. It executes only the shortest
+planned candidate whose whole right-wrist trajectory stays within1.4rad bend
+and avoids equivalent multi-turn branches (joint coordinates and excursion within
+pi). These are additional source-path rejection rules, not relaxed physics or
+success checks. The same selected roll is held through scan-align; there is no
+in-place leveling or physical candidate trial. The selected source is frozen
+for every timing replay.
+
+Candidate goals reuse the native single-goal cuRobo planner individually because
+the installed batched retry path has mixed-IK-success tensor shape failures.
+Unexpected planner errors propagate. Each path is trimmed using cuRobo's actual
+interpolated trajectory length; padded terminal buffers are never executed.
+Known physically infeasible candidates remain failures. No changes to robot
+collision shapes, contact materials, camera calibration or success tolerances.
