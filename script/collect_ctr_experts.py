@@ -64,6 +64,7 @@ def collect_episode(args, task=None):
                 final=signature(task),provenance=identity,
                 scan_translation_audit=getattr(task,'scan_translation_audit',None),
                 ready_diagnostic=getattr(task,'ready_diagnostic',None),
+                contacts=[dict(bodies=[body.entity.name for body in c.bodies],separations=[float(p.separation) for p in c.points]) for c in task.scene.get_contacts()],
                 events=task.recorded_expert.timeline.events))
             raise
         settling=0
