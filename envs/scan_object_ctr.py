@@ -6,6 +6,8 @@ from .timed_expert import TimedSetup
 from .ctr_timing import StageRecorder
 from .paired_timing import CandidateRejected
 from .utils import ArmTag, create_box
+from .scan_geometry import horizontal_ready_tool
+import transforms3d as t3d
 
 class ScanRecorder(StageRecorder):
     def tick(self, controls, step):
@@ -100,7 +102,7 @@ class scan_object_ctr(TimedSetup, scan_object):
         pose = np.array(self.get_arm_pose('right'))
         pose[:3] = position
         arm,actions = self.move_to_pose(ArmTag('right'),pose)
-        actions[0].args['constraint_pose'] = [1,1,1,0,0,0]
+        actions[0].args.update(constraint_pose=[1,1,1,0,0,0],project_to_goal_frame=False)
         return arm,actions
 
     def complete_scan(self):
@@ -123,17 +125,13 @@ class scan_object_ctr(TimedSetup, scan_object):
                 target[:3] += self.scan_offset
                 actions = self.place_actor(actor, arm, target, pre_dis=0, dis=0, is_open=False)
             else:
-                # Source left lane has finished. Undo only its sampled translation;
-                # retain the native object's actual scan orientation/functional point.
-                target = np.array(self.object.get_functional_point(1))
-                target[:3] -= self.scan_offset
-                self.scanner_base_functional_target = target.tolist()
-                _, ready_actions = self.place_actor(actor, arm, target, functional_point_id=0,
-                                           pre_dis=.05, dis=.05, is_open=False)
-                ready_pose = np.array(ready_actions[-1].target_pose)
-                # One SE(3) plan changes position and orientation together.
-                # Do not level in place or insert an outward preparation waypoint.
-                actions = self.move_to_pose(arm,ready_pose)
+                tool_pose=np.array(self.get_arm_pose('right'))
+                tool=sapien.Pose(tool_pose[:3],tool_pose[3:]).to_transformation_matrix()
+                functional=self.scanner.get_functional_point(0,'matrix')
+                ready,target=horizontal_ready_tool(tool,functional,self.object.get_pose().p,self.scan_offset)
+                self.scanner_base_functional_target=np.r_[target[:3,3],t3d.quaternions.mat2quat(target[:3,:3])].tolist()
+                ready_pose=np.r_[ready[:3,3],t3d.quaternions.mat2quat(ready[:3,:3])]
+                actions=self.move_to_pose(arm,ready_pose)
             yield from driver.motion('ready', actions)
         driver.stage('prepare', {'left':prepare('left',self.object), 'right':prepare('right',self.scanner)})
         self.begin_scan_translation()
