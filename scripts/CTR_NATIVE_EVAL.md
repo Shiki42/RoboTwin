@@ -65,3 +65,15 @@ Collection behavior (`eval_mode=False`) remains unchanged and continues to enfor
 its expert-specific stage, home and frozen timing checks. Native policy evaluation
 (`eval_mode=True`) uses the physical success contract above. These code paths are
 separate so this interface update does not change the in-progress dataset source.
+
+## Train-disjoint fixed evaluation seeds
+
+`scripts/qualify_ctr_eval_seeds.py` consumes a CPU-frozen plan with the union of
+all training seeds and at most500 ascending non-training candidates per task.
+It accepts100 per task only after a real expert `play_once` and native physical
+success with a0.2-second stable return, without the expert completion flag.
+Each candidate executes once in an isolated process. Expected planning/geometry
+failures are recorded; unexpected software errors stop the Run. No policy outcome
+may change the accepted list. Full receipts, initial scene identities, control
+hashes and source version accompany each list. These lists measure success on
+expert-feasible scenes, not an unfiltered random-scene distribution.
