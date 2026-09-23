@@ -16,6 +16,15 @@ def write(path,value):
     path=Path(path);path.parent.mkdir(parents=True,exist_ok=True)
     tmp=path.with_suffix('.tmp');tmp.write_text(json.dumps(value,indent=2)+'\n');tmp.replace(path)
 
+def qualify_motion(receipt):
+    if receipt['task']!='scan_object_ctr':
+        return
+    from envs.paired_timing import CandidateRejected
+    for side,audit in receipt['return_motion_audit'].items():
+        if max(audit['max_rise_before_release_m'],audit['max_drawup_before_release_m'])>.008:
+            raise CandidateRejected(f'{side} return rise/drawup exceeds8mm: {audit}')
+
+
 def candidate(job, destination):
     os.chdir(ROOT)
     sys.path.insert(0,str(ROOT));sys.path.insert(0,str(ROOT/'script'))
@@ -27,11 +36,13 @@ def candidate(job, destination):
     start=time.time()
     try:
         source=destination/'source'
-        collect_episode(SimpleNamespace(**base,output=source,source=None,variant='source'),task)
+        source_receipt=collect_episode(SimpleNamespace(**base,output=source,source=None,variant='source'),task)
+        qualify_motion(source_receipt)
         results=[]
         for spec in job['variants']:
             args=dict(base,**{k:v for k,v in spec.items() if k!='variant'})
             receipt=collect_episode(SimpleNamespace(**args,output=destination/spec['variant'],source=source,variant=spec['variant']),task)
+            qualify_motion(receipt)
             results.append(receipt)
     except CandidateRejected as error:
         receipt=dict(status='rejected',slot=job['slot'],seed=job['seed'],reason=str(error),elapsed_s=time.time()-start)

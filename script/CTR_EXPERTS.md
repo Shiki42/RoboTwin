@@ -164,3 +164,18 @@ Actual seeds and output slots are recorded separately; Mixed covers all50 scenes
 `export_ctr_batch.py` consumes the same plan, verifies multistage command identity,
 exports masks only forCTR and computes exact global numeric quantiles. Artifacts
 and candidate rejection traces stay outside Git. No publication is implied.
+
+## Model-dependent Scan geometry correction (E801)
+
+The scanner ready target uses an explicitly horizontal functional axis, preserving
+native ready roll and the measured tool-to-scanner transform. Its functional
+position is5cm on the scanner side of the unshifted actual object center. The
+2cm shallower right grasp clears the calibrated wrist camera without modifying
+camera mounts, collision geometry, masses or friction. Ready and scan motions cap
+joint speed at0.8rad/s for grip stability; outward return stays exactly1second.
+Preparation remains one combined orientation/translation operation; there is no
+in-place leveling substage. Scanner checks remain2degrees; batch qualification
+also enforces the existing8mm pre-release return rise/drawup limit. Failure traces
+include measured ready transforms and contact bodies to distinguish grasp drift,
+tracking error and self contact. Cross-model qualification improves some scenes,
+but every source and timing replay still requires independent success checks.
