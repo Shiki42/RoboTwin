@@ -35,8 +35,10 @@ def select_clear_wrist_path(status,positions,limit=1.4):
         path=positions[i]
         bend=float(np.max(np.abs(path[:,4])))
         if not np.isfinite(path).all() or bend>limit:continue
+        # Avoid equivalent multi-turn branches that pass through folded postures.
+        if np.max(np.abs(path))>np.pi or np.max(np.abs(path-path[0]))>np.pi:continue
         travel=float(np.sum(np.linalg.norm(np.diff(path,axis=0),axis=1)))
-        candidates.append((bend,travel,i))
+        candidates.append((travel,bend,i))
     if not candidates:
         raise ValueError('no planned roll avoids wrist self-contact envelope')
     return min(candidates)[2]

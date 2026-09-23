@@ -25,5 +25,7 @@ def test_roll_candidates_preserve_horizontal_direction_and_target_position():
         np.testing.assert_allclose(t[:3,3],[.05,0,1])
     paths=np.zeros((3,4,6));paths[0,:,4]=-1.8;paths[1,:,4]=1.1;paths[2,:,4]=.9
     assert select_clear_wrist_path(['Success']*3,paths)==2
+    paths[2,:,2]=4.5
+    assert select_clear_wrist_path(['Success']*3,paths)==1
     import pytest
     with pytest.raises(ValueError):select_clear_wrist_path(['Success','Failure','Failure'],paths)

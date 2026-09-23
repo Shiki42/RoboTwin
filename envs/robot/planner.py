@@ -253,8 +253,9 @@ try:
             if np.all(res_result["status"] == "Failure"):
                 return res_result
 
-            res_result["position"] = np.array(result.interpolated_plan.position.to("cpu"))
-            res_result["velocity"] = np.array(result.interpolated_plan.velocity.to("cpu"))
+            paths = result.get_paths()
+            res_result["position"] = [np.array(path.position.to("cpu")) for path in paths]
+            res_result["velocity"] = [np.array(path.velocity.to("cpu")) for path in paths]
             return res_result
 
         def plan_grippers(self, now_val, target_val):
